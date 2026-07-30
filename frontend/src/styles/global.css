@@ -1,0 +1,95 @@
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  background: #f5f6f8;
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+}
+
+.app-content {
+  padding: 16px 24px;
+  background: #f5f6f8;
+  min-height: calc(100vh - 64px - 48px);
+}
+
+.app-content-card {
+  background: #ffffff;
+  border-radius: 8px;
+  padding: 16px 20px;
+}
+
+.page-header {
+  margin-bottom: 16px;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.toolbar-left,
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.app-footer {
+  text-align: center;
+  color: rgba(0, 0, 0, 0.45);
+  background: #ffffff;
+  border-top: 1px solid #f0f0f0;
+}
+
+.log-viewer {
+  background: #1e1e1e;
+  color: #e6e6e6;
+  border-radius: 6px;
+  padding: 12px;
+  font-family: 'JetBrains Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 480px;
+  overflow: auto;
+  white-space: pre;
+}
+
+.log-line {
+  display: block;
+}
+
+.log-line__info {
+  color: #82c2ff;
+}
+.log-line__warn {
+  color: #f0c674;
+}
+.log-line__error {
+  color: #ff6b6b;
+}
+.log-line__success {
+  color: #8fce8f;
+}
+
+.json-viewer {
+  background: #f6f8fa;
+  border-radius: 6px;
+  padding: 12px;
+  font-family: 'JetBrains Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  max-height: 360px;
+  overflow: auto;
+}

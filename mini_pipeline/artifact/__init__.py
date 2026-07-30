@@ -1,0 +1,1 @@
+"""Mini Pipeline artifact package."""

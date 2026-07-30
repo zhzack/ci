@@ -1,0 +1,28 @@
+"""State values persisted by the pipeline engine."""
+
+from enum import Enum
+
+
+class PluginStatus(str, Enum):
+    INSTALLING = "INSTALLING"
+    READY = "READY"
+    FAILED = "FAILED"
+
+
+class PipelineStatus(str, Enum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+
+
+class TaskStatus(str, Enum):
+    PENDING = "PENDING"
+    READY = "READY"
+    RUNNING = "RUNNING"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+    SKIPPED = "SKIPPED"
+
+
+TERMINAL_TASK_STATUSES = {TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.SKIPPED}

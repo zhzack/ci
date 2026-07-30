@@ -1,0 +1,28 @@
+app:
+  name: Mini Pipeline
+  host: 0.0.0.0
+  port: 8000
+  api_prefix: /api
+
+database:
+  url: ${DATABASE_URL}
+  echo: false
+
+storage:
+  root: /app/data
+  plugins: /app/data/plugins
+  workspaces: /app/data/workspaces
+  logs: /app/data/logs
+  artifacts: /app/data/artifacts
+  temp: /app/data/tmp
+
+execution:
+  coordinator_workers: 2
+  task_workers: 4
+  task_timeout_seconds: 3600
+
+sources:
+  http_timeout_seconds: 30
+  max_archive_bytes: 104857600
+  max_extracted_bytes: 524288000
+  max_archive_files: 10000

@@ -1,0 +1,26 @@
+name: v2-stats-python
+version: 1.0.0
+description: Compute descriptive statistics from a list of numbers (v2 contract)
+runtime:
+  type: python
+  entry: stats.py
+contract:
+  inputs:
+    - name: numbers
+      type: list
+      source: parameter
+      required: true
+      description: List of numeric values to analyse
+    - name: precision
+      type: number
+      source: parameter
+      required: false
+      default: 2
+      description: Decimal places for rounded outputs
+  outputs:
+    - name: stats
+      type: json
+      path: output/stats.json
+    - name: report
+      type: file
+      path: output/report.txt

@@ -1,0 +1,13 @@
+name: hello
+version: 1.0.0
+description: Generate a greeting and a text artifact
+runtime:
+  type: shell
+entry: run.sh
+inputs:
+  name:
+    type: string
+    required: true
+outputs:
+  greeting:
+    type: string

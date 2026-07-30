@@ -1,0 +1,10 @@
+name: greeter-demo
+params:
+  base: Hello
+  seed: 7
+steps:
+  - name: greet
+    plugin: demo-greeter@1.0.0
+    with:
+      greeting: "${{ params.base }}"
+      seed: "${{ params.seed }}"

@@ -1,0 +1,25 @@
+name: builtin:python
+version: 1.0.0
+description: Execute inline Python code as a pipeline step without creating a
+  separate plugin directory. Define a main(params, deps, workspace) function in
+  the code field — it receives the resolved pipeline params, upstream step
+  outputs, and workspace path, and must return a dict with at least "status".
+runtime:
+  type: shell
+entry: run.sh
+inputs:
+  code:
+    type: string
+    required: true
+    description: |
+      Python source. Must define:
+        def main(params, deps, workspace) -> dict
+      params: resolved step input values (all with: keys except "code")
+      deps:   upstream step outputs keyed by step name
+      workspace: absolute path to the task workspace
+      Return: {"status":"success"|"failed", "outputs":{...},
+               "message":"...", "artifacts":[...]}
+outputs:
+  result:
+    type: object
+    description: Whatever the user's main() returns inside the "outputs" key

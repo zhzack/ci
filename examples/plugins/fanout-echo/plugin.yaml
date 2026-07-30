@@ -1,0 +1,23 @@
+name: fanout-echo
+version: 1.0.0
+description: Echo a tagged message and emit it as a text artifact
+runtime:
+  type: shell
+entry: run.sh
+inputs:
+  message:
+    type: string
+    required: true
+    description: Text body to echo back
+  tag:
+    type: string
+    required: false
+    default: log
+    description: Short label prepended to the line
+outputs:
+  message:
+    type: string
+    description: Final formatted line
+  length:
+    type: integer
+    description: Character length of the final line

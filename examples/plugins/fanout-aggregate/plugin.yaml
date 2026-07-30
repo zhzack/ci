@@ -1,0 +1,26 @@
+name: fanout-aggregate
+version: 1.0.0
+description: Aggregate message lines from upstream steps into a Markdown summary
+runtime:
+  type: shell
+entry: run.sh
+inputs:
+  title:
+    type: string
+    required: false
+    default: Fan-in summary
+    description: Heading for the generated summary
+  messages:
+    type: list
+    required: true
+    description: Lines collected from upstream echo steps (use ${{ all.deps.outputs.message }})
+outputs:
+  summary:
+    type: string
+    description: Final markdown summary
+  total_length:
+    type: integer
+    description: Sum of message character lengths
+  count:
+    type: integer
+    description: Number of upstream messages aggregated

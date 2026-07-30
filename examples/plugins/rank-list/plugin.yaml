@@ -1,0 +1,34 @@
+name: rank-list
+version: 1.0.0
+description: Sort numeric values in descending order
+runtime:
+  type: shell
+entry: run.sh
+inputs:
+  x:
+    type: number
+    required: true
+    description: First value
+  y:
+    type: number
+    required: true
+    description: Second value
+  z:
+    type: number
+    required: true
+    description: Third value
+  quotient:
+    type: number
+    required: false
+    default: 0
+    description: Result of (a*b)/c from math-divprod (auto-wired when depends on Math)
+outputs:
+  ranked:
+    type: list
+    description: Numbers sorted in descending order
+  max:
+    type: number
+    description: Largest value
+  min:
+    type: number
+    description: Smallest value

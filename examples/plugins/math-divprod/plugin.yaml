@@ -1,0 +1,26 @@
+name: math-divprod
+version: 1.0.0
+description: Compute a*b and a*b/c
+runtime:
+  type: shell
+entry: run.sh
+inputs:
+  a:
+    type: number
+    required: true
+    description: First multiplier
+  b:
+    type: number
+    required: true
+    description: Second multiplier
+  c:
+    type: number
+    required: true
+    description: Divisor (must be non-zero)
+outputs:
+  product:
+    type: number
+    description: a * b
+  quotient:
+    type: number
+    description: (a * b) / c

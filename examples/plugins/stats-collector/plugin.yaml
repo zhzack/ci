@@ -1,0 +1,32 @@
+name: stats-collector
+version: 1.0.0
+description: Compute descriptive statistics (count, sum, avg, min, max, stdev)
+  from a list of numbers. Use ${{ all.deps.outputs.<key> }} to collect values
+  from multiple upstream steps (fan-in pattern).
+runtime:
+  type: shell
+entry: run.sh
+inputs:
+  numbers:
+    type: list
+    required: true
+    description: List of numeric values (wire to ${{ all.deps.outputs.<key> }})
+outputs:
+  count:
+    type: integer
+    description: Number of values
+  sum:
+    type: number
+    description: Sum of all values
+  avg:
+    type: number
+    description: Arithmetic mean
+  min:
+    type: number
+    description: Minimum value
+  max:
+    type: number
+    description: Maximum value
+  stdev:
+    type: number
+    description: Sample standard deviation (NaN if count<2)

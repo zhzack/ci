@@ -1,0 +1,44 @@
+name: stats-demo
+params:
+  title: Pipeline statistics report
+  subtitle: (auto-generated)
+  a: 100
+  b: 200
+  c: 300
+steps:
+  - name: echo-a
+    plugin: fanout-echo@1.0.0
+    with:
+      message: "${{ params.a }}"
+      tag: A
+  - name: echo-b
+    plugin: fanout-echo@1.0.0
+    with:
+      message: "${{ params.b }}"
+      tag: BB
+  - name: echo-c
+    plugin: fanout-echo@1.0.0
+    with:
+      message: "${{ params.c }}"
+      tag: CCC
+  - name: stats
+    plugin: stats-collector@1.0.0
+    depends:
+      - echo-a
+      - echo-b
+      - echo-c
+    with:
+      numbers: "${{ all.deps.outputs.length }}"
+  - name: report
+    plugin: report-builder@1.0.0
+    depends:
+      - stats
+    with:
+      title: "${{ params.title }}"
+      subtitle: "${{ params.subtitle }}"
+      count: "${{ steps.stats.outputs.count }}"
+      sum: "${{ steps.stats.outputs.sum }}"
+      avg: "${{ steps.stats.outputs.avg }}"
+      max: "${{ steps.stats.outputs.max }}"
+      min: "${{ steps.stats.outputs.min }}"
+      format: markdown
