@@ -1,23 +1,29 @@
 name: fanout-echo
 version: 1.0.0
-description: Echo a tagged message and emit it as a text artifact
+description: Echo a tagged message. Reads from workspace/input/* and writes
+  to workspace/output/echo.txt.
 runtime:
   type: shell
-entry: run.sh
-inputs:
-  message:
-    type: string
-    required: true
-    description: Text body to echo back
-  tag:
-    type: string
-    required: false
-    default: log
-    description: Short label prepended to the line
-outputs:
-  message:
-    type: string
-    description: Final formatted line
-  length:
-    type: integer
-    description: Character length of the final line
+  entry: run.sh
+contract:
+  inputs:
+    - name: message
+      type: string
+      source: parameter
+      required: true
+      description: Text body to echo back
+      target: message
+    - name: tag
+      type: string
+      source: parameter
+      required: false
+      default: log
+      description: Short label prepended to the line
+      target: tag
+  outputs:
+    - name: message
+      type: string
+      path: output/echo.txt
+    - name: length
+      type: integer
+      path: output/length.json

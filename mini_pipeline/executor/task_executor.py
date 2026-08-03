@@ -1,31 +1,38 @@
-"""Execute one plugin task in an isolated workspace."""
+"""v2 Task Executor — Resource-based contract execution.
 
-import json
+Implements the full lifecycle described in the v2 protocol:
+  Resolve Plugin → Resolve Inputs → Download Resources → Create Workspace
+  → Generate Context → Execute → Collect Logs → Collect Outputs
+  → Generate Artifacts → Finish Task
+"""
+
+from __future__ import annotations
+
 import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
-
-from pydantic import ValidationError as PydanticValidationError
+from typing import Any
 
 from mini_pipeline.artifact.local import LocalArtifactStore
 from mini_pipeline.core.config import ExecutionConfig, StorageConfig
 from mini_pipeline.database.models import PluginVersion, TaskRun
 from mini_pipeline.domain.exceptions import ExecutionError
-from mini_pipeline.domain.models import ArtifactRecord
 from mini_pipeline.domain.runtime import RuntimeRequest
-from mini_pipeline.executor.protocol import DependencyResult, PluginInput, PluginOutput
+from mini_pipeline.executor.collector import collect_outputs, read_error_json
+from mini_pipeline.executor.context import create_workspace, resolve_inputs, write_context
+from mini_pipeline.plugin.manifest import PluginManifest, load_manifest
 from mini_pipeline.runtime.registry import RuntimeRegistry
 
 
 @dataclass
 class TaskExecutionResult:
     success: bool
-    message: str
+    message: str = ""
     outputs: dict[str, Any] = field(default_factory=dict)
-    artifacts: list[ArtifactRecord] = field(default_factory=list)
-    log_path: Optional[Path] = None
+    artifacts: list[dict[str, Any]] = field(default_factory=list)
+    metadata: dict[str, Any] | None = None
+    log_path: Path | None = None
 
 
 class TaskExecutor:
@@ -35,7 +42,7 @@ class TaskExecutor:
         storage: StorageConfig,
         execution: ExecutionConfig,
         runtimes: RuntimeRegistry,
-        artifact_store: LocalArtifactStore,
+        artifact_store: LocalArtifactStore | None = None,
     ) -> None:
         self.storage = storage
         self.execution = execution
@@ -49,7 +56,8 @@ class TaskExecutor:
         task: TaskRun,
         plugin: PluginVersion,
         params: dict[str, Any],
-        dependencies: dict[str, DependencyResult],
+        dependencies: dict[str, Any],
+        uploads: dict[str, Path] | None = None,
     ) -> TaskExecutionResult:
         workspace = self.storage.workspaces / run_id / task.id
         log_path = self.storage.logs / run_id / f"{task.id}.log"
@@ -57,119 +65,94 @@ class TaskExecutor:
             shutil.rmtree(workspace)
         workspace.parent.mkdir(parents=True, exist_ok=True)
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(plugin.install_path, workspace)
-        self._make_plugin_read_only(workspace)
 
-        protocol_input = PluginInput(
+        # Load manifest
+        manifest = self._load_manifest(plugin.install_path)
+        # Copy plugin files into the workspace, preserving per-file mode bits
+        # (shutil.copytree's default `copy2` can lose exec bits on certain
+        # filesystems when the source was extracted from an archive with a
+        # restrictive umask). We use `copy2` and then explicitly chmod +x on
+        # the entry to guarantee the plugin can be executed.
+        shutil.copytree(plugin.install_path, workspace, dirs_exist_ok=True)
+        entry = (workspace / manifest.entry).resolve()
+        try:
+            entry.chmod(entry.stat().st_mode | 0o755)
+        except Exception:
+            pass
+
+        # Prepare workspace
+        create_workspace(workspace)
+        write_context(
+            workspace,
+            pipeline_id=run_id,
             task_id=task.id,
-            workspace=str(workspace.resolve()),
+            task_name=task.step_name,
+        )
+
+        # Resolve inputs
+        resolve_inputs(
+            workspace,
+            manifest.contract,
             params=params,
             dependencies=dependencies,
+            uploads=uploads,
         )
-        input_path = workspace / "input.json"
-        input_path.write_text(
-            protocol_input.model_dump_json(indent=2),
-            encoding="utf-8",
-        )
-        input_path.chmod(0o600)
 
-        entry = (workspace / plugin.entry).resolve()
-        if not entry.is_relative_to(workspace.resolve()) or not entry.is_file():
-            raise ExecutionError("Installed plugin entry is invalid")
-        command = [str(entry)] if os.access(entry, os.X_OK) else ["/bin/sh", str(entry)]
-        runtime = self.runtimes.get(plugin.runtime_type)
+        # Execute
+        entry = (workspace / manifest.entry).resolve()
+        runtime_type = manifest.runtime.type or "shell"
+        runtime = self.runtimes.get(runtime_type)
+        cmd = [str(entry)]
         with log_path.open("a", encoding="utf-8", buffering=1) as log_stream:
             result = runtime.execute(
                 RuntimeRequest(
-                    command=command,
+                    command=cmd,
                     cwd=workspace,
                     environment={
-                        "MINI_PIPELINE_INPUT": str(input_path),
-                        "MINI_PIPELINE_OUTPUT": str(workspace / "output.json"),
+                        "PIPELINE_CONTEXT": str(workspace / "context.json"),
+                        "PIPELINE_WORKSPACE": str(workspace),
+                        "PIPELINE_TASK_ID": task.id,
                         "MINI_PIPELINE_WORKSPACE": str(workspace),
                     },
                     timeout_seconds=self.execution.task_timeout_seconds,
                     log_stream=log_stream,
                 )
             )
+
         if result.timed_out:
             return TaskExecutionResult(False, "Plugin execution timed out", log_path=log_path)
         if result.error:
             return TaskExecutionResult(False, result.error, log_path=log_path)
+
+        # Check error.json
+        error_info = read_error_json(workspace)
+        if error_info and result.exit_code != 0:
+            msg = error_info.get("message") or f"Plugin exited with code {result.exit_code}"
+            return TaskExecutionResult(False, msg, log_path=log_path)
+
         if result.exit_code != 0:
             return TaskExecutionResult(
-                False,
-                f"Plugin exited with code {result.exit_code}",
-                log_path=log_path,
+                False, f"Plugin exited with code {result.exit_code}", log_path=log_path
             )
 
-        try:
-            protocol_output = self._read_output(workspace / "output.json")
-        except ExecutionError as exc:
-            return TaskExecutionResult(False, str(exc), log_path=log_path)
-        if protocol_output.status != "success":
-            return TaskExecutionResult(
-                False,
-                protocol_output.message or "Plugin reported failure",
-                outputs=protocol_output.outputs,
-                log_path=log_path,
-            )
-
-        try:
-            artifacts = [
-                self._store_artifact(
-                    run_id=run_id,
-                    task_id=task.id,
-                    workspace=workspace,
-                    name=item.name,
-                    relative_path=item.path,
-                )
-                for item in protocol_output.artifacts
-            ]
-        except ExecutionError as exc:
-            return TaskExecutionResult(False, str(exc), log_path=log_path)
+        # Collect outputs. Route artifacts through LocalArtifactStore so
+        # they're persisted in the database and reachable via the API.
+        collected = collect_outputs(
+            workspace, manifest.contract, run_id=run_id, task_id=task.id,
+            artifact_store=self.artifact_store,
+        )
         return TaskExecutionResult(
             True,
-            protocol_output.message,
-            outputs=protocol_output.outputs,
-            artifacts=artifacts,
+            "Plugin completed successfully",
+            outputs=collected["outputs"],
+            artifacts=collected["artifacts"],
+            metadata=collected.get("metadata"),
             log_path=log_path,
         )
 
     @staticmethod
-    def _read_output(path: Path) -> PluginOutput:
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            return PluginOutput.model_validate(raw)
-        except FileNotFoundError as exc:
-            raise ExecutionError("Plugin did not create output.json") from exc
-        except (json.JSONDecodeError, UnicodeDecodeError, PydanticValidationError) as exc:
-            raise ExecutionError(f"Plugin created invalid output.json: {exc}") from exc
-
-    def _store_artifact(
-        self,
-        *,
-        run_id: str,
-        task_id: str,
-        workspace: Path,
-        name: str,
-        relative_path: str,
-    ) -> ArtifactRecord:
-        source = (workspace / relative_path).resolve()
-        if not source.is_relative_to(workspace.resolve()):
-            raise ExecutionError(f"Artifact path escapes the task workspace: {relative_path}")
-        return self.artifact_store.store(
-            run_id=run_id,
-            task_id=task_id,
-            name=name,
-            source=source,
-        )
-
-    @staticmethod
-    def _make_plugin_read_only(workspace: Path) -> None:
-        for path in workspace.rglob("*"):
-            if path.is_file():
-                mode = path.stat().st_mode
-                path.chmod(mode & ~0o222)
-        # The directory remains writable so plugins can create protocol output and artifacts.
-        workspace.chmod(0o700)
+    def _load_manifest(install_path: str) -> PluginManifest:
+        path = Path(install_path)
+        if not path.is_dir():
+            raise ExecutionError(f"Plugin install path is not a directory: {install_path}")
+        return load_manifest(path)

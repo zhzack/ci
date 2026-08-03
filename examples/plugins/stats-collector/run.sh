@@ -1,53 +1,46 @@
 #!/bin/sh
 set -eu
 
-python3 - <<'PY'
-import json, math, sys
-from pathlib import Path
+work="${PIPELINE_WORKSPACE:-.}"
+in="$work/input"
+out="$work/output"
+mkdir -p "$out"
 
-raw = json.loads(Path("input.json").read_text())
-params = raw.get("params", {})
+# Read numbers from workspace/input/numbers. The executor writes the list
+# either as a JSON array (preferred) or as plain lines.
+raw=$(cat "$in/numbers" 2>/dev/null || echo "")
+# Strip a possible [ ] JSON wrapper, quotes and commas
+nums=$(printf '%s' "$raw" | tr -d '[]"' | tr ',' '\n' | tr -s ' \n' '\n' | grep -v '^$' || true)
+if [ -z "$nums" ]; then
+  cat > "$work/error.json" <<EOF
+{"code":"INPUT_EMPTY","message":"numbers list is empty"}
+EOF
+  exit 1
+fi
 
-numbers_raw = params.get("numbers", [])
-if not isinstance(numbers_raw, list):
-    print("ERROR: 'numbers' must be a list", file=sys.stderr)
-    Path("output.json").write_text(json.dumps({"status":"failed","message":"numbers must be a list"}))
-    sys.exit(1)
+export out
+export out
+echo "$nums" | awk 'BEGIN{n=0; s=0; mn=1e308; mx=-1e308}
+{ n++; s+=$1; if($1<mn)mn=$1; if($1>mx)mx=$1; v[n]=$1 }
+END{
+  if(n>0){
+    avg=s/n
+    if(n>1){
+      var=0
+      for(i=1;i<=n;i++) var+=(v[i]-avg)^2
+      var=var/(n-1)
+    } else { var=0 }
+    printf "%d\n", n > (ENVIRON["out"] "/count.json")
+    printf "%.4f\n", s > (ENVIRON["out"] "/sum.json")
+    printf "%.4f\n", avg > (ENVIRON["out"] "/avg.json")
+    printf "%.4f\n", mn > (ENVIRON["out"] "/min.json")
+    printf "%.4f\n", mx > (ENVIRON["out"] "/max.json")
+  }
+}'
 
-values = []
-for v in numbers_raw:
-    try:
-        values.append(float(v) if not isinstance(v, (int, float)) else float(v))
-    except (ValueError, TypeError):
-        print(f"WARNING: skipping non-numeric value {v!r}", file=sys.stderr)
+# JSON bundle (legacy stats.json)
+cat > "$out/stats.json" <<EOF
+{"count":$(cat "$out/count.json"),"sum":$(cat "$out/sum.json"),"avg":$(cat "$out/avg.json"),"min":$(cat "$out/min.json"),"max":$(cat "$out/max.json")}
+EOF
 
-n = len(values)
-if n == 0:
-    print("ERROR: 'numbers' list is empty", file=sys.stderr)
-    Path("output.json").write_text(json.dumps({"status":"failed","message":"numbers list is empty"}))
-    sys.exit(1)
-
-total = sum(values)
-mean = total / n
-
-if n > 1:
-    variance = sum((x - mean) ** 2 for x in values) / (n - 1)
-    stdev = math.sqrt(variance)
-else:
-    stdev = float("nan")
-
-stats = {
-    "count": n, "sum": total, "avg": mean,
-    "min": min(values), "max": max(values), "stdev": stdev,
-}
-Path("stats.json").write_text(json.dumps(stats, indent=2), encoding="utf-8")
-
-Path("output.json").write_text(json.dumps({
-    "status": "success",
-    "message": f"Computed statistics for {n} values",
-    "outputs": {k: v for k, v in stats.items() if not (isinstance(v, float) and math.isnan(v))},
-    "artifacts": [{"name": "stats.json", "path": "stats.json"}],
-}, ensure_ascii=False), encoding="utf-8")
-
-print(f"stats: n={n} sum={total} avg={mean:.2f} min={min(values)} max={max(values)}")
-PY
+echo "stats: n=$(cat "$out/count.json")"

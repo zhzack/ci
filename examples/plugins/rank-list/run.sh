@@ -1,48 +1,19 @@
 #!/bin/sh
 set -eu
 
-python3 - <<'PY'
-import json, sys
-from pathlib import Path
+work="${PIPELINE_WORKSPACE:-.}"
+in="$work/input"
+out="$work/output"
+mkdir -p "$out"
 
-raw = json.loads(Path("input.json").read_text())
-params = raw.get("params", {})
+values=$(awk 'BEGIN{
+  for (i=0; i<ARGC; i++) print ARGV[i+1]
+}' "$(cat $in/x)" "$(cat $in/y)" "$(cat $in/z)" "$(cat $in/quotient)")
 
-required = ["x", "y", "z"]
-try:
-    values = [float(params[k]) for k in required]
-except (KeyError, ValueError, TypeError) as exc:
-    msg = f"Missing or invalid required input in {required}: {exc}"
-    print(f"ERROR: {msg}", file=sys.stderr)
-    Path("output.json").write_text(json.dumps({"status":"failed","message":msg}))
-    sys.exit(1)
+# Sort desc
+sorted=$(echo "$values" | sort -nr)
+echo "$sorted" | head -1 > "$out/max.json"
+echo "$sorted" | tail -1 > "$out/min.json"
+echo "$sorted" | tr '\n' ',' | sed 's/,$/]/' | sed 's/^/[/' > "$out/ranked.json"
 
-for key in ("quotient", "extra"):
-    v = params.get(key)
-    if v is not None:
-        try:
-            values.append(float(v))
-        except (ValueError, TypeError):
-            pass
-
-ranked = sorted(values, reverse=True)
-Path("ranked.json").write_text(
-    json.dumps({"ranked": ranked, "max": ranked[0], "min": ranked[-1]}, indent=2),
-    encoding="utf-8",
-)
-
-Path("output.json").write_text(
-    json.dumps(
-        {
-            "status": "success",
-            "message": f"Ranked {len(values)} values descending",
-            "outputs": {"ranked": ranked, "max": ranked[0], "min": ranked[-1]},
-            "artifacts": [{"name": "ranked.json", "path": "ranked.json"}],
-        },
-        ensure_ascii=False,
-    ),
-    encoding="utf-8",
-)
-
-print(f"values={values} ranked={ranked}")
-PY
+echo "ranked=$sorted"

@@ -1,0 +1,12 @@
+name: num-gen
+version: 1.0.0
+description: Generate a random integer between 1 and 100.
+runtime:
+  type: shell
+  entry: run.sh
+contract:
+  inputs: []
+  outputs:
+    - name: value
+      type: number
+      path: output/value.json

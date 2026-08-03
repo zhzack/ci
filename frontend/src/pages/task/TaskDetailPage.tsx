@@ -29,9 +29,15 @@ import { JsonViewer } from '@/components/JsonViewer';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useApiMutation } from '@/hooks/useApiMutation';
 import { getRun, getTaskLog, getAggregatedLog, branchRun as branchRunApi, submitRun, downloadArtifactUrl } from '@/api/run';
-import type { ArtifactResponse, PipelineRun, TaskRun } from '@/types/run';
+import type { PipelineRun, TaskRun } from '@/types/run';
 
 const ACTIVE = new Set(['PENDING', 'READY', 'RUNNING']);
+
+function isEmptyObj(v: unknown): boolean {
+  if (v === null || v === undefined) return true;
+  if (typeof v === 'object') return Object.keys(v as Record<string, unknown>).length === 0;
+  return false;
+}
 
 export default function TaskDetailPage(): React.JSX.Element {
   const { runId } = useParams<{ runId: string }>();
@@ -173,40 +179,6 @@ export default function TaskDetailPage(): React.JSX.Element {
     return undefined;
   }, [runId, selectedStep, steps, refreshLog]);
 
-  const selectedTask = useMemo<TaskRun | null>(
-    () => steps.find((step) => step.name === selectedStep) ?? null,
-    [steps, selectedStep],
-  );
-
-  const artifactColumns: TableColumnsType<ArtifactResponse> = [
-    { title: 'Name', dataIndex: 'name' },
-    {
-      title: 'Size',
-      dataIndex: 'size',
-      render: (value: number) => `${(value / 1024).toFixed(2)} KiB`,
-    },
-    {
-      title: 'SHA256',
-      dataIndex: 'sha256',
-      render: (value: string) => <code style={{ fontSize: 12 }}>{value.slice(0, 12)}…</code>,
-    },
-    {
-      title: 'Action',
-      key: 'action',
-      render: (_value, record) => (
-        <a
-          href={downloadArtifactUrl(runId ?? '', record.id)}
-          target="_blank"
-          rel="noreferrer"
-        >
-          <Button size="small" icon={<DownloadOutlined />}>
-            Download
-          </Button>
-        </a>
-      ),
-    },
-  ];
-
   const taskColumns: TableColumnsType<TaskRun> = [
     { title: 'Step', dataIndex: 'name' },
     { title: 'Plugin', dataIndex: 'plugin' },
@@ -318,11 +290,6 @@ export default function TaskDetailPage(): React.JSX.Element {
                 ]}
               />
             </div>
-            {selectedTask ? (
-              <Card title={`Outputs · ${selectedTask.name}`} style={{ marginTop: 16 }}>
-                <JsonViewer value={selectedTask.outputs} emptyText="No outputs" />
-              </Card>
-            ) : null}
           </Col>
           <Col span={8}>
             <Card title="Run">
@@ -348,21 +315,82 @@ export default function TaskDetailPage(): React.JSX.Element {
                 </Descriptions.Item>
               </Descriptions>
             </Card>
-            {selectedTask ? (
-              <Card title={`Artifacts · ${selectedTask.name}`} style={{ marginTop: 16 }}>
-                {selectedTask.artifacts.length === 0 ? (
-                  <Typography.Text type="secondary">No artifacts</Typography.Text>
-                ) : (
-                  <Table
-                    rowKey="id"
-                    size="small"
-                    columns={artifactColumns}
-                    dataSource={selectedTask.artifacts}
-                    pagination={false}
-                  />
-                )}
-              </Card>
-            ) : null}
+          </Col>
+          {/* ── All Outputs · every step ── */}
+          <Col span={24} style={{ marginTop: 16 }}>
+            <Card title="All Outputs" size="small">
+              {steps.length === 0 ? (
+                <Typography.Text type="secondary">No steps.</Typography.Text>
+              ) : (
+                <Row gutter={[12, 12]}>
+                  {steps.map((step) => (
+                    <Col key={step.id} xs={24} sm={12} md={8} lg={6}>
+                      <Card
+                        size="small"
+                        type="inner"
+                        title={
+                          <Space size={4}>
+                            <StatusTag status={step.status} />
+                            <span>{step.name}</span>
+                          </Space>
+                        }
+                        extra={
+                          <Tag style={{ fontSize: 10 }}>{step.plugin}</Tag>
+                        }
+                      >
+                        {step.message ? (
+                          <Typography.Paragraph
+                            type="secondary"
+                            style={{ fontSize: 12, marginBottom: 4 }}
+                            ellipsis={{ rows: 1 }}
+                          >
+                            {step.message}
+                          </Typography.Paragraph>
+                        ) : null}
+                        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                          Outputs
+                        </Typography.Text>
+                        <div style={{ marginBottom: 6 }}>
+                          {isEmptyObj(step.outputs) ? (
+                            <Typography.Text type="secondary" style={{ fontSize: 12 }}>—</Typography.Text>
+                          ) : (
+                            <pre style={{
+                              background: '#f6f8fa', borderRadius: 4, padding: '4px 6px',
+                              fontSize: 11, margin: '2px 0', maxHeight: 120, overflow: 'auto',
+                              fontFamily: 'JetBrains Mono, monospace',
+                            }}>
+                              {JSON.stringify(step.outputs, null, 2)}
+                            </pre>
+                          )}
+                        </div>
+                        {step.artifacts.length > 0 ? (
+                          <>
+                            <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                              Artifacts
+                            </Typography.Text>
+                            {step.artifacts.map((a) => (
+                              <div key={a.id} style={{ fontSize: 12, marginTop: 2 }}>
+                                <a
+                                  href={downloadArtifactUrl(runId ?? '', a.id)}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  <DownloadOutlined style={{ marginRight: 4 }} />
+                                  {a.name}
+                                </a>
+                                <span style={{ color: '#999', marginLeft: 6 }}>
+                                  {(a.size / 1024).toFixed(2)} KiB
+                                </span>
+                              </div>
+                            ))}
+                          </>
+                        ) : null}
+                      </Card>
+                    </Col>
+                  ))}
+                </Row>
+              )}
+            </Card>
           </Col>
         </Row>
       ) : null}

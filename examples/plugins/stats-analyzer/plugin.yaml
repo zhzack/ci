@@ -1,0 +1,30 @@
+name: stats-analyzer
+version: 1.0.0
+description: Read a dataset artifact from upstream, compute advanced statistics,
+  and produce a formatted Markdown report. Demonstrates cross-step artifact
+  mapping and v2 resource contract with artifact source.
+runtime:
+  type: python
+  entry: analyze.py
+contract:
+  inputs:
+    - name: dataset
+      type: file
+      source: artifact
+      from: generate.dataset
+      target: upstream/dataset.json
+      required: true
+      description: JSON dataset produced by an upstream data-generator step
+    - name: title
+      type: string
+      source: parameter
+      required: false
+      default: Statistical Analysis Report
+      description: Heading for the generated report
+  outputs:
+    - name: report
+      type: file
+      path: output/report.md
+    - name: summary
+      type: json
+      path: output/summary.json

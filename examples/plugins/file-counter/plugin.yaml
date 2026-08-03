@@ -1,0 +1,21 @@
+name: file-counter
+version: 1.0.0
+description: Count lines and words in an uploaded text file. Demonstrates file-upload inputs.
+runtime:
+  type: shell
+  entry: run.sh
+contract:
+  inputs:
+    - name: textfile
+      type: file
+      source: upload
+      required: true
+      description: A text file to analyse (upload at run time)
+      target: input.txt
+  outputs:
+    - name: lines
+      type: integer
+      path: output/lines.json
+    - name: words
+      type: integer
+      path: output/words.json

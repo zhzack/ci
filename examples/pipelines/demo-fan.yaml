@@ -1,0 +1,20 @@
+name: demo-fan
+params: {}
+steps:
+  - name: gen
+    plugin: num-gen@1.0.0
+  - name: double
+    plugin: num-double@1.0.0
+    depends: [gen]
+    with:
+      value: "${{ steps.gen.outputs.value }}"
+  - name: triple
+    plugin: num-triple@1.0.0
+    depends: [gen]
+    with:
+      value: "${{ steps.gen.outputs.value }}"
+  - name: sum
+    plugin: num-sum@1.0.0
+    depends: [double, triple]
+    with:
+      values: "${{ all.deps.outputs.result }}"

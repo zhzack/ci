@@ -1,34 +1,39 @@
 name: rank-list
 version: 1.0.0
-description: Sort numeric values in descending order
+description: Sort four numeric values in descending order.
 runtime:
   type: shell
-entry: run.sh
-inputs:
-  x:
-    type: number
-    required: true
-    description: First value
-  y:
-    type: number
-    required: true
-    description: Second value
-  z:
-    type: number
-    required: true
-    description: Third value
-  quotient:
-    type: number
-    required: false
-    default: 0
-    description: Result of (a*b)/c from math-divprod (auto-wired when depends on Math)
-outputs:
-  ranked:
-    type: list
-    description: Numbers sorted in descending order
-  max:
-    type: number
-    description: Largest value
-  min:
-    type: number
-    description: Smallest value
+  entry: run.sh
+contract:
+  inputs:
+    - name: x
+      type: number
+      source: parameter
+      required: true
+      target: x
+    - name: y
+      type: number
+      source: parameter
+      required: true
+      target: y
+    - name: z
+      type: number
+      source: parameter
+      required: true
+      target: z
+    - name: quotient
+      type: number
+      source: parameter
+      required: false
+      default: 0
+      target: quotient
+  outputs:
+    - name: ranked
+      type: list
+      path: output/ranked.json
+    - name: max
+      type: number
+      path: output/max.json
+    - name: min
+      type: number
+      path: output/min.json

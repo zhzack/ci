@@ -11,8 +11,12 @@ export class RouteErrorBoundary extends React.Component<{ children: React.ReactN
     return { error };
   }
 
-  override componentDidCatch(error: Error): void {
+  override componentDidCatch(error: Error, info: { componentStack?: string }): void {
+    // Log full info to help localise which render produced the crash.
     console.error('Route error boundary caught:', error);
+    if (info && info.componentStack) {
+      console.error('Component stack:\n' + info.componentStack);
+    }
   }
 
   resetError = (): void => {

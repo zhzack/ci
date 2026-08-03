@@ -1,0 +1,17 @@
+name: num-triple
+version: 1.0.0
+description: Take a number and triple it (×3).
+runtime:
+  type: shell
+  entry: run.sh
+contract:
+  inputs:
+    - name: value
+      type: number
+      source: parameter
+      required: true
+      description: The number to triple
+  outputs:
+    - name: result
+      type: number
+      path: output/result.json

@@ -93,3 +93,16 @@ body,
   max-height: 360px;
   overflow: auto;
 }
+
+/* Highlight a pipeline-input element when a Save-banner issue jumps to it.
+   Stays for 2s, then JS removes the class. */
+.mp-input-highlight {
+  outline: 2px solid #ff4d4f !important;
+  outline-offset: 2px !important;
+  box-shadow: 0 0 0 4px rgba(255, 77, 79, 0.18) !important;
+  transition: outline 0.2s ease, box-shadow 0.2s ease;
+}
+.mp-step-card-highlight {
+  outline: 2px dashed #ff4d4f !important;
+  outline-offset: 2px !important;
+}

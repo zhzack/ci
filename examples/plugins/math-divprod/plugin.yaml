@@ -1,26 +1,30 @@
 name: math-divprod
 version: 1.0.0
-description: Compute a*b and a*b/c
+description: Compute a*b and (a*b)/c with division-by-zero handling.
 runtime:
   type: shell
-entry: run.sh
-inputs:
-  a:
-    type: number
-    required: true
-    description: First multiplier
-  b:
-    type: number
-    required: true
-    description: Second multiplier
-  c:
-    type: number
-    required: true
-    description: Divisor (must be non-zero)
-outputs:
-  product:
-    type: number
-    description: a * b
-  quotient:
-    type: number
-    description: (a * b) / c
+  entry: run.sh
+contract:
+  inputs:
+    - name: a
+      type: number
+      source: parameter
+      required: true
+      target: a
+    - name: b
+      type: number
+      source: parameter
+      required: true
+      target: b
+    - name: c
+      type: number
+      source: parameter
+      required: true
+      target: c
+  outputs:
+    - name: product
+      type: number
+      path: output/product.json
+    - name: quotient
+      type: number
+      path: output/quotient.json

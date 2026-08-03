@@ -65,7 +65,8 @@ class InputResource(BaseModel):
         if value:
             return str(value)
         name = info.data.get("name", "resource") if isinstance(info.data, dict) else "resource"
-        return str(PurePosixPath(name))
+        result = str(PurePosixPath(name))
+        return result if result else "resource"
 
 
 # ---------------------------------------------------------------------------

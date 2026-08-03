@@ -1,0 +1,34 @@
+name: data-generator
+version: 1.0.0
+description: Generate a random numeric dataset and save it as a JSON artifact.
+  Demonstrates the v2 resource contract with parameter and generated sources.
+runtime:
+  type: python
+  entry: generate.py
+contract:
+  inputs:
+    - name: count
+      type: number
+      source: parameter
+      required: false
+      default: 10
+      description: How many random numbers to generate
+    - name: min_val
+      type: number
+      source: parameter
+      required: false
+      default: 0
+      description: Lower bound (inclusive)
+    - name: max_val
+      type: number
+      source: parameter
+      required: false
+      default: 100
+      description: Upper bound (inclusive)
+  outputs:
+    - name: dataset
+      type: json
+      path: output/dataset.json
+    - name: metadata
+      type: json
+      path: output/metadata.json

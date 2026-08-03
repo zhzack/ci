@@ -1,8 +1,0 @@
-name: hello-demo
-params:
-  who: Mini Pipeline
-steps:
-  - name: greet
-    plugin: hello@1.0.0
-    with:
-      name: "${{ params.who }}"

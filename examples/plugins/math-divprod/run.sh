@@ -1,38 +1,26 @@
 #!/bin/sh
 set -eu
 
-python3 - <<'PY'
-import json
-from pathlib import Path
+work="${PIPELINE_WORKSPACE:-.}"
+in="$work/input"
+out="$work/output"
+mkdir -p "$out"
 
-params = json.loads(Path("input.json").read_text())["params"]
-a = float(params["a"])
-b = float(params["b"])
-c = float(params["c"])
+a=$(cat "$in/a")
+b=$(cat "$in/b")
+c=$(cat "$in/c")
 
-product = a * b
-quotient = product / c
+product=$(awk "BEGIN{print $a*$b}")
+if [ "$c" = "0" ]; then
+  cat > "$work/error.json" <<EOF
+{"code":"DIV_BY_ZERO","message":"c=0 (divisor must not be zero)"}
+EOF
+  echo "ERROR: division by zero (c=0)" >&2
+  exit 1
+fi
+quotient=$(awk "BEGIN{print $a*$b/$c}")
 
-Path("result.txt").write_text(
-    f"a={a} b={b} c={c}\nproduct={product}\nquotient={quotient}\n",
-    encoding="utf-8",
-)
+echo "$product" > "$out/product.json"
+echo "$quotient" > "$out/quotient.json"
 
-Path("output.json").write_text(
-    json.dumps(
-        {
-            "status": "success",
-            "message": f"Computed {a}*{b} and ({a}*{b})/{c}",
-            "outputs": {
-                "product": product,
-                "quotient": quotient,
-            },
-            "artifacts": [{"name": "result.txt", "path": "result.txt"}],
-        }
-    ),
-    encoding="utf-8",
-)
-
-print(f"product={product}")
-print(f"quotient={quotient}")
-PY
+echo "a=$a b=$b c=$c product=$product quotient=$quotient"

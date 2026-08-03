@@ -1,0 +1,5 @@
+name: demo-single
+params: {}
+steps:
+  - name: gen
+    plugin: num-gen@1.0.0

@@ -1,5 +1,7 @@
 """Asynchronous in-process DAG pipeline engine."""
 
+from __future__ import annotations
+
 import logging
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from datetime import datetime
@@ -49,6 +51,7 @@ class PipelineEngine:
         pipeline_id: str,
         definition: PipelineDefinition,
         params: dict[str, Any],
+        uploads: Optional[dict[str, Path]] = None,
     ) -> PipelineRun:
         merged_params = dict(definition.params)
         merged_params.update(params)
@@ -69,7 +72,10 @@ class PipelineEngine:
             params=merged_params,
             tasks=[(name, *steps[name].plugin_reference) for name in ordered],
         )
-        self.dispatcher.submit_run(self._coordinate, run.id, definition, merged_params)
+        self.dispatcher.submit_run(
+            lambda run_id, defn, prms: self._coordinate(run_id, defn, prms, uploads=uploads),
+            run.id, definition, merged_params,
+        )
         return run
 
     def _preflight_required(
@@ -106,7 +112,12 @@ class PipelineEngine:
                 continue
             try:
                 step_manifest = load_manifest(install_path)
-                dep_outputs[step.name] = set(step_manifest.outputs.keys())
+                # v2 contract outputs are list[OutputResource]; v1 legacy has dict
+                outputs = step_manifest.contract.outputs
+                if isinstance(outputs, list):
+                    dep_outputs[step.name] = {o.name for o in outputs}
+                else:
+                    dep_outputs[step.name] = set(outputs.keys())
             except Exception:
                 dep_outputs[step.name] = set()
 
@@ -119,13 +130,25 @@ class PipelineEngine:
                 manifest = load_manifest(install_path)
             except Exception:
                 continue
-            required = {
-                k for k, spec in (manifest.inputs or {}).items()
-                if getattr(spec, "required", False)
-            }
+            # v2 contract inputs is a list[InputResource]; v1 legacy had dict
+            inputs = manifest.contract.inputs
+            if isinstance(inputs, list):
+                required = {r.name for r in inputs if getattr(r, "required", False)}
+            else:
+                required = {
+                    k for k, spec in inputs.items()
+                    if getattr(spec, "required", False)
+                }
             if not required:
                 continue
             for key in required:
+                # v2 contract: if the resource is declared with source=artifact
+                # and `from: <dep>.<output>`, the value will be supplied by the
+                # executor at runtime — skip the params check.
+                if isinstance(inputs, list):
+                    res_obj = next((r for r in inputs if r.name == key), None)
+                    if res_obj is not None and getattr(res_obj, "source", "") in ("artifact", "upload"):
+                        continue
                 value = (step.parameters or {}).get(key)
                 if value is None:
                     missing_steps.setdefault(step.name, []).append(key)
@@ -206,6 +229,7 @@ class PipelineEngine:
         run_id: str,
         definition: PipelineDefinition,
         params: dict[str, Any],
+        uploads: Optional[dict[str, Path]] = None,
     ) -> None:
         now = datetime.utcnow()
         self.runs.set_run_state(run_id, PipelineStatus.RUNNING, started_at=now)
@@ -227,6 +251,7 @@ class PipelineEngine:
                     states=states,
                     results=results,
                     futures=futures,
+                    uploads=uploads,
                 )
                 if not futures:
                     if not progressed:
@@ -295,6 +320,7 @@ class PipelineEngine:
         states: dict[str, TaskStatus],
         results: dict[str, TaskExecutionResult],
         futures: dict[Future, str],
+        uploads: Optional[dict[str, Path]] = None,
     ) -> bool:
         progressed = False
         for name, step in steps.items():
@@ -369,6 +395,7 @@ class PipelineEngine:
                 plugin=plugin,
                 params=resolved_params,
                 dependencies=dependency_results,
+                uploads=uploads,
             )
             futures[future] = name
             progressed = True
@@ -390,15 +417,41 @@ class PipelineEngine:
         results: dict[str, TaskExecutionResult],
         tasks: dict[str, TaskRun],
     ) -> list[dict[str, Any]]:
+        """Return upstream artifacts as a list of dicts in v2 contract format.
+
+        v2 collector produces dicts like {id, name, size, sha256, storage_path}
+        but legacy code expected ArtifactRecord objects. We normalise both.
+        """
+        items: list[dict[str, Any]] = []
+        source = None
         if dependency in results:
-            return [
-                {
-                    "id": artifact.id,
-                    "name": artifact.name,
-                    "path": str(artifact.storage_path),
-                    "size": artifact.size,
-                    "sha256": artifact.sha256,
-                }
-                for artifact in results[dependency].artifacts
-            ]
-        return []
+            source = results[dependency].artifacts
+        elif dependency in tasks:
+            stored = tasks[dependency].artifacts
+            if stored:
+                from mini_pipeline.database.models import Artifact
+                source = list(stored)
+        if not source:
+            return []
+        for artifact in source:
+            if isinstance(artifact, dict):
+                items.append(
+                    {
+                        "id": artifact.get("id", ""),
+                        "name": artifact.get("name", ""),
+                        "path": artifact.get("storage_path") or artifact.get("path", ""),
+                        "size": artifact.get("size", 0),
+                        "sha256": artifact.get("sha256", ""),
+                    }
+                )
+            else:
+                items.append(
+                    {
+                        "id": artifact.id,
+                        "name": artifact.name,
+                        "path": str(artifact.storage_path),
+                        "size": artifact.size,
+                        "sha256": artifact.sha256,
+                    }
+                )
+        return items

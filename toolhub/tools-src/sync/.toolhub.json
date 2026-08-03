@@ -1,0 +1,7 @@
+{
+  "runtime": "python3",
+  "entry": "sync.py",
+  "env": {
+    "SYNC_PROJECT_ROOT": "${IMFL_PRJ_ROOT}"
+  }
+}

@@ -1,0 +1,10 @@
+#!/bin/bash
+# .publishrc — publish.sh 配置
+# 发布方：告诉 publish.sh 制品仓地址和认证信息
+
+TOOLHUB_HUB="${TOOLHUB_HUB:-https://ciartifactory-prd.ap.immotors.com/artifactory/TEST/zz/tools}"
+TOOLHUB_AUTH="${TOOLHUB_AUTH:-user_download:Hsx2022@}"
+
+# 可选：发布专用账号
+# PUBLISH_USER=""
+# PUBLISH_PASS=""

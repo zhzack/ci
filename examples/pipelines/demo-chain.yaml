@@ -1,0 +1,11 @@
+name: demo-chain
+params:
+  gen_value: 0
+steps:
+  - name: gen
+    plugin: num-gen@1.0.0
+  - name: double
+    plugin: num-double@1.0.0
+    depends: [gen]
+    with:
+      value: "${{ steps.gen.outputs.value }}"

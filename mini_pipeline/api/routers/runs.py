@@ -1,10 +1,13 @@
 """Pipeline run, task log, and artifact HTTP endpoints."""
 
+import json
+import shutil
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Optional
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, File, Form, Response, UploadFile, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -96,6 +99,33 @@ def submit_run(
     services: Annotated[Services, Depends(get_services)],
 ) -> RunResponse:
     return RunResponse.from_entity(services.runs.submit(payload.pipeline, payload.params))
+
+
+@router.post("/upload", response_model=RunResponse, status_code=status.HTTP_202_ACCEPTED)
+async def submit_run_with_files(
+    pipeline: Annotated[str, Form()],
+    params_json: Annotated[str, Form()] = "{}",
+    files: Annotated[list[UploadFile], File()] = [],
+    services: Annotated[Services, Depends(get_services)] = None,
+) -> RunResponse:
+    try:
+        params: dict[str, Any] = json.loads(params_json)
+    except json.JSONDecodeError:
+        params = {}
+    uploads: dict[str, Path] = {}
+    for f in files:
+        if not f.filename:
+            continue
+        # field name format: "file_<input_name>" → input_name
+        input_name = f.filename
+        tmp = Path(tempfile.mkdtemp(prefix="mp_upload_")) / input_name
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        with tmp.open("wb") as dest:
+            shutil.copyfileobj(f.file, dest)
+        uploads[input_name] = tmp
+    return RunResponse.from_entity(
+        services.runs.submit_with_uploads(pipeline, params, uploads),
+    )
 
 
 @router.get("/{run_id}", response_model=RunResponse)

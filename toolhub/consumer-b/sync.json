@@ -1,0 +1,8 @@
+{
+  "my_deps": {
+    "type": "folder",
+    "version": "v1.0.0",
+    "pack_dir": "./deps",
+    "extract_dirs": ["./deps"]
+  }
+}

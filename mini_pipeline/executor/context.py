@@ -70,7 +70,13 @@ def resolve_inputs(
 
     for resource in contract.inputs:
         source = resource.source
-        target = dirs["input"] / resource.target
+        rel_target = resource.target or resource.name or "resource"
+        target = dirs["input"] / rel_target
+        if target.exists() and target.is_dir():
+            # A leftover dir from a previous plugin copy; remove so we can
+            # write the file. This guards against plugins that ship a
+            # sample input/ tree inside their bundle.
+            shutil.rmtree(target, ignore_errors=True)
         target.parent.mkdir(parents=True, exist_ok=True)
 
         if source == ResourceSource.PARAMETER:
@@ -83,17 +89,34 @@ def resolve_inputs(
                         json.dumps(value, ensure_ascii=False, indent=2),
                         encoding="utf-8",
                     )
+                else:
+                    # Number/boolean passed but resource declared as string —
+                    # stringify so shell `cat input/<key>` works.
+                    target.write_text(str(value), encoding="utf-8")
                 resolved[resource.name] = value
-            elif resource.type in ("number", "boolean"):
+            elif resource.type in ("number", "integer", "boolean"):
+                # Also persist as a text file so plugins can `cat input/<key>`
                 try:
-                    resolved[resource.name] = float(value) if resource.type == "number" else bool(value)
+                    resolved[resource.name] = float(value) if resource.type == "number" else (
+                        int(value) if resource.type == "integer" else bool(value)
+                    )
                 except (ValueError, TypeError):
                     resolved[resource.name] = resource.default
+                target.write_text(str(value), encoding="utf-8")
             else:
                 # file / directory → no type-level resolution, just note
                 resolved[resource.name] = str(target)
         elif source == ResourceSource.UPLOAD:
+            # Try exact match first, then fall back to any available upload.
             src = uploads.get(resource.name)
+            if src is None or not src.exists():
+                # Fall back: the uploader may have sent the file with a
+                # different field name or filename. Take the first upload
+                # that exists or the one matching the target name.
+                for _name, _path in uploads.items():
+                    if _path.exists():
+                        src = _path
+                        break
             if src is not None and src.exists():
                 if src.is_dir():
                     shutil.copytree(src, target, dirs_exist_ok=True)
@@ -109,13 +132,30 @@ def resolve_inputs(
             from_ref = resource.from_
             if from_ref and "." in from_ref:
                 dep_name, output_name = from_ref.split(".", 1)
-                dep_data = dependencies.get(dep_name, {})
-                artifacts = dep_data.get("artifacts", [])
+                dep_entry = dependencies.get(dep_name) if isinstance(dependencies, dict) else None
+                if dep_entry is None and hasattr(dependencies, dep_name):
+                    dep_entry = getattr(dependencies, dep_name)
+                artifacts: list[Any] = []
+                if dep_entry is not None:
+                    if isinstance(dep_entry, dict):
+                        artifacts = dep_entry.get("artifacts", []) or []
+                    else:
+                        artifacts = getattr(dep_entry, "artifacts", []) or []
                 match = next(
-                    (a for a in artifacts if a.get("name") == output_name), None
+                    (a for a in artifacts if (
+                        (isinstance(a, dict) and a.get("name") == output_name)
+                        or (hasattr(a, "name") and a.name == output_name)
+                    )),
+                    None,
                 )
-                if match and Path(match["path"]).exists():
-                    shutil.copy2(match["path"], target)
+                if match is not None:
+                    src_path = (
+                        match.get("path")
+                        if isinstance(match, dict)
+                        else getattr(match, "path", None)
+                    )
+                    if src_path and Path(str(src_path)).exists():
+                        shutil.copy2(str(src_path), target)
             resolved[resource.name] = str(target)
         elif source == ResourceSource.GENERATED:
             generated = {

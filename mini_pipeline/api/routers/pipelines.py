@@ -160,16 +160,33 @@ def pipeline_params_schema(
 
         fields: list[ParamField] = []
         if manifest is not None:
-            for key, spec in manifest.inputs.items():
-                fields.append(
-                    ParamField(
-                        key=key,
-                        type=spec.type or "string",
-                        required=bool(spec.required),
-                        default=spec.default,
-                        description=spec.description or "",
+            inputs = manifest.contract.inputs
+            if isinstance(inputs, list):
+                for r in inputs:
+                    fields.append(
+                        ParamField(
+                            key=r.name,
+                            type=r.type or "string",
+                            source=r.source or "parameter",
+                            target=r.target or r.name,
+                            required=bool(r.required),
+                            default=r.default,
+                            description=r.description or "",
+                        )
                     )
-                )
+            else:
+                for key, spec in inputs.items():
+                    fields.append(
+                        ParamField(
+                            key=key,
+                            type=spec.type or "string",
+                            source="parameter",
+                            target=key,
+                            required=bool(spec.required),
+                            default=spec.default,
+                            description=spec.description or "",
+                        )
+                    )
         steps.append(
             StepParamSchema(
                 name=step.name,

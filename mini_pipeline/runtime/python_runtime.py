@@ -1,6 +1,7 @@
 """Python runtime: executes a .py file as a plugin."""
 
 import os
+import shutil
 import subprocess
 import sys
 from queue import Empty, Queue
@@ -13,7 +14,11 @@ class PythonRuntime:
     runtime_type = "python"
 
     def execute(self, request: RuntimeRequest) -> RuntimeResult:
-        command = [sys.executable, "-u", str(request.command[0])]
+        # Prefer the system `python3` (likely a newer version) over the venv
+        # interpreter so plugin authors can use modern Python syntax. Fall
+        # back to the current interpreter if `python3` is not on PATH.
+        interpreter = shutil.which("python3") or sys.executable
+        command = [interpreter, "-u", str(request.command[0])]
         return self._run(command, request)
 
     @staticmethod

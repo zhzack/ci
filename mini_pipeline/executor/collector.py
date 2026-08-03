@@ -11,7 +11,7 @@ import hashlib
 import json
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from mini_pipeline.domain.contract import OutputResource, PluginContract, ResourceType
 
@@ -28,6 +28,7 @@ def collect_outputs(
     *,
     run_id: str,
     task_id: str,
+    artifact_store: Optional[Any] = None,
 ) -> dict[str, Any]:
     """Glob the workspace output/ directory and produce artifact records.
 
@@ -59,26 +60,55 @@ def collect_outputs(
     # Collect declared outputs
     if contract.outputs:
         for resource in contract.outputs:
-            pattern = resource.path.lstrip("/")
+            # Patterns in v2 contracts are relative to the workspace root
+            # (e.g. "output/dataset.json"). They must be applied to output_dir
+            # which is already workspace/output, so strip the leading
+            # "output/" if present.
+            pattern = (resource.path or "").lstrip("/")
+            if pattern.startswith("output/"):
+                pattern = pattern[len("output/"):]
+            if not pattern:
+                pattern = resource.name
             matched = list(output_dir.glob(pattern))
+            if not matched:
+                # Final fallback: search by resource.name directly
+                matched = list(output_dir.glob(resource.name))
             for path in matched:
                 if path.is_file():
-                    artifact = _store_artifact(
-                        workspace, path, resource.name, run_id=run_id, task_id=task_id
+                    artifact = _persist_artifact(
+                        workspace, path, resource.name,
+                        run_id=run_id, task_id=task_id,
+                        artifact_store=artifact_store,
                     )
                     if artifact:
                         artifacts.append(artifact)
-                        if resource.type == ResourceType.FILE:
+                        if resource.type == ResourceType.STRING:
+                            outputs[resource.name] = path.read_text(encoding="utf-8").strip()
+                        elif resource.type in (ResourceType.JSON,):
+                            try:
+                                outputs[resource.name] = json.loads(path.read_text(encoding="utf-8"))
+                            except Exception:
+                                outputs[resource.name] = path.read_text(encoding="utf-8")
+                        elif resource.type in (ResourceType.FILE, ResourceType.DIRECTORY):
                             outputs[resource.name] = str(path.relative_to(workspace))
+                        else:
+                            try:
+                                raw = path.read_text(encoding="utf-8").strip()
+                                outputs[resource.name] = float(raw) if resource.type in ("number", "integer") else raw
+                            except Exception:
+                                outputs[resource.name] = path.read_text(encoding="utf-8")
                 elif path.is_dir():
                     for sub in path.rglob("*"):
                         if sub.is_file():
                             entry_name = f"{resource.name}/{sub.relative_to(path)}"
-                            artifact = _store_artifact(
-                                workspace, sub, entry_name, run_id=run_id, task_id=task_id
+                            artifact = _persist_artifact(
+                                workspace, sub, entry_name,
+                                run_id=run_id, task_id=task_id,
+                                artifact_store=artifact_store,
                             )
                             if artifact:
                                 artifacts.append(artifact)
+                    outputs[resource.name] = str(path.relative_to(workspace))
     else:
         # No contract: glob everything under output/
         for path in output_dir.rglob("*"):
@@ -93,15 +123,32 @@ def collect_outputs(
     return {"outputs": outputs, "artifacts": artifacts, "metadata": metadata}
 
 
-def _store_artifact(
+def _persist_artifact(
     workspace: Path,
     source: Path,
     name: str,
     *,
     run_id: str,
     task_id: str,
+    artifact_store: Optional[Any] = None,
 ) -> dict[str, Any] | None:
-    """Copy one file to the managed artifact store and return its record."""
+    """Store one file via the managed artifact store, falling back to a
+    side-channel copy when no store is provided.
+    """
+    if artifact_store is not None:
+        try:
+            record = artifact_store.store(
+                run_id=run_id, task_id=task_id, name=name, source=source
+            )
+            return {
+                "id": record.id,
+                "name": record.name,
+                "size": record.size,
+                "sha256": record.sha256,
+                "storage_path": str(record.storage_path),
+            }
+        except Exception:
+            pass
     artifact_id = str(uuid.uuid4())
     dest_dir = Path("data/artifacts") / run_id / task_id / artifact_id
     dest_dir.mkdir(parents=True, exist_ok=True)

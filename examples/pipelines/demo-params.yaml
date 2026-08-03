@@ -1,0 +1,8 @@
+name: demo-params
+params:
+  seed: 42
+steps:
+  - name: calc
+    plugin: num-double@1.0.0
+    with:
+      value: "${{ params.seed }}"

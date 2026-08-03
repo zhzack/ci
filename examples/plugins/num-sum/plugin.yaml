@@ -1,0 +1,17 @@
+name: num-sum
+version: 1.0.0
+description: Sum numbers collected from upstream steps via all.deps.outputs.
+runtime:
+  type: shell
+  entry: run.sh
+contract:
+  inputs:
+    - name: values
+      type: list
+      source: parameter
+      required: true
+      description: Numbers to sum (use ${{ all.deps.outputs.result }})
+  outputs:
+    - name: sum
+      type: number
+      path: output/sum.json

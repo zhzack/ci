@@ -1,44 +1,22 @@
 #!/bin/sh
 set -eu
 
-python3 - <<'PY'
-import json
-import random
-from pathlib import Path
+work="${PIPELINE_WORKSPACE:-.}"
+in="$work/input"
+out="$work/output"
+mkdir -p "$out"
 
-payload = json.loads(Path("input.json").read_text())
-params = payload.get("params", {})
+greeting=$(cat "$in/greeting")
+seed=$(cat "$in/seed" 2>/dev/null || echo "42")
 
-greeting = params.get("greeting", "Hello")
-seed = int(params.get("seed", 42))
+phrases="Pipeline is humming along.|Your task landed safely on disk.|Artifacts uploaded to the managed store.|Logs are streaming in real time.|Mini Pipeline says hi from the shell runtime."
 
-random.seed(seed)
-phrases = [
-    "Pipeline is humming along.",
-    "Your task landed safely on disk.",
-    "Artifacts uploaded to the managed store.",
-    "Logs are streaming in real time.",
-    "Mini Pipeline says hi from the shell runtime.",
-]
-tail = random.choice(phrases)
+# Pick a phrase deterministically based on seed
+phrase=$(echo "$phrases" | tr '|' '\n' | awk -v s="$seed" 'NR == (s % 5) + 1')
 
-message = f"{greeting}! {tail}"
-Path("greeting.txt").write_text(message + "\n", encoding="utf-8")
-word_count = len(message.split())
+message="$greeting! $phrase"
+echo "$message" > "$out/message.txt"
+words=$(echo "$message" | wc -w)
+echo "$words" > "$out/word_count.json"
 
-Path("output.json").write_text(
-    json.dumps(
-        {
-            "status": "success",
-            "message": "Greeting generated",
-            "outputs": {"message": message, "word_count": word_count},
-            "artifacts": [{"name": "greeting.txt", "path": "greeting.txt"}],
-        },
-        ensure_ascii=False,
-    ),
-    encoding="utf-8",
-)
-
-print(message)
-print(f"words={word_count}")
-PY
+echo "$message"

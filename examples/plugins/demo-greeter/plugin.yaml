@@ -1,23 +1,26 @@
 name: demo-greeter
 version: 1.0.0
-description: Generate a random greeting and emit it as a text artifact
+description: Generate a random greeting and save it as an artifact.
 runtime:
   type: shell
-entry: run.sh
-inputs:
-  greeting:
-    type: string
-    required: true
-    description: Base greeting word
-  seed:
-    type: integer
-    required: false
-    default: 42
-    description: RNG seed for reproducible randomness
-outputs:
-  message:
-    type: string
-    description: Final greeting line
-  word_count:
-    type: integer
-    description: Number of words in the final line
+  entry: run.sh
+contract:
+  inputs:
+    - name: greeting
+      type: string
+      source: parameter
+      required: true
+      target: greeting
+    - name: seed
+      type: integer
+      source: parameter
+      required: false
+      default: 42
+      target: seed
+  outputs:
+    - name: message
+      type: string
+      path: output/message.txt
+    - name: word_count
+      type: integer
+      path: output/word_count.json

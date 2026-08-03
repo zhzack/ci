@@ -1,48 +1,51 @@
 name: report-builder
 version: 1.0.0
-description: Build a formatted Markdown report from upstream statistics and a title
+description: Build a Markdown report from upstream statistics (v2 contract).
 runtime:
   type: shell
-entry: run.sh
-inputs:
-  title:
-    type: string
-    required: true
-    description: Report heading
-  subtitle:
-    type: string
-    required: false
-    default: ""
-    description: Optional sub-heading
-  count:
-    type: integer
-    required: true
-    description: Number of samples (auto-wires from stats-collector)
-  sum:
-    type: number
-    required: true
-    description: Sum (auto-wires from stats-collector)
-  avg:
-    type: number
-    required: true
-    description: Mean (auto-wires from stats-collector)
-  max:
-    type: number
-    required: true
-    description: Maximum value (auto-wires from stats-collector)
-  min:
-    type: number
-    required: true
-    description: Minimum value (auto-wires from stats-collector)
-  format:
-    type: string
-    required: false
-    default: markdown
-    description: Output format (markdown or text)
-outputs:
-  report:
-    type: string
-    description: Full report as text
-  word_count:
-    type: integer
-    description: Number of words in the report
+  entry: run.sh
+contract:
+  inputs:
+    - name: title
+      type: string
+      source: parameter
+      required: true
+      target: title
+    - name: subtitle
+      type: string
+      source: parameter
+      required: false
+      default: ""
+      target: subtitle
+    - name: count
+      type: number
+      source: parameter
+      required: true
+      target: count
+    - name: sum
+      type: number
+      source: parameter
+      required: true
+      target: sum
+    - name: avg
+      type: number
+      source: parameter
+      required: true
+      target: avg
+    - name: max
+      type: number
+      source: parameter
+      required: true
+      target: max
+    - name: min
+      type: number
+      source: parameter
+      required: true
+      target: min
+  outputs:
+    - name: report
+      type: string
+      path: output/report.md
+    - name: word_count
+      type: integer
+      path: output/word_count.json

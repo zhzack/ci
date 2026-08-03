@@ -33,6 +33,20 @@ class RunService:
             params=params,
         )
 
+    def submit_with_uploads(
+        self,
+        pipeline_identifier: str,
+        params: dict[str, Any],
+        uploads: dict[str, Path],
+    ) -> PipelineRun:
+        entity, definition = self.pipelines.get_parsed(pipeline_identifier)
+        return self.engine.submit(
+            pipeline_id=entity.id,
+            definition=definition,
+            params=params,
+            uploads=uploads,
+        )
+
     def get(self, run_id: str) -> PipelineRun:
         return self.repository.get(run_id)
 

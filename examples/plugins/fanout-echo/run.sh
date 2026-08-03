@@ -1,33 +1,21 @@
 #!/bin/sh
 set -eu
 
-python3 - <<'PY'
-import json
-from pathlib import Path
+work="${PIPELINE_WORKSPACE:-.}"
+in="$work/input"
+out="$work/output"
+mkdir -p "$out"
 
-params = json.loads(Path("input.json").read_text())["params"]
-message = params.get("message", "")
-tag = params.get("tag", "log")
+message=$(cat "$in/message")
+tag=$(cat "$in/tag" 2>/dev/null || echo "log")
+final="[$tag] $message"
 
-final = f"[{tag}] {message}"
-Path("echo.txt").write_text(final + "\n", encoding="utf-8")
+echo "$final" > "$out/echo.txt"
+echo "$final" | wc -c > "$out/length.json"
 
-Path("output.json").write_text(
-    json.dumps(
-        {
-            "status": "success",
-            "message": "Echo produced",
-            "outputs": {
-                "message": final,
-                "length": len(final),
-            },
-            "artifacts": [{"name": "echo.txt", "path": "echo.txt"}],
-        },
-        ensure_ascii=False,
-    ),
-    encoding="utf-8",
-)
+# Optional metadata
+cat > "$out/metadata.json" <<EOF
+{"tag":"$tag","length":${#final}}
+EOF
 
-print(final)
-print(f"length={len(final)}")
-PY
+printf '%s\n' "$final"

@@ -1,0 +1,23 @@
+name: num-double
+version: 1.0.0
+description: Multiply a number by an optional factor (default 2).
+runtime:
+  type: shell
+  entry: run.sh
+contract:
+  inputs:
+    - name: value
+      type: number
+      source: parameter
+      required: true
+      description: The number to multiply
+    - name: factor
+      type: number
+      source: parameter
+      required: false
+      default: 2
+      description: Multiplier (default 2; you can omit this)
+  outputs:
+    - name: result
+      type: number
+      path: output/result.json

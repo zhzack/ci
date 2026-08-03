@@ -1,0 +1,8 @@
+{
+  "calib": {
+    "type": "folder",
+    "version": "v1.0.0",
+    "pack_dir": "./calib",
+    "extract_dirs": ["./calib"]
+  }
+}
