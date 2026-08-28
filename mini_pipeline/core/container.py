@@ -20,6 +20,7 @@ from mini_pipeline.scheduler.service import RunService
 from mini_pipeline.source.git import GitSource
 from mini_pipeline.source.http import HttpSource
 from mini_pipeline.source.registry import SourceRegistry
+from mini_pipeline.source.toolhub import ToolhubSource
 from mini_pipeline.source.upload import UploadSource
 
 
@@ -50,6 +51,7 @@ class Services:
         sources = SourceRegistry()
         sources.register(GitSource())
         sources.register(HttpSource(settings.sources))
+        sources.register(ToolhubSource(settings.sources))
         sources.register(upload_source)
 
         plugins = PluginService(

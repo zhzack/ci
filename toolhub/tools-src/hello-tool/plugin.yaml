@@ -1,0 +1,11 @@
+name: hello-tool
+version: 1.0.0
+description: 演示用 bash 工具
+runtime:
+  type: shell
+  entry: run.sh
+toolhub:
+  env: {}
+contract:
+  inputs: []
+  outputs: []

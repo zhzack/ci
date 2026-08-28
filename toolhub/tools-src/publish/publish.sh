@@ -107,41 +107,60 @@ cmd_publish() {
         exit 1
     fi
 
-    python3 -c "
-import json,sys,os
+    # 更新 index.json：读取 plugin.yaml 元信息，合并进注册表
+    export TH_SRC_DIR="$src_dir" TH_TOOL="$tool" TH_CHANNEL="$channel" TH_VERSION="$version" TH_ARTIFACT_PATH="$artifact_path" TH_PARSER_DIR="$SCRIPT_DIR"
+    python3 - "$tmp_index" << 'PYEOF'
+import json, sys, os, re
 
-with open('$tmp_index') as f:
+# 复用同目录下的极简 plugin.yaml 解析器（从 TH_PARSER_DIR 定位）
+sys.path.insert(0, os.environ['TH_PARSER_DIR'])
+from parse_yaml import parse_plugin_yaml
+
+tmp_index = sys.argv[1]
+with open(tmp_index) as f:
     idx = json.load(f)
 
-# 读取工具元信息 (.toolhub.json)
-toolhub_conf = os.path.join('${src_dir}', '.toolhub.json')
-meta = {}
-if os.path.isfile(toolhub_conf):
-    with open(toolhub_conf) as f:
-        meta = json.load(f)
+SRC_DIR = os.environ.get('TH_SRC_DIR', '')
+TOOL = os.environ.get('TH_TOOL', '')
+CHANNEL = os.environ.get('TH_CHANNEL', '')
+VERSION = os.environ.get('TH_VERSION', '')
+ARTIFACT_PATH = os.environ.get('TH_ARTIFACT_PATH', '')
 
-t = idx.setdefault('tools',{}).setdefault('${tool}',{})
-# 合并元信息（保留已有的，新增的覆盖）
-t.update({k:v for k,v in meta.items() if k not in ('channels',)})
-t.setdefault('name', '${tool}')
+meta = parse_plugin_yaml(os.path.join(SRC_DIR, 'plugin.yaml'))
+
+# 将嵌套的 plugin.yaml 扁平化为 toolhub.sh 需要的 index.json 结构
+t = idx.setdefault('tools', {}).setdefault(TOOL, {})
+if meta.get('description') is not None:
+    t['description'] = meta['description']
+if isinstance(meta.get('runtime'), dict):
+    if meta['runtime'].get('type'):
+        t['runtime'] = meta['runtime']['type']
+    if meta['runtime'].get('entry'):
+        t['entry'] = meta['runtime']['entry']
+if isinstance(meta.get('toolhub'), dict) and isinstance(meta['toolhub'].get('env'), dict):
+    t['env'] = meta['toolhub']['env']
+t.setdefault('name', TOOL)
 t.setdefault('type', 'tar')
+# 版本号去掉前导 v，保持与 plugin.yaml 一致
+version_norm = VERSION[1:] if VERSION.startswith('v') else VERSION
+if t.get('version', '') != version_norm:
+    t['version'] = version_norm
 
-ch = t.setdefault('channels',{}).setdefault('${channel}',[])
+ch = t.setdefault('channels', {}).setdefault(CHANNEL, [])
+ch = [e for e in ch if e['version'] != VERSION]
+ch.insert(0, {'version': VERSION, 'artifact': ARTIFACT_PATH})
+t['channels'][CHANNEL] = ch
 
-# 去重：如果同版本号已存在，先移除
-ch = [e for e in ch if e['version'] != '${version}']
-# 插入到列表头部（最新的在前）
-ch.insert(0, {'version': '${version}', 'artifact': '${artifact_path}'})
-t['channels']['${channel}'] = ch
-
-with open('$tmp_index', 'w') as f:
+with open(tmp_index, 'w') as f:
     json.dump(idx, f, indent=2, ensure_ascii=False)
     f.write('\n')
-" || {
+PYEOF
+    RET=$?
+    if [ "$?" -ne 0 ]; then
         echo "ERROR: failed to update index.json" >&2
         rm -f "$tmp_index"
         exit 1
-    }
+    fi
 
     _curl_auth -T "$tmp_index" "$index_url" || {
         echo "ERROR: failed to upload index.json" >&2

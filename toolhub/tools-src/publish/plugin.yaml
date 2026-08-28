@@ -1,0 +1,11 @@
+name: publish
+version: 1.0.0
+description: 发布工具到制品仓（打包 tar.gz 并更新 index.json 注册表）
+runtime:
+  type: shell
+  entry: publish.sh
+toolhub:
+  env: {}
+contract:
+  inputs: []
+  outputs: []

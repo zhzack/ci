@@ -1,0 +1,12 @@
+name: sync
+version: 1.0.1
+description: 在同事之间同步任意文件夹（基于 Artifactory）
+runtime:
+  type: python
+  entry: sync.py
+toolhub:
+  env:
+    SYNC_PROJECT_ROOT: "${IMFL_PRJ_ROOT}"
+contract:
+  inputs: []
+  outputs: []

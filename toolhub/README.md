@@ -192,32 +192,41 @@ publish.sh 本身也是一个工具（名为 `publish`），也能通过 toolhub
 
 ## 如何添加新工具
 
-每个工具源码目录下需要一个 `.toolhub.json` 描述文件 + 入口脚本：
+每个工具源码目录下需要一个 `plugin.yaml` 描述文件 + 入口脚本：
 
 ```
 tools-src/<工具名>/
-├── .toolhub.json     ← 元信息：runtime, entry, env
+├── plugin.yaml        ← 描述文件（与 Mini Pipeline 插件共用同一格式）
 ├── <入口文件>          ← 入口脚本 (sync.py, run.sh, ...)
 └── ...任意源码文件
 ```
 
-`.toolhub.json` 格式：
+`plugin.yaml` 格式（兼容 Mini Pipeline 插件契约）：
 
-```json
-{
-  "runtime": "python3",
-  "entry": "sync.py",
-  "env": {
-    "MY_VAR": "${IMFL_PRJ_ROOT}/config"
-  }
-}
+```yaml
+name: my-tool
+version: 1.0.0
+description: 一句话说明
+runtime:
+  type: shell          # shell | python | node | executable
+  entry: run.sh        # 入口脚本
+toolhub:
+  env:                 # toolhub 专用：运行时注入的环境变量
+    MY_VAR: "${IMFL_PRJ_ROOT}/config"
+contract:              # 可选：Mini Pipeline 插件契约（toolhub 会忽略）
+  inputs: []
+  outputs: []
 ```
 
-| 字段 | 说明 | 可选值 |
-|------|------|--------|
-| `runtime` | 执行器 | `"python3"`, `"bash"`, `""` (原生二进制) |
-| `entry` | 入口文件相对于源码根目录的路径 | `"main.py"`, `"src/cli.sh"` |
-| `env` | 注入的环境变量，`${IMFL_PRJ_ROOT}` 替换为项目根路径 | `{}` |
+| 字段 | 说明 |
+|------|------|
+| `runtime.type` | 执行器（与 Mini Pipeline 一致）：`shell` → bash、`python` → python3、`node`、`executable` |
+| `runtime.entry` | 入口文件相对于源码根目录的路径 |
+| `toolhub.env` | 注入的环境变量，`${IMFL_PRJ_ROOT}` 替换为项目根路径（toolhub 专用，Mini Pipeline 忽略） |
+| `contract` | Mini Pipeline 插件契约，可选；toolhub 运行时不读取 |
+
+> 因为 Mini Pipeline 的 manifest 允许额外字段（`extra="allow"`），同一份 `plugin.yaml`
+> 可以直接作为 Mini Pipeline 插件注册，也可以作为 toolhub 工具发布。
 
 然后发布：`./toolhub.sh publish <工具名> stable v1.0.0`
 
@@ -288,7 +297,7 @@ cd tools-src/
 
 **发生了什么**：
 1. toolhub 从制品仓下载 `publish.sh`（不再需要本地 fallback）
-2. publish.sh 读取 `tools-src/sync/.toolhub.json` → 得到 `runtime: python3`, `entry: sync.py`
+2. publish.sh 读取 `tools-src/sync/plugin.yaml` → 得到 `runtime.type: python`, `entry: sync.py`
 3. 打包 `tools-src/sync/` → PUT Artifactory
 4. 更新 index.json，写入 sync 的完整元信息 + stable 通道版本
 
@@ -311,7 +320,7 @@ cd tools-src/
 [publish] done: hello-tool stable v1.0.0
 ```
 
-**发生了什么**：与场景 2 相同。runtime=python3 还是 runtime=bash 对 publish 流程无区别，`toolhub.sh` 运行时会根据 `.toolhub.json` 的 `runtime` 字段选择执行器。
+**发生了什么**：与场景 2 相同。runtime.type=python 还是 runtime.type=shell 对 publish 流程无区别，`toolhub.sh` 运行时会根据 `plugin.yaml` 的 `runtime.type` 字段选择执行器。
 
 ---
 

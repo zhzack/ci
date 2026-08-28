@@ -1,0 +1,11 @@
+name: toolhub
+version: 1.0.0
+description: toolhub 自更新包
+runtime:
+  type: shell
+  entry: toolhub.sh
+toolhub:
+  env: {}
+contract:
+  inputs: []
+  outputs: []
