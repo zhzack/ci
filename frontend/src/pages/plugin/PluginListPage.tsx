@@ -1,5 +1,5 @@
 import React from "react";
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { Button, Space, Table, Tag, message as antdMessage } from 'antd';
 import type { TableColumnsType } from 'antd';
 import { DeleteOutlined, EyeOutlined, ReloadOutlined } from '@ant-design/icons';
@@ -17,11 +17,17 @@ import { useDebounce } from '@/hooks/useDebounce';
 import { deletePlugin, listPlugins } from '@/api/plugin';
 import type { PluginVersion } from '@/types/plugin';
 
+const PAGE_SIZE = 10;
+
 export default function PluginListPage(): React.JSX.Element {
   const navigate = useNavigate();
   const [keyword, setKeyword] = useState('');
+  const [page, setPage] = useState(1);
   const debounced = useDebounce(keyword, 300);
-  const { data, isLoading, error, refetch } = useApiQuery(['plugins'], listPlugins);
+  const { data, isLoading, error, refetch } = useApiQuery(
+    ['plugins', { page, search: debounced }],
+    () => listPlugins({ page, page_size: PAGE_SIZE, search: debounced || undefined }),
+  );
 
   const deleteMutation = useApiMutation<unknown, { name: string; version: string }>(
     {
@@ -29,22 +35,6 @@ export default function PluginListPage(): React.JSX.Element {
     },
     [['plugins']],
   );
-
-  const filtered = useMemo(() => {
-    if (!data) {
-      return [];
-    }
-    if (!debounced.trim()) {
-      return data;
-    }
-    const needle = debounced.toLowerCase();
-    return data.filter(
-      (item) =>
-        item.name.toLowerCase().includes(needle) ||
-        item.version.toLowerCase().includes(needle) ||
-        item.source_type.toLowerCase().includes(needle),
-    );
-  }, [data, debounced]);
 
   const columns: TableColumnsType<PluginVersion> = [
     { title: 'Name', dataIndex: 'name' },
@@ -96,6 +86,8 @@ export default function PluginListPage(): React.JSX.Element {
     },
   ];
 
+  const items = data?.items ?? [];
+
   return (
     <>
       <PageHeader
@@ -111,7 +103,16 @@ export default function PluginListPage(): React.JSX.Element {
       />
       <div className="app-content-card">
         <TableToolbar
-          left={<SearchBar value={keyword} onChange={setKeyword} placeholder="Search by name, version, source" />}
+          left={
+            <SearchBar
+              value={keyword}
+              onChange={(value) => {
+                setKeyword(value);
+                setPage(1);
+              }}
+              placeholder="Search by name"
+            />
+          }
           right={
             <Button icon={<ReloadOutlined />} onClick={() => refetch()}>
               Refresh
@@ -122,10 +123,22 @@ export default function PluginListPage(): React.JSX.Element {
           <Loading rows={6} />
         ) : error ? (
           <ErrorAlert error={error} onRetry={() => refetch()} />
-        ) : filtered.length === 0 ? (
+        ) : items.length === 0 ? (
           <EmptyState description="No plugins registered yet" />
         ) : (
-          <Table rowKey="id" columns={columns} dataSource={filtered} pagination={{ pageSize: 10 }} />
+          <Table
+            rowKey="id"
+            columns={columns}
+            dataSource={items}
+            pagination={{
+              current: page,
+              pageSize: PAGE_SIZE,
+              total: data?.total ?? 0,
+              showSizeChanger: false,
+              showTotal: (total) => `${total} plugin version(s)`,
+              onChange: (next) => setPage(next),
+            }}
+          />
         )}
       </div>
     </>

@@ -38,7 +38,10 @@ outputs:
 
 ECHO_SCRIPT = """#!/bin/sh
 set -eu
-python3 - <<'PY'
+for c in python3 python; do
+  command -v $c >/dev/null 2>&1 && $c -c 'import sys' >/dev/null 2>&1 && PY_BIN=$c && break
+done
+$PY_BIN - <<'PY'
 import json
 from pathlib import Path
 p = json.loads(Path('input.json').read_text())['params']
@@ -68,11 +71,15 @@ outputs:
 
 STATS_SCRIPT = """#!/bin/sh
 set -eu
-python3 - <<'PY'
+for c in python3 python; do
+  command -v $c >/dev/null 2>&1 && $c -c 'import sys' >/dev/null 2>&1 && PY_BIN=$c && break
+done
+$PY_BIN - <<'PY'
 import json, math, sys
 from pathlib import Path
 raw = json.loads(Path('input.json').read_text())
-values = [float(v) for v in (raw['params'].get('numbers') or []) if isinstance(v,(int,float)) or (isinstance(v,str) and v.replace('.','',1).isdigit())]
+values = [float(v) for v in (raw['params'].get('numbers') or [])
+          if isinstance(v,(int,float)) or (isinstance(v,str) and v.replace('.','',1).isdigit())]
 if not values: print("ERROR:empty",file=sys.stderr); sys.exit(1)
 n=len(values); total=sum(values); mean=total/n
 stats = {"count":n,"sum":total,"avg":mean,"min":min(values),"max":max(values)}
@@ -101,13 +108,17 @@ outputs:
 
 REPORT_SCRIPT = """#!/bin/sh
 set -eu
-python3 - <<'PY'
+for c in python3 python; do
+  command -v $c >/dev/null 2>&1 && $c -c 'import sys' >/dev/null 2>&1 && PY_BIN=$c && break
+done
+$PY_BIN - <<'PY'
 import json, sys
 from pathlib import Path
 p = json.loads(Path('input.json').read_text())['params']
 missing = [k for k in ['title','count','sum','avg','max','min'] if k not in p]
 if missing:
-    Path('output.json').write_text(json.dumps({"status":"failed","message":"missing "+",".join(missing)}))
+    Path('output.json').write_text(json.dumps(
+        {"status":"failed","message":"missing "+",".join(missing)}))
     sys.exit(1)
 title=p['title']; sub=p.get('subtitle','')
 lines = [f"# {title}"]
@@ -198,7 +209,8 @@ steps:
     # Stats collected from fan-in
     stats = by_name["stats"]
     assert stats["outputs"]["count"] == 3
-    assert stats["outputs"]["sum"] == by_name["echo-a"]["outputs"]["length"] + by_name["echo-b"]["outputs"]["length"] + by_name["echo-c"]["outputs"]["length"]
+    echo_len = sum(by_name[f"echo-{s}"]["outputs"]["length"] for s in ("a", "b", "c"))
+    assert stats["outputs"]["sum"] == echo_len
     assert stats["outputs"]["max"] >= stats["outputs"]["min"]
     # Report built from stats
     report = by_name["report"]

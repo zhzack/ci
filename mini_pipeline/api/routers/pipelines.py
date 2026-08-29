@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Request, Response, status
 from pydantic import BaseModel, Field
 
 from mini_pipeline.api.dependencies import get_services
+from mini_pipeline.api.pagination import Page, PageParams
 from mini_pipeline.core.container import Services
 
 router = APIRouter(prefix="/pipelines", tags=["pipelines"])
@@ -53,6 +54,8 @@ class StepParamSchema(BaseModel):
 class ParamField(BaseModel):
     key: str
     type: str
+    source: str = "parameter"
+    target: str = ""
     required: bool = False
     default: Optional[Any] = None
     description: str = ""
@@ -85,11 +88,18 @@ async def upload_pipeline_yaml(
     return PipelineResponse.from_entity(services.pipelines.create(definition))
 
 
-@router.get("", response_model=list[PipelineResponse])
+@router.get("", response_model=Page[PipelineResponse])
 def list_pipelines(
     services: Annotated[Services, Depends(get_services)],
-) -> list[PipelineResponse]:
-    return [PipelineResponse.from_entity(item) for item in services.pipelines.list()]
+    page_params: Annotated[PageParams, Depends()],
+) -> Page[PipelineResponse]:
+    items = services.pipeline_repository.list_paged(
+        offset=page_params.offset, limit=page_params.page_size
+    )
+    total = services.pipeline_repository.count_pipelines()
+    return page_params.envelope(
+        [PipelineResponse.from_entity(item) for item in items], total
+    )
 
 
 @router.get("/{identifier}", response_class=Response)

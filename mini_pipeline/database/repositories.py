@@ -1,8 +1,10 @@
 """Persistence repositories. Each method owns its database session."""
 
+from __future__ import annotations
+
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -14,7 +16,6 @@ from mini_pipeline.database.models import (
     PipelineRun,
     Plugin,
     PluginVersion,
-    RunNode,
     TaskRun,
 )
 from mini_pipeline.database.session import Database
@@ -33,8 +34,8 @@ class PluginRepository:
         version: str,
         description: str,
         source_type: str,
-        source_url: Optional[str],
-        source_revision: Optional[str],
+        source_url: str | None,
+        source_revision: str | None,
         install_path: str,
         runtime_type: str,
         entry: str,
@@ -106,6 +107,33 @@ class PluginRepository:
                 session.expunge(item)
             return items
 
+    def list_versions_paged(
+        self,
+        *,
+        offset: int = 0,
+        limit: int = 50,
+        search: str | None = None,
+    ) -> list[PluginVersion]:
+        with self.database.session() as session:
+            query = select(PluginVersion).order_by(
+                PluginVersion.name, PluginVersion.created_at
+            )
+            if search:
+                query = query.where(PluginVersion.name.contains(search))
+            items = list(session.scalars(query.offset(offset).limit(limit)))
+            for item in items:
+                session.expunge(item)
+            return items
+
+    def count_versions(self, *, search: str | None = None) -> int:
+        with self.database.session() as session:
+            from sqlalchemy import func
+
+            query = select(func.count(PluginVersion.id))
+            if search:
+                query = query.where(PluginVersion.name.contains(search))
+            return int(session.scalar(query) or 0)
+
     def delete_version(self, name: str, version: str) -> None:
         with self.database.session() as session:
             item = session.scalar(
@@ -154,6 +182,26 @@ class PipelineRepository:
                 session.expunge(pipeline)
             return pipelines
 
+    def list_paged(self, *, offset: int = 0, limit: int = 50) -> list[PipelineDefinition]:
+        with self.database.session() as session:
+            items = list(
+                session.scalars(
+                    select(PipelineDefinition)
+                    .order_by(PipelineDefinition.name)
+                    .offset(offset)
+                    .limit(limit)
+                )
+            )
+            for pipeline in items:
+                session.expunge(pipeline)
+            return items
+
+    def count_pipelines(self) -> int:
+        with self.database.session() as session:
+            from sqlalchemy import func
+
+            return int(session.scalar(select(func.count(PipelineDefinition.id))) or 0)
+
     def update(self, identifier: str, *, definition: str) -> PipelineDefinition:
         with self.database.session() as session:
             pipeline = session.scalar(
@@ -193,8 +241,8 @@ class RunRepository:
         pipeline_name: str,
         params: dict[str, Any],
         tasks: Sequence[tuple[str, str, str]],
-        parent_run_id: Optional[str] = None,
-        branched_from_step: Optional[str] = None,
+        parent_run_id: str | None = None,
+        branched_from_step: str | None = None,
     ) -> PipelineRun:
         try:
             with self.database.session() as session:
@@ -261,9 +309,9 @@ class RunRepository:
         run_id: str,
         status: PipelineStatus,
         *,
-        message: Optional[str] = None,
-        started_at: Optional[datetime] = None,
-        finished_at: Optional[datetime] = None,
+        message: str | None = None,
+        started_at: datetime | None = None,
+        finished_at: datetime | None = None,
     ) -> None:
         with self.database.session() as session:
             run = session.get(PipelineRun, run_id)
@@ -282,12 +330,12 @@ class RunRepository:
         task_id: str,
         status: TaskStatus,
         *,
-        message: Optional[str] = None,
-        outputs: Optional[dict[str, Any]] = None,
-        log_path: Optional[str] = None,
-        started_at: Optional[datetime] = None,
-        finished_at: Optional[datetime] = None,
-        node_id: Optional[str] = None,
+        message: str | None = None,
+        outputs: dict[str, Any] | None = None,
+        log_path: str | None = None,
+        started_at: datetime | None = None,
+        finished_at: datetime | None = None,
+        attempt: int | None = None,
     ) -> None:
         with self.database.session() as session:
             task = session.get(TaskRun, task_id)
@@ -304,8 +352,8 @@ class RunRepository:
                 task.started_at = started_at
             if finished_at is not None:
                 task.finished_at = finished_at
-            if node_id is not None:
-                task.node_id = node_id
+            if attempt is not None:
+                task.attempt = attempt
 
     def add_artifact(
         self,
@@ -341,18 +389,36 @@ class RunRepository:
             session.expunge(artifact)
             return artifact
 
-    def list_artifacts(self) -> list[Artifact]:
+    def delete_artifact(self, artifact_id: str) -> None:
         with self.database.session() as session:
-            rows = list(
-                session.scalars(
-                    select(Artifact)
-                    .join(TaskRun, Artifact.task_id == TaskRun.id)
-                    .order_by(Artifact.created_at.desc())
-                )
+            artifact = session.get(Artifact, artifact_id)
+            if artifact is not None:
+                session.delete(artifact)
+
+    def list_artifacts(
+        self, *, offset: int = 0, limit: int = 50, run_id: str | None = None
+    ) -> list[Artifact]:
+        with self.database.session() as session:
+            query = (
+                select(Artifact)
+                .join(TaskRun, Artifact.task_id == TaskRun.id)
+                .order_by(Artifact.created_at.desc())
             )
+            if run_id:
+                query = query.where(Artifact.run_id == run_id)
+            rows = list(session.scalars(query.offset(offset).limit(limit)))
             for row in rows:
                 session.expunge(row)
             return rows
+
+    def count_artifacts(self, *, run_id: str | None = None) -> int:
+        with self.database.session() as session:
+            from sqlalchemy import func
+
+            query = select(func.count(Artifact.id))
+            if run_id:
+                query = query.where(Artifact.run_id == run_id)
+            return int(session.scalar(query) or 0)
 
     def count_active_runs(self) -> int:
         with self.database.session() as session:
@@ -411,73 +477,74 @@ class RunRepository:
                 session.expunge(row)
             return rows
 
-
-class RunNodeRepository:
-    def __init__(self, database: Database) -> None:
-        self.database = database
-
-    def find_by_hash(self, hash_value: str) -> Optional[RunNode]:
-        with self.database.session() as session:
-            node = session.scalar(select(RunNode).where(RunNode.hash == hash_value))
-            if node is None:
-                return None
-            session.expunge(node)
-            return node
-
-    def create(
+    def list_runs(
         self,
         *,
-        pipeline_definition_id: str,
-        step_name: str,
-        plugin_name: str,
-        plugin_version: str,
-        hash_value: str,
-        resolved_params: dict[str, Any],
-        inputs_snapshot: dict[str, Any],
-    ) -> RunNode:
+        offset: int = 0,
+        limit: int = 50,
+        status: str | None = None,
+        pipeline_name: str | None = None,
+    ) -> list[PipelineRun]:
         with self.database.session() as session:
-            node = RunNode(
-                pipeline_definition_id=pipeline_definition_id,
-                step_name=step_name,
-                plugin_name=plugin_name,
-                plugin_version=plugin_version,
-                hash=hash_value,
-                resolved_params=resolved_params,
-                inputs_snapshot=inputs_snapshot,
-                outputs={},
-                status=TaskStatus.READY.value,
+            query = (
+                select(PipelineRun)
+                .options(selectinload(PipelineRun.tasks).selectinload(TaskRun.artifacts))
+                .order_by(PipelineRun.created_at.desc())
             )
-            session.add(node)
-            session.flush()
-            session.expunge(node)
-            return node
+            if status:
+                query = query.where(PipelineRun.status == status)
+            if pipeline_name:
+                query = query.where(PipelineRun.pipeline_name == pipeline_name)
+            rows = list(session.scalars(query.offset(offset).limit(limit)))
+            for row in rows:
+                session.expunge(row)
+            return rows
 
-    def update_result(
+    def count_runs(
         self,
-        node_id: str,
         *,
-        outputs: dict[str, Any],
-        log_path: Optional[str],
-        status: str,
-        message: Optional[str],
-        started_at: Optional[datetime],
-        finished_at: Optional[datetime],
-    ) -> None:
+        status: str | None = None,
+        pipeline_name: str | None = None,
+    ) -> int:
         with self.database.session() as session:
-            node = session.get(RunNode, node_id)
-            if node is None:
-                return
-            node.outputs = outputs
-            node.log_path = log_path
-            node.status = status
-            node.message = message
-            node.started_at = started_at
-            node.finished_at = finished_at
+            from sqlalchemy import func
 
-    def get(self, node_id: str) -> RunNode:
+            query = select(func.count(PipelineRun.id))
+            if status:
+                query = query.where(PipelineRun.status == status)
+            if pipeline_name:
+                query = query.where(PipelineRun.pipeline_name == pipeline_name)
+            return int(session.scalar(query) or 0)
+
+    def reap_orphan_runs(self, *, message: str) -> int:
+        """Fail every run still pending/running (crash recovery on startup).
+
+        Returns the number of runs reaped.
+        """
+        from sqlalchemy import update
+
+        active = [PipelineStatus.PENDING.value, PipelineStatus.RUNNING.value]
+        unfinished_tasks = [
+            TaskStatus.PENDING.value,
+            TaskStatus.READY.value,
+            TaskStatus.RUNNING.value,
+        ]
         with self.database.session() as session:
-            node = session.get(RunNode, node_id)
-            if node is None:
-                raise NotFoundError(f"Run node {node_id!r} was not found")
-            session.expunge(node)
-            return node
+            run_ids = list(
+                session.scalars(
+                    select(PipelineRun.id).where(PipelineRun.status.in_(active))
+                )
+            )
+            if not run_ids:
+                return 0
+            session.execute(
+                update(TaskRun)
+                .where(TaskRun.run_id.in_(run_ids), TaskRun.status.in_(unfinished_tasks))
+                .values(status=TaskStatus.FAILED.value, message=message)
+            )
+            session.execute(
+                update(PipelineRun)
+                .where(PipelineRun.id.in_(run_ids))
+                .values(status=PipelineStatus.FAILED.value, message=message)
+            )
+            return len(run_ids)

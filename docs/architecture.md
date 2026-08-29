@@ -153,7 +153,7 @@ Task:     PENDING -> READY -> RUNNING -> SUCCESS
 Pipeline: PENDING -> RUNNING -> SUCCESS | FAILED
 ```
 
-失败节点只阻断其传递下游；互不依赖的分支仍继续。只要存在 `FAILED` 或 `SKIPPED` 任务，Pipeline 最终为 `FAILED`。
+失败节点只阻断其传递下游；互不依赖的分支仍继续。只要存在 `FAILED` 或 `SKIPPED` 任务，Pipeline 最终为 `FAILED`；用户取消时 run 与未执行任务均为 `CANCELLED`。
 
 ## 8. 数据与文件布局
 
@@ -167,7 +167,7 @@ data/
 └── tmp/
 ```
 
-数据库保存元数据和状态，二进制内容不进入数据库。日志可在任务运行中读取；产物使用不透明 id 下载，API 不接受任意文件路径。
+数据库保存元数据和状态，二进制内容不进入数据库。日志可在任务运行中读取；产物使用不透明 id 下载，API 不接受任意文件路径；下载响应携带内容 sha256 ETag，条件请求直接 304。
 
 ## 9. 扩展点
 
@@ -175,8 +175,31 @@ data/
 - 新 Runtime：实现 `Runtime.execute()` 并注册 runtime type。
 - 新产物后端：实现 `ArtifactStore.store/open()`，可替换为 MinIO/S3。
 - 分布式执行：将 Scheduler 的 Dispatcher 替换为持久队列，不改变 Pipeline 或 Plugin 协议。
-- 数据迁移：MVP 启动时建表；进入生产演进阶段后接入 Alembic。
+- 数据迁移：Alembic（`migrations/`），迁移与配置同源读取 `MINI_PIPELINE_CONFIG`；开发 SQLite 由 `create_all` 引导。
+
+## 9.1 运行时底座（0.2）
+
+四种 Runtime（shell/python/node/executable）都是 `runtime/base.py::ProcessRunner` 的薄封装，只负责"命令解析"；进程生命周期统一由底座承担：
+
+- stdout 行级泵入任务日志文件（stderr 合并，实时可 tail）；
+- 墙钟 deadline 超时；
+- 取消：`CancellationRegistry` 按 run 提供 `threading.Event`，底座轮询事件并终止**进程树**（POSIX `killpg`，Windows `taskkill /T`）；
+- 重试：引擎层对失败任务按 `retries` 声明做指数退避重跑，`task.attempt` 落库。
+
+事件与实时性：引擎每次状态变更发布 `RunEvent` 到进程内 `EventBus`，`/api/runs/{id}/events` 的 SSE 生成器消费之（慢订阅者丢事件，由周期性 DB 快照兜底）；日志流则直接 tail 任务日志文件，不经过总线。
+
+## 9.2 横切面（0.2）
+
+- **鉴权**：`/api` 路由级依赖 `require_auth`——token 常数时间比对 + admin/reader 角色门禁（读方法放行 reader，写方法与 debug 仅 admin）；
+- **中间件**（外→内）：RequestID（16 位 id 贯穿日志与响应头）→ Prometheus 指标（route 模板 label）→ 限流（写方法滑动窗口）→ GZip；
+- **分页**：所有列表端点共享 `PageParams` + `Page[T]` 信封，仓储层 LIMIT/OFFSET；
+- **崩溃恢复**：`Services.build` 时执行孤儿收割（`scheduler/recovery.py`）；
+- **保留策略**：`maintenance/gc.py` 依 `retention.*` 清理终态 run 的数据并同步删 DB 产物记录。
 
 ## 10. 安全与运行约束
 
 Shell 插件本质上是受信代码，MVP 不提供强隔离，只应注册和运行可信来源。平台仍执行基础边界保护：命令不经过 shell 拼接、归档和产物路径校验、下载大小/超时限制、工作区隔离、入口必须位于插件目录。生产运行不应向容器挂载宿主 Docker socket；不可信插件需要后续 Docker/Kubernetes Runtime 的网络、权限和资源隔离。
+
+## 11. 0.2 平台化基线（变更摘要）
+
+MVP 边界中列出的"账号权限、可观测性、迁移、限流"等缺口已在 0.2 补齐：token 鉴权与角色、结构化日志 + RequestID、Prometheus 指标与就绪探针、Alembic、分页/限流/CORS/GZip、运行取消、step 重试、SSE 实时推送、产物 ETag、孤儿收割与保留策略 GC。协议层（plugin.yaml、workspace 布局、表达式、REST 资源模型）保持向后兼容；明细见 `CHANGELOG.md`，运维见 `docs/operations.md`。

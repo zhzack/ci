@@ -1,11 +1,9 @@
 """Test the unified v2 manifest accepts both native v2 and legacy v1 formats."""
-import io
-import zipfile
 
 import pytest
 
 from mini_pipeline.domain.exceptions import ValidationError
-from mini_pipeline.plugin.manifest import PluginManifest, load_manifest
+from mini_pipeline.plugin.manifest import load_manifest
 
 
 def test_load_v2_native_manifest(tmp_path):
@@ -95,7 +93,8 @@ runtime:
   entry: run.sh
 contract:
   inputs:
-    - {name: data, type: file, source: artifact, from: upstream.dataset, target: upstream/dataset.json, required: true}
+    - {name: data, type: file, source: artifact,
+      from: upstream.dataset, target: upstream/dataset.json, required: true}
   outputs:
     - {name: report, type: file, path: output/report.txt}
 """

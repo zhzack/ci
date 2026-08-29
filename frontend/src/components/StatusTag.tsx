@@ -9,6 +9,7 @@ const STATUS_COLORS: Record<string, string> = {
   SUCCESS: 'success',
   FAILED: 'error',
   SKIPPED: 'warning',
+  CANCELLED: 'default',
   INSTALLING: 'blue',
 };
 

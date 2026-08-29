@@ -41,7 +41,7 @@ steps:
   - name: only-step
     plugin: val-echo@1.0.0
 """
-    service = PipelineService.__new__(PipelineService)
+    service = PipelineService(repository=None)
     report = service.validate(definition, params={})
     assert "problems" in report
 
@@ -58,7 +58,7 @@ steps:
       a: "${{ params.a }}"
       b: "${{ params.b }}"
 """
-    service = PipelineService.__new__(PipelineService)
+    service = PipelineService(repository=None)
     report = service.validate(definition, params={"a": 1, "b": 2})
     # Report should be valid because all params resolve
     assert report["valid"] is True

@@ -9,16 +9,13 @@ Accepts two formats:
 from __future__ import annotations
 
 import re
-from pathlib import Path, PurePosixPath
-from typing import Any, Optional
+from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic import ValidationError as PydanticValidationError
 
 from mini_pipeline.domain.contract import (
-    InputResource,
-    OutputResource,
     PluginContract,
 )
 from mini_pipeline.domain.exceptions import ValidationError
@@ -134,20 +131,12 @@ def _upgrade_v1_to_v2(raw: dict) -> dict:
         )
     outputs = []
     for name, spec in (raw.pop("outputs", None) or {}).items():
-        # Choose a filename hint based on the declared type so collectors
-        # can find the file and downstream consumers see stable content.
         out_type = spec.get("type", "file")
-        # Preserve scalar types so collectors can return numbers/strings,
-        # not just file paths.
-        if out_type in ("string", "number", "integer", "boolean"):
-            filename = f"{name}.json"
-        else:
-            filename = name
         outputs.append(
             {
                 "name": name,
                 "type": out_type,
-                "path": f"output/{filename}",
+                "path": f"output/{name}",
             }
         )
     raw["contract"] = {"inputs": inputs, "outputs": outputs}

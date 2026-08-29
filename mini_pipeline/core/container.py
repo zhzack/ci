@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from mini_pipeline.artifact.local import LocalArtifactStore
 from mini_pipeline.core.config import Settings
+from mini_pipeline.core.events import EventBus
 from mini_pipeline.database.repositories import PipelineRepository, PluginRepository, RunRepository
 from mini_pipeline.database.session import Database
 from mini_pipeline.executor.task_executor import TaskExecutor
@@ -16,6 +17,7 @@ from mini_pipeline.runtime.registry import RuntimeRegistry
 from mini_pipeline.runtime.shell import ShellRuntime
 from mini_pipeline.scheduler.dispatcher import Dispatcher
 from mini_pipeline.scheduler.engine import PipelineEngine
+from mini_pipeline.scheduler.recovery import reap_orphan_runs
 from mini_pipeline.scheduler.service import RunService
 from mini_pipeline.source.git import GitSource
 from mini_pipeline.source.http import HttpSource
@@ -33,6 +35,7 @@ class Services:
     runs: RunService
     artifacts: LocalArtifactStore
     dispatcher: Dispatcher
+    events: EventBus
     plugin_repository: PluginRepository
     pipeline_repository: PipelineRepository
     run_repository: RunRepository
@@ -47,6 +50,16 @@ class Services:
         pipeline_repository = PipelineRepository(database)
         run_repository = RunRepository(database)
 
+        # Crash recovery: runs left pending/running by a previous process
+        # can never finish — mark them failed before accepting new work.
+        reaped = reap_orphan_runs(run_repository)
+        if reaped:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Reaped %d orphaned run(s) left behind by a previous process", reaped
+            )
+
         upload_source = UploadSource(settings.sources)
         sources = SourceRegistry()
         sources.register(GitSource())
@@ -60,7 +73,9 @@ class Services:
             sources=sources,
             upload_source=upload_source,
         )
-        pipelines = PipelineService(pipeline_repository)
+        pipelines = PipelineService(
+            pipeline_repository, plugin_repository=plugin_repository
+        )
 
         artifacts = LocalArtifactStore(settings.storage, run_repository)
         runtimes = RuntimeRegistry()
@@ -78,11 +93,14 @@ class Services:
             coordinator_workers=settings.execution.coordinator_workers,
             task_workers=settings.execution.task_workers,
         )
+        events = EventBus()
         engine = PipelineEngine(
             plugins=plugin_repository,
             runs=run_repository,
             executor=executor,
             dispatcher=dispatcher,
+            events=events,
+            retry_backoff_seconds=settings.execution.retry_backoff_seconds,
         )
         runs = RunService(
             pipelines=pipelines,
@@ -97,6 +115,7 @@ class Services:
             runs=runs,
             artifacts=artifacts,
             dispatcher=dispatcher,
+            events=events,
             plugin_repository=plugin_repository,
             pipeline_repository=pipeline_repository,
             run_repository=run_repository,

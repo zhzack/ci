@@ -7,21 +7,19 @@ import { ErrorAlert } from '@/components/ErrorAlert';
 import { EmptyState } from '@/components/EmptyState';
 import { StatusTag } from '@/components/StatusTag';
 import { useApiQuery } from '@/hooks/useApiQuery';
-import { dashboardSummary } from '@/api/dashboard';
-import type { PipelineRun } from '@/types/run';
-
-const ACTIVE = new Set(['PENDING', 'READY', 'RUNNING']);
+import { listRuns } from '@/api/run';
+import type { RunSummary } from '@/types/run';
 
 export default function TaskRunningPage(): React.JSX.Element {
   const { data, isLoading, error, refetch } = useApiQuery(
-    ['running-tasks'],
-    dashboardSummary,
+    ['runs', 'active'],
+    () => listRuns({ status: 'RUNNING', page_size: 50 }),
     { refetchInterval: 2_000 },
   );
 
-  const running = (data?.recent_runs ?? []).filter((run) => ACTIVE.has(run.status));
+  const running = data?.items ?? [];
 
-  const columns: ColumnsType<PipelineRun> = [
+  const columns: ColumnsType<RunSummary> = [
     {
       title: 'Run',
       dataIndex: 'id',

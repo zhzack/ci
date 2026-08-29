@@ -49,6 +49,47 @@ class ExecutionConfig(BaseModel):
     coordinator_workers: int = Field(default=2, ge=1)
     task_workers: int = Field(default=4, ge=1)
     task_timeout_seconds: int = Field(default=3600, ge=1)
+    # Mark runs still PENDING/RUNNING at startup as FAILED (crash recovery).
+    reap_orphans_on_start: bool = True
+    # Base delay for step retries; doubles per attempt, capped at 60s.
+    retry_backoff_seconds: float = Field(default=2.0, ge=0)
+
+
+class LoggingConfig(BaseModel):
+    level: str = "INFO"
+    format: str = Field(default="text", pattern="^(text|json)$")
+
+
+class ObservabilityConfig(BaseModel):
+    metrics_enabled: bool = True
+
+
+class AuthToken(BaseModel):
+    token: str
+    name: str = ""
+    role: str = Field(default="reader", pattern="^(admin|reader)$")
+
+
+class AuthConfig(BaseModel):
+    enabled: bool = False
+    tokens: list[AuthToken] = Field(default_factory=list)
+
+
+class SecurityConfig(BaseModel):
+    # CORS: empty list disables CORS handling entirely.
+    cors_origins: list[str] = Field(default_factory=list)
+    # Max mutating (POST/PUT/PATCH/DELETE) requests per client IP per minute.
+    # 0 disables rate limiting.
+    rate_limit_per_minute: int = Field(default=0, ge=0)
+
+
+class RetentionConfig(BaseModel):
+    # Days to keep per-run data after a run reaches a terminal state. 0 = keep forever.
+    workspaces_days: float = Field(default=14, ge=0)
+    logs_days: float = Field(default=30, ge=0)
+    artifacts_days: float = Field(default=90, ge=0)
+    # Lifetime of stray files under storage/tmp.
+    temp_hours: float = Field(default=24, ge=0)
 
 
 class SourceConfig(BaseModel):
@@ -66,6 +107,11 @@ class Settings(BaseModel):
     storage: StorageConfig
     execution: ExecutionConfig
     sources: SourceConfig
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
+    auth: AuthConfig = Field(default_factory=AuthConfig)
+    security: SecurityConfig = Field(default_factory=SecurityConfig)
+    retention: RetentionConfig = Field(default_factory=RetentionConfig)
 
     def prepare_directories(self) -> None:
         for directory in self.storage.directories():

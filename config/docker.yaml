@@ -20,6 +20,37 @@ execution:
   coordinator_workers: 2
   task_workers: 4
   task_timeout_seconds: 3600
+  reap_orphans_on_start: true
+  retry_backoff_seconds: 2
+
+logging:
+  level: ${LOG_LEVEL}
+  format: json
+
+observability:
+  metrics_enabled: true
+
+auth:
+  enabled: true
+  tokens:
+    # Inject real tokens via the environment (docker-compose / secrets).
+    - token: ${MINI_PIPELINE_ADMIN_TOKEN}
+      name: admin
+      role: admin
+    - token: ${MINI_PIPELINE_READER_TOKEN}
+      name: reader
+      role: reader
+
+security:
+  # Browser origins allowed to call the API (adjust to your deployment).
+  cors_origins: []
+  rate_limit_per_minute: 120
+
+retention:
+  workspaces_days: 14
+  logs_days: 30
+  artifacts_days: 90
+  temp_hours: 24
 
 sources:
   http_timeout_seconds: 30

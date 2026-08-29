@@ -11,9 +11,9 @@ import hashlib
 import json
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
-from mini_pipeline.domain.contract import OutputResource, PluginContract, ResourceType
+from mini_pipeline.domain.contract import PluginContract, ResourceType
 
 _METADATA_CANDIDATES = (
     "output/metadata.json",
@@ -28,7 +28,7 @@ def collect_outputs(
     *,
     run_id: str,
     task_id: str,
-    artifact_store: Optional[Any] = None,
+    artifact_store: Any | None = None,
 ) -> dict[str, Any]:
     """Glob the workspace output/ directory and produce artifact records.
 
@@ -86,15 +86,26 @@ def collect_outputs(
                             outputs[resource.name] = path.read_text(encoding="utf-8").strip()
                         elif resource.type in (ResourceType.JSON,):
                             try:
-                                outputs[resource.name] = json.loads(path.read_text(encoding="utf-8"))
+                                parsed = json.loads(path.read_text(encoding="utf-8"))
                             except Exception:
-                                outputs[resource.name] = path.read_text(encoding="utf-8")
+                                parsed = path.read_text(encoding="utf-8")
+                            outputs[resource.name] = parsed
+                            if isinstance(parsed, dict):
+                                # v2 semantics: top-level keys of a JSON
+                                # object output are also addressable directly
+                                # in downstream expressions, e.g.
+                                # `${{ steps.a.outputs.count }}`. The
+                                # resource name itself always wins on
+                                # collision.
+                                for key, value in parsed.items():
+                                    outputs.setdefault(key, value)
                         elif resource.type in (ResourceType.FILE, ResourceType.DIRECTORY):
                             outputs[resource.name] = str(path.relative_to(workspace))
                         else:
                             try:
                                 raw = path.read_text(encoding="utf-8").strip()
-                                outputs[resource.name] = float(raw) if resource.type in ("number", "integer") else raw
+                                is_number = resource.type in ("number", "integer")
+                                outputs[resource.name] = float(raw) if is_number else raw
                             except Exception:
                                 outputs[resource.name] = path.read_text(encoding="utf-8")
                 elif path.is_dir():
@@ -114,8 +125,9 @@ def collect_outputs(
         for path in output_dir.rglob("*"):
             if path.is_file():
                 entry_name = str(path.relative_to(output_dir))
-                artifact = _store_artifact(
-                    workspace, path, entry_name, run_id=run_id, task_id=task_id
+                artifact = _persist_artifact(
+                    workspace, path, entry_name, run_id=run_id, task_id=task_id,
+                    artifact_store=artifact_store,
                 )
                 if artifact:
                     artifacts.append(artifact)
@@ -130,7 +142,7 @@ def _persist_artifact(
     *,
     run_id: str,
     task_id: str,
-    artifact_store: Optional[Any] = None,
+    artifact_store: Any | None = None,
 ) -> dict[str, Any] | None:
     """Store one file via the managed artifact store, falling back to a
     side-channel copy when no store is provided.
@@ -182,3 +194,58 @@ def read_error_json(workspace: Path) -> dict[str, Any] | None:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {"code": "UNKNOWN", "message": path.read_text(encoding="utf-8", errors="replace")}
+
+
+def merge_legacy_output_json(
+    workspace: Path,
+    collected: dict[str, Any],
+    *,
+    run_id: str,
+    task_id: str,
+    artifact_store: Any | None = None,
+) -> str | None:
+    """Merge a v1-protocol ``output.json`` into the v2 collection result.
+
+    v1 plugins communicate through a single ``output.json``:
+    ``{status, message, outputs, artifacts: [{name, path}]}``. This keeps
+    them working on the v2 executor. Contract-declared outputs always win
+    over legacy keys. Returns a failure message when the plugin reported
+    ``status != success``.
+    """
+    path = workspace / "output.json"
+    if not path.is_file():
+        return None
+    try:
+        legacy = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return "Plugin output.json is not valid JSON"
+    if not isinstance(legacy, dict):
+        return "Plugin output.json must be a JSON object"
+    if legacy.get("status", "success") != "success":
+        return str(legacy.get("message") or "Plugin reported failure in output.json")
+
+    outputs = collected.setdefault("outputs", {})
+    for key, value in (legacy.get("outputs") or {}).items():
+        outputs.setdefault(key, value)
+
+    artifacts = collected.setdefault("artifacts", [])
+    existing = {item.get("name") for item in artifacts}
+    for entry in legacy.get("artifacts") or []:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()
+        rel_path = str(entry.get("path") or "").strip()
+        if not name or not rel_path or name in existing:
+            continue
+        source = (workspace / rel_path).resolve()
+        # Artifact paths must stay inside the workspace (anti path-traversal).
+        if not source.is_relative_to(workspace.resolve()) or not source.is_file():
+            continue
+        record = _persist_artifact(
+            workspace, source, name, run_id=run_id, task_id=task_id,
+            artifact_store=artifact_store,
+        )
+        if record:
+            artifacts.append(record)
+            existing.add(name)
+    return None

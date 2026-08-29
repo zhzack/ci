@@ -1,4 +1,5 @@
 import io
+import sys
 from pathlib import Path
 
 import pytest
@@ -51,6 +52,10 @@ def test_folder_upload_rejects_unsafe_paths() -> None:
         )
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows filesystems do not preserve POSIX exec bits",
+)
 def test_folder_upload_extraction_creates_workspace(tmp_path: Path) -> None:
     source = UploadSource(_settings())
     destination = tmp_path / "dest"
@@ -91,5 +96,5 @@ def test_register_folder_via_api(client) -> None:
     assert body_json["version"] == "1.0.0"
 
     listing = client.get("/api/plugins")
-    names = [item["name"] for item in listing.json()]
+    names = [item["name"] for item in listing.json()["items"]]
     assert "folder-plugin" in names

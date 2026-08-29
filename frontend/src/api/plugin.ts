@@ -1,8 +1,15 @@
 import { http } from './http';
+import type { Paged } from '@/types/common';
 import type { PluginManifest, PluginVersion, RegisterPluginRequest } from '@/types/plugin';
 
-export async function listPlugins(): Promise<PluginVersion[]> {
-  const { data } = await http.get<PluginVersion[]>('/plugins');
+export type PluginListParams = {
+  page?: number;
+  page_size?: number;
+  search?: string;
+};
+
+export async function listPlugins(params: PluginListParams = {}): Promise<Paged<PluginVersion>> {
+  const { data } = await http.get<Paged<PluginVersion>>('/plugins', { params });
   return data;
 }
 

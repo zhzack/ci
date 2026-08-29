@@ -14,6 +14,7 @@ class PipelineStatus(str, Enum):
     RUNNING = "RUNNING"
     SUCCESS = "SUCCESS"
     FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
 
 class TaskStatus(str, Enum):
@@ -23,6 +24,17 @@ class TaskStatus(str, Enum):
     SUCCESS = "SUCCESS"
     FAILED = "FAILED"
     SKIPPED = "SKIPPED"
+    CANCELLED = "CANCELLED"
 
 
-TERMINAL_TASK_STATUSES = {TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.SKIPPED}
+TERMINAL_TASK_STATUSES = {
+    TaskStatus.SUCCESS,
+    TaskStatus.FAILED,
+    TaskStatus.SKIPPED,
+    TaskStatus.CANCELLED,
+}
+TERMINAL_RUN_STATUSES = {
+    PipelineStatus.SUCCESS,
+    PipelineStatus.FAILED,
+    PipelineStatus.CANCELLED,
+}

@@ -6,8 +6,12 @@ from typing import Any
 
 from mini_pipeline.database.models import Artifact, PipelineRun, TaskRun
 from mini_pipeline.database.repositories import RunRepository
-from mini_pipeline.domain.exceptions import NotFoundError, ValidationError
-from mini_pipeline.domain.states import PipelineStatus, TaskStatus
+from mini_pipeline.domain.exceptions import ConflictError, NotFoundError, ValidationError
+from mini_pipeline.domain.states import (
+    TERMINAL_RUN_STATUSES,
+    PipelineStatus,
+    TaskStatus,
+)
 from mini_pipeline.pipeline.dag import topological_order
 from mini_pipeline.pipeline.service import PipelineService
 from mini_pipeline.scheduler.engine import PipelineEngine
@@ -77,16 +81,74 @@ class RunService:
                 content = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            if not content:
-                continue
             ts = task.started_at.isoformat(timespec="milliseconds") if task.started_at else "?"
             chunks.append(f"--- [{ts}] step:{task.step_name} ({task.status}) ---")
-            chunks.append(content.rstrip("\n"))
+            if content:
+                chunks.append(content.rstrip("\n"))
             chunks.append("")
         return "\n".join(chunks).rstrip("\n")
 
     def get_artifact(self, artifact_id: str) -> Artifact:
         return self.repository.get_artifact(artifact_id)
+
+    def list(
+        self,
+        *,
+        offset: int = 0,
+        limit: int = 50,
+        status: str | None = None,
+        pipeline_name: str | None = None,
+    ) -> tuple[list[PipelineRun], int]:
+        return (
+            self.repository.list_runs(
+                offset=offset,
+                limit=limit,
+                status=status,
+                pipeline_name=pipeline_name,
+            ),
+            self.repository.count_runs(
+                status=status, pipeline_name=pipeline_name
+            ),
+        )
+
+    def cancel(self, run_id: str) -> PipelineRun:
+        """Cancel a pending or running run.
+
+        Running plugin processes are terminated through the engine's
+        cancellation registry; queued steps are marked CANCELLED by the
+        coordinator. Cancelling a terminal run is a conflict (409).
+        """
+        run = self.repository.get(run_id)
+        if run.status in {s.value for s in TERMINAL_RUN_STATUSES}:
+            raise ConflictError(
+                f"Run {run_id!r} already finished (status={run.status})"
+            )
+
+        if run.status == PipelineStatus.PENDING.value:
+            # The coordinator has not started (or has not flipped the state
+            # yet); cancel everything optimistically. If the coordinator
+            # starts afterwards it observes the CANCELLED status and stops.
+            for task in run.tasks:
+                if task.status not in {TaskStatus.SUCCESS.value, TaskStatus.FAILED.value}:
+                    self.repository.set_task_state(
+                        task.id,
+                        TaskStatus.CANCELLED,
+                        message="Cancelled before execution",
+                        finished_at=datetime.utcnow(),
+                    )
+            self.repository.set_run_state(
+                run_id,
+                PipelineStatus.CANCELLED,
+                message="Run cancelled before start",
+                finished_at=datetime.utcnow(),
+            )
+            self.engine.cancellations.cancel(run_id)
+            self.engine.events.publish_run_status(run_id, PipelineStatus.CANCELLED.value)
+            return self.repository.get(run_id)
+
+        # RUNNING: signal the running processes; the coordinator finalizes.
+        self.engine.cancellations.cancel(run_id)
+        return self.repository.get(run_id)
 
     def branch_from_step(
         self,
@@ -99,7 +161,10 @@ class RunService:
         sub-graph rooted at `from_step` with the new params.
         """
         parent = self.repository.get(parent_run_id)
-        if parent.status not in {PipelineStatus.SUCCESS.value, PipelineStatus.FAILED.value}:
+        if parent.status not in {
+            PipelineStatus.SUCCESS.value,
+            PipelineStatus.FAILED.value,
+        }:
             raise ValidationError(
                 f"Parent run {parent_run_id!r} has not finished yet (status={parent.status})"
             )

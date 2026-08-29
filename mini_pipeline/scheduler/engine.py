@@ -1,18 +1,31 @@
-"""Asynchronous in-process DAG pipeline engine."""
+"""Asynchronous in-process DAG pipeline engine.
+
+The coordinator advances the DAG, schedules task executions on the
+dispatcher's task pool, and finalizes run/task states. It also:
+
+* supports **run cancellation** — a per-run ``threading.Event`` is checked
+  by the runtime so plugin processes get terminated;
+* applies **automatic retries** declared per step (``retries: n``) with
+  exponential backoff;
+* publishes state changes to the :class:`EventBus` for SSE consumers.
+"""
 
 from __future__ import annotations
 
 import logging
+import re
+import time
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
+from mini_pipeline.core.events import CancellationRegistry, EventBus, RunEvent
 from mini_pipeline.database.models import PipelineRun, TaskRun
 from mini_pipeline.database.repositories import PluginRepository, RunRepository
 from mini_pipeline.domain.exceptions import ValidationError
 from mini_pipeline.domain.states import PipelineStatus, TaskStatus
-from mini_pipeline.executor.protocol import DependencyResult
+from mini_pipeline.executor.dependencies import DependencyResult
 from mini_pipeline.executor.task_executor import TaskExecutionResult, TaskExecutor
 from mini_pipeline.pipeline.dag import topological_order
 from mini_pipeline.pipeline.resolver import resolve_parameters
@@ -22,13 +35,15 @@ from mini_pipeline.scheduler.dispatcher import Dispatcher
 logger = logging.getLogger(__name__)
 
 # Patterns for pre-flight; engine doesn't depend on resolver internals.
-import re as _re
-_STEP_OUTPUT_EXPR = _re.compile(
-    r"^\s*\$\{\{\s*steps\.([A-Za-z_][A-Za-z0-9_.-]*)\.outputs\.([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}\s*$"
+_STEP_OUTPUT_EXPR = re.compile(
+    r"^\s*\$\{\{\s*steps\.([A-Za-z_][A-Za-z0-9_.-]*)"
+    r"\.outputs\.([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}\s*$"
 )
-_ALL_DEPS_EXPR = _re.compile(
+_ALL_DEPS_EXPR = re.compile(
     r"^\s*\$\{\{\s*all\.deps\.outputs\.([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}\s*$"
 )
+
+_MAX_BACKOFF_SECONDS = 60.0
 
 
 class PipelineEngine:
@@ -39,11 +54,24 @@ class PipelineEngine:
         runs: RunRepository,
         executor: TaskExecutor,
         dispatcher: Dispatcher,
+        events: EventBus | None = None,
+        retry_backoff_seconds: float = 2.0,
     ) -> None:
         self.plugins = plugins
         self.runs = runs
         self.executor = executor
         self.dispatcher = dispatcher
+        self.events = events or EventBus()
+        self.retry_backoff_seconds = retry_backoff_seconds
+        self.cancellations = CancellationRegistry()
+        # Last resolved inputs per (run, step) so retry submissions reuse them.
+        # The coordinator is single-threaded per run; a plain dict is enough.
+        self._resolved_params_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        self._dependency_results_cache: dict[tuple[str, str], dict[str, Any]] = {}
+
+    # ------------------------------------------------------------------
+    # Submission
+    # ------------------------------------------------------------------
 
     def submit(
         self,
@@ -51,7 +79,7 @@ class PipelineEngine:
         pipeline_id: str,
         definition: PipelineDefinition,
         params: dict[str, Any],
-        uploads: Optional[dict[str, Path]] = None,
+        uploads: dict[str, Path] | None = None,
     ) -> PipelineRun:
         merged_params = dict(definition.params)
         merged_params.update(params)
@@ -78,6 +106,10 @@ class PipelineEngine:
         )
         return run
 
+    # ------------------------------------------------------------------
+    # Pre-flight validation
+    # ------------------------------------------------------------------
+
     def _preflight_required(
         self,
         definition: PipelineDefinition,
@@ -98,10 +130,7 @@ class PipelineEngine:
         not checked here: their values arrive at execution time from the
         upstream step's outputs, not from `params`.
         """
-        from pathlib import Path
-
         from mini_pipeline.plugin.manifest import load_manifest
-        from mini_pipeline.pipeline.resolver import resolve_parameters
 
         # Build output-key index from all installed manifests.
         # This lets us verify wiring before any step has run.
@@ -112,7 +141,6 @@ class PipelineEngine:
                 continue
             try:
                 step_manifest = load_manifest(install_path)
-                # v2 contract outputs are list[OutputResource]; v1 legacy has dict
                 outputs = step_manifest.contract.outputs
                 if isinstance(outputs, list):
                     dep_outputs[step.name] = {o.name for o in outputs}
@@ -130,7 +158,6 @@ class PipelineEngine:
                 manifest = load_manifest(install_path)
             except Exception:
                 continue
-            # v2 contract inputs is a list[InputResource]; v1 legacy had dict
             inputs = manifest.contract.inputs
             if isinstance(inputs, list):
                 required = {r.name for r in inputs if getattr(r, "required", False)}
@@ -147,7 +174,10 @@ class PipelineEngine:
                 # executor at runtime — skip the params check.
                 if isinstance(inputs, list):
                     res_obj = next((r for r in inputs if r.name == key), None)
-                    if res_obj is not None and getattr(res_obj, "source", "") in ("artifact", "upload"):
+                    if res_obj is not None and getattr(res_obj, "source", "") in (
+                        "artifact",
+                        "upload",
+                    ):
                         continue
                 value = (step.parameters or {}).get(key)
                 if value is None:
@@ -195,44 +225,97 @@ class PipelineEngine:
 
     def _plugin_install_path(
         self, plugin_ref: tuple[str, str]
-    ) -> Optional[Path]:
-        from pathlib import Path
-
-        # The engine does not have a settings reference directly, so we look
-        # in the default location relative to the repository structure.
-        # In production the install path comes from the plugin row; for the
-        # pre-flight we use the standard data directory.
+    ) -> Path | None:
+        # The authoritative install location lives on the plugin version row;
+        # reading settings here would guess the wrong storage root whenever
+        # the engine runs against a non-default configuration (e.g. tests).
         try:
-            from mini_pipeline.core.config import load_settings
-
-            settings = load_settings()
+            version = self.plugins.get_version(plugin_ref[0], plugin_ref[1])
         except Exception:
             return None
-        path = settings.storage.plugins / plugin_ref[0] / plugin_ref[1]
+        path = Path(version.install_path)
         return path if path.is_dir() else None
 
+    # ------------------------------------------------------------------
+    # Coordination
+    # ------------------------------------------------------------------
+
+    def _publish(
+        self,
+        run_id: str,
+        event_type: str,
+        *,
+        task_id: str | None = None,
+        step_name: str | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> None:
+        event = RunEvent(
+            run_id=run_id,
+            type=event_type,
+            data=data or {},
+            timestamp=time.time(),
+            task_id=task_id,
+            step_name=step_name,
+        )
+        try:
+            self.events.publish(event)
+        except Exception:  # Event delivery must never break execution.
+            logger.exception("Failed to publish event for run %s", run_id)
+
     @staticmethod
-    def _collect_dependencies(
-        step: PipelineStep,
-    ) -> dict[str, dict[str, Any]]:
-        """Pre-flight dependency stub: returns the empty outputs map for
-        declared dependencies. The full dependency map is built by the
-        coordinator at execution time; here we only need keys + empty
-        outputs so the resolver doesn't try to fetch live task results.
-        """
-        return {
-            dep: {"outputs": {}, "artifacts": []} for dep in step.depends
-        }
+    def _observe_run(status: str) -> None:
+        try:
+            from mini_pipeline.server.metrics import observe_run_status
+
+            observe_run_status(status)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _observe_task(plugin_name: str, started_at: Any) -> None:
+        try:
+            from mini_pipeline.server.metrics import observe_task_duration
+
+            if started_at is not None:
+                observe_task_duration(
+                    plugin_name, max(0.0, time.time() - started_at.timestamp())
+                )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _observe_retry(plugin_name: str) -> None:
+        try:
+            from mini_pipeline.server.metrics import observe_task_retry
+
+            observe_task_retry(plugin_name)
+        except Exception:
+            pass
 
     def _coordinate(
         self,
         run_id: str,
         definition: PipelineDefinition,
         params: dict[str, Any],
-        uploads: Optional[dict[str, Path]] = None,
+        uploads: dict[str, Path] | None = None,
+    ) -> None:
+        run_cancel = self.cancellations.register(run_id)
+        try:
+            self._coordinate_inner(run_id, definition, params, uploads, run_cancel)
+        finally:
+            self.cancellations.release(run_id)
+
+    def _coordinate_inner(
+        self,
+        run_id: str,
+        definition: PipelineDefinition,
+        params: dict[str, Any],
+        uploads: dict[str, Path] | None,
+        run_cancel,
     ) -> None:
         now = datetime.utcnow()
         self.runs.set_run_state(run_id, PipelineStatus.RUNNING, started_at=now)
+        self._publish(run_id, "run.status", data={"status": PipelineStatus.RUNNING.value})
         steps = {step.name: step for step in definition.steps}
         task_entities = {task.step_name: task for task in self.runs.get(run_id).tasks}
         # Initialise `states` from the database so branch runs respect the
@@ -240,8 +323,15 @@ class PipelineEngine:
         states = {name: TaskStatus(task.status) for name, task in task_entities.items()}
         results: dict[str, TaskExecutionResult] = {}
         futures: dict[Future, str] = {}
+        attempts: dict[str, int] = {}
+        cancelled = False
         try:
-            terminal = {TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.SKIPPED}
+            terminal = {
+                TaskStatus.SUCCESS,
+                TaskStatus.FAILED,
+                TaskStatus.SKIPPED,
+                TaskStatus.CANCELLED,
+            }
             while any(state not in terminal for state in states.values()):
                 progressed = self._advance_ready(
                     run_id=run_id,
@@ -251,7 +341,9 @@ class PipelineEngine:
                     states=states,
                     results=results,
                     futures=futures,
+                    attempts=attempts,
                     uploads=uploads,
+                    run_cancel=run_cancel,
                 )
                 if not futures:
                     if not progressed:
@@ -261,13 +353,74 @@ class PipelineEngine:
                 for future in completed:
                     step_name = futures.pop(future)
                     task = task_entities[step_name]
+                    step = steps[step_name]
                     try:
                         result = future.result()
                     except Exception as exc:  # Keep coordinator alive after worker defects.
                         logger.exception("Task %s failed unexpectedly", step_name)
                         result = TaskExecutionResult(False, f"Internal task error: {exc}")
-                    results[step_name] = result
+
+                    if result.cancelled or run_cancel.is_set():
+                        cancelled = True
+                        states[step_name] = TaskStatus.CANCELLED
+                        self.runs.set_task_state(
+                            task.id,
+                            TaskStatus.CANCELLED,
+                            message="Cancelled",
+                            log_path=str(result.log_path) if result.log_path else None,
+                            finished_at=datetime.utcnow(),
+                        )
+                        self._publish(
+                            run_id, "task.status",
+                            task_id=task.id, step_name=step_name,
+                            data={"status": TaskStatus.CANCELLED.value},
+                        )
+                        continue
+
+                    if not result.success and step.retries > 0:
+                        attempt = attempts.get(step_name, 1)
+                        if attempt < step.retries + 1:
+                            attempts[step_name] = attempt + 1
+                            self._observe_retry(task.plugin_name)
+                            delay = min(
+                                self.retry_backoff_seconds * (2 ** (attempt - 1)),
+                                _MAX_BACKOFF_SECONDS,
+                            )
+                            message = (
+                                f"Attempt {attempt}/{step.retries + 1} failed: "
+                                f"{result.message}; retrying in {delay:.0f}s"
+                            )
+                            self.runs.set_task_state(
+                                task.id,
+                                TaskStatus.RUNNING,
+                                message=message,
+                                attempt=attempt + 1,
+                            )
+                            self._publish(
+                                run_id, "task.retry",
+                                task_id=task.id, step_name=step_name,
+                                data={"attempt": attempt + 1, "message": message},
+                            )
+                            future = self.dispatcher.submit_task(
+                                self._execute_with_backoff,
+                                delay=delay,
+                                run_id=run_id,
+                                task=task,
+                                plugin=self.plugins.get_version(*step.plugin_reference),
+                                params=self._resolved_params_cache.get(
+                                    (run_id, step_name), {}
+                                ),
+                                dependencies=self._dependency_results_cache.get(
+                                    (run_id, step_name), {}
+                                ),
+                                uploads=uploads,
+                                run_cancel=run_cancel,
+                            )
+                            futures[future] = step_name
+                            continue
+
                     state = TaskStatus.SUCCESS if result.success else TaskStatus.FAILED
+                    results[step_name] = result
                     states[step_name] = state
                     self.runs.set_task_state(
                         task.id,
@@ -277,6 +430,47 @@ class PipelineEngine:
                         log_path=str(result.log_path) if result.log_path else None,
                         finished_at=datetime.utcnow(),
                     )
+                    self._observe_task(task.plugin_name, task.started_at)
+                    self._publish(
+                        run_id, "task.status",
+                        task_id=task.id, step_name=step_name,
+                        data={
+                            "status": state.value,
+                            "message": result.message,
+                            "outputs": result.outputs,
+                        },
+                    )
+
+            if cancelled or run_cancel.is_set():
+                # Anything not finished is cancelled: no new work starts.
+                for name, state in states.items():
+                    if state not in terminal:
+                        states[name] = TaskStatus.CANCELLED
+                        self.runs.set_task_state(
+                            task_entities[name].id,
+                            TaskStatus.CANCELLED,
+                            message="Cancelled before execution",
+                            finished_at=datetime.utcnow(),
+                        )
+                        self._publish(
+                            run_id, "task.status",
+                            task_id=task_entities[name].id, step_name=name,
+                            data={"status": TaskStatus.CANCELLED.value},
+                        )
+                for future in futures:
+                    future.cancel()
+                self.runs.set_run_state(
+                    run_id,
+                    PipelineStatus.CANCELLED,
+                    message="Run cancelled",
+                    finished_at=datetime.utcnow(),
+                )
+                self._publish(
+                    run_id, "run.status",
+                    data={"status": PipelineStatus.CANCELLED.value},
+                )
+                return
+
             failed = any(state != TaskStatus.SUCCESS for state in states.values())
             status = PipelineStatus.FAILED if failed else PipelineStatus.SUCCESS
             message = "One or more tasks failed or were skipped" if failed else "Pipeline completed"
@@ -286,6 +480,8 @@ class PipelineEngine:
                 message=message,
                 finished_at=datetime.utcnow(),
             )
+            self._observe_run(status.value)
+            self._publish(run_id, "run.status", data={"status": status.value})
         except Exception as exc:
             logger.exception("Pipeline run %s failed in coordinator", run_id)
             self.runs.set_run_state(
@@ -293,6 +489,11 @@ class PipelineEngine:
                 PipelineStatus.FAILED,
                 message=f"Pipeline coordinator failed: {exc}",
                 finished_at=datetime.utcnow(),
+            )
+            self._observe_run(PipelineStatus.FAILED.value)
+            self._publish(
+                run_id, "run.status",
+                data={"status": PipelineStatus.FAILED.value, "message": str(exc)},
             )
 
     def execute_subgraph(
@@ -310,6 +511,18 @@ class PipelineEngine:
         """
         self.dispatcher.submit_run(self._coordinate, run_id, definition, params)
 
+    def _execute_with_backoff(self, *, delay: float, run_cancel, **kwargs):
+        time.sleep(delay)
+        return self.executor.execute(
+            run_id=kwargs["run_id"],
+            task=kwargs["task"],
+            plugin=kwargs["plugin"],
+            params=kwargs["params"],
+            dependencies=kwargs["dependencies"],
+            uploads=kwargs.get("uploads"),
+            cancel_event=run_cancel,
+        )
+
     def _advance_ready(
         self,
         *,
@@ -320,20 +533,43 @@ class PipelineEngine:
         states: dict[str, TaskStatus],
         results: dict[str, TaskExecutionResult],
         futures: dict[Future, str],
-        uploads: Optional[dict[str, Path]] = None,
+        attempts: dict[str, int],
+        uploads: dict[str, Path] | None = None,
+        run_cancel=None,
     ) -> bool:
         progressed = False
         for name, step in steps.items():
             if states[name] != TaskStatus.PENDING:
                 continue
+            if run_cancel is not None and run_cancel.is_set():
+                return progressed
             dependency_states = [states[dependency] for dependency in step.depends]
-            if any(state in {TaskStatus.FAILED, TaskStatus.SKIPPED} for state in dependency_states):
-                states[name] = TaskStatus.SKIPPED
+            if any(
+                state in {TaskStatus.FAILED, TaskStatus.SKIPPED, TaskStatus.CANCELLED}
+                for state in dependency_states
+            ):
+                # If the run is being cancelled, downstream tasks are
+                # CANCELLED rather than SKIPPED.
+                skipped_state = (
+                    TaskStatus.CANCELLED
+                    if run_cancel is not None and run_cancel.is_set()
+                    else TaskStatus.SKIPPED
+                )
+                states[name] = skipped_state
                 self.runs.set_task_state(
                     tasks[name].id,
-                    TaskStatus.SKIPPED,
-                    message="Skipped because a dependency did not succeed",
+                    skipped_state,
+                    message=(
+                        "Cancelled because the run was cancelled"
+                        if skipped_state == TaskStatus.CANCELLED
+                        else "Skipped because a dependency did not succeed"
+                    ),
                     finished_at=datetime.utcnow(),
+                )
+                self._publish(
+                    run_id, "task.status",
+                    task_id=tasks[name].id, step_name=name,
+                    data={"status": skipped_state.value},
                 )
                 progressed = True
                 continue
@@ -377,16 +613,30 @@ class PipelineEngine:
                     message=str(exc),
                     finished_at=datetime.utcnow(),
                 )
+                self._publish(
+                    run_id, "task.status",
+                    task_id=tasks[name].id, step_name=name,
+                    data={"status": TaskStatus.FAILED.value, "message": str(exc)},
+                )
                 progressed = True
                 continue
 
             plugin_name, plugin_version = step.plugin_reference
             plugin = self.plugins.get_version(plugin_name, plugin_version)
             states[name] = TaskStatus.RUNNING
+            attempts[name] = 1
+            self._resolved_params_cache[(run_id, name)] = resolved_params
+            self._dependency_results_cache[(run_id, name)] = dependency_results
             self.runs.set_task_state(
                 tasks[name].id,
                 TaskStatus.RUNNING,
                 started_at=datetime.utcnow(),
+                attempt=1,
+            )
+            self._publish(
+                run_id, "task.status",
+                task_id=tasks[name].id, step_name=name,
+                data={"status": TaskStatus.RUNNING.value},
             )
             future = self.dispatcher.submit_task(
                 self.executor.execute,
@@ -396,6 +646,8 @@ class PipelineEngine:
                 params=resolved_params,
                 dependencies=dependency_results,
                 uploads=uploads,
+                run_params=step_local_params,
+                cancel_event=run_cancel,
             )
             futures[future] = name
             progressed = True
@@ -429,7 +681,6 @@ class PipelineEngine:
         elif dependency in tasks:
             stored = tasks[dependency].artifacts
             if stored:
-                from mini_pipeline.database.models import Artifact
                 source = list(stored)
         if not source:
             return []

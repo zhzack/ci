@@ -18,6 +18,10 @@ services:
     environment:
       MINI_PIPELINE_CONFIG: /app/config/docker.yaml
       DATABASE_URL: postgresql+psycopg://mini_pipeline:mini_pipeline@database:5432/mini_pipeline
+      # Token auth (see .env.example); docker.yaml refuses to start without them.
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      MINI_PIPELINE_ADMIN_TOKEN: ${MINI_PIPELINE_ADMIN_TOKEN:?set MINI_PIPELINE_ADMIN_TOKEN in .env}
+      MINI_PIPELINE_READER_TOKEN: ${MINI_PIPELINE_READER_TOKEN:?set MINI_PIPELINE_READER_TOKEN in .env}
     depends_on:
       database:
         condition: service_healthy
@@ -26,6 +30,12 @@ services:
     volumes:
       - pipeline-data:/app/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3).status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
 volumes:
   postgres-data:

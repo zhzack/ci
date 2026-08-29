@@ -12,31 +12,25 @@ import { SearchBar } from '@/components/SearchBar';
 import { StatusTag } from '@/components/StatusTag';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useDebounce } from '@/hooks/useDebounce';
-import { dashboardSummary } from '@/api/dashboard';
-import type { PipelineRun } from '@/types/run';
+import { listRuns } from '@/api/run';
+import type { RunSummary } from '@/types/run';
+
+const PAGE_SIZE = 10;
 
 export default function TaskHistoryPage(): React.JSX.Element {
   const navigate = useNavigate();
   const [keyword, setKeyword] = useState('');
+  const [page, setPage] = useState(1);
   const debounced = useDebounce(keyword, 300);
   const { data, isLoading, error, refetch } = useApiQuery(
-    ['task-history'],
-    dashboardSummary,
+    ['runs', 'history', { page, pipeline: debounced }],
+    () => listRuns({ page, page_size: PAGE_SIZE, pipeline: debounced || undefined }),
     { refetchInterval: 5_000 },
   );
 
-  const filtered = (data?.recent_runs ?? []).filter((run) => {
-    if (!debounced.trim()) {
-      return true;
-    }
-    const needle = debounced.toLowerCase();
-    return (
-      run.pipeline_name.toLowerCase().includes(needle) ||
-      run.status.toLowerCase().includes(needle)
-    );
-  });
+  const filtered = data?.items ?? [];
 
-  const columns: ColumnsType<PipelineRun> = [
+  const columns: ColumnsType<RunSummary> = [
     {
       title: 'Run',
       dataIndex: 'id',
@@ -59,6 +53,12 @@ export default function TaskHistoryPage(): React.JSX.Element {
       render: (value: string) => <StatusTag status={value} />,
     },
     {
+      title: 'Tasks',
+      dataIndex: 'task_count',
+      render: (value: number, record) =>
+        record.failed_tasks > 0 ? `${value} (${record.failed_tasks} failed)` : value,
+    },
+    {
       title: 'Created',
       dataIndex: 'created_at',
       render: (value: string) => new Date(value).toLocaleString(),
@@ -73,7 +73,16 @@ export default function TaskHistoryPage(): React.JSX.Element {
       />
       <div className="app-content-card">
         <TableToolbar
-          left={<SearchBar value={keyword} onChange={setKeyword} placeholder="Search by pipeline or status" />}
+          left={
+            <SearchBar
+              value={keyword}
+              onChange={(value) => {
+                setKeyword(value);
+                setPage(1);
+              }}
+              placeholder="Search by pipeline"
+            />
+          }
         />
         {isLoading ? (
           <Loading rows={6} />
@@ -86,7 +95,13 @@ export default function TaskHistoryPage(): React.JSX.Element {
             rowKey="id"
             columns={columns}
             dataSource={filtered}
-            pagination={{ pageSize: 10 }}
+            pagination={{
+              current: page,
+              pageSize: PAGE_SIZE,
+              total: data?.total ?? 0,
+              showSizeChanger: false,
+              onChange: (next) => setPage(next),
+            }}
           />
         )}
       </div>

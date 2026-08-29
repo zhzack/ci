@@ -1,4 +1,5 @@
 import { http } from './http';
+import type { Paged } from '@/types/common';
 import type {
   CreatePipelineRequest,
   PipelineParamsSchema,
@@ -6,8 +7,15 @@ import type {
   UpdatePipelineRequest,
 } from '@/types/pipeline';
 
-export async function listPipelines(): Promise<PipelineRecord[]> {
-  const { data } = await http.get<PipelineRecord[]>('/pipelines');
+export type PipelineListParams = {
+  page?: number;
+  page_size?: number;
+};
+
+export async function listPipelines(
+  params: PipelineListParams = {},
+): Promise<Paged<PipelineRecord>> {
+  const { data } = await http.get<Paged<PipelineRecord>>('/pipelines', { params });
   return data;
 }
 

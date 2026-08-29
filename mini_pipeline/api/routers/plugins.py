@@ -2,10 +2,11 @@
 
 from typing import Annotated, Any, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from pydantic import BaseModel, ConfigDict
 
 from mini_pipeline.api.dependencies import get_services
+from mini_pipeline.api.pagination import Page, PageParams
 from mini_pipeline.core.container import Services
 from mini_pipeline.source.upload import FolderFile
 
@@ -102,11 +103,17 @@ async def upload_plugin_folder(
     return PluginResponse.from_entity(entity)
 
 
-@router.get("", response_model=list[PluginResponse])
+@router.get("", response_model=Page[PluginResponse])
 def list_plugins(
     services: Annotated[Services, Depends(get_services)],
-) -> list[PluginResponse]:
-    return [PluginResponse.from_entity(entity) for entity in services.plugins.list()]
+    page_params: Annotated[PageParams, Depends()],
+    search: Annotated[Optional[str], Query(max_length=128)] = None,
+) -> Page[PluginResponse]:
+    items = services.plugin_repository.list_versions_paged(
+        offset=page_params.offset, limit=page_params.page_size, search=search
+    )
+    total = services.plugin_repository.count_versions(search=search)
+    return page_params.envelope([PluginResponse.from_entity(e) for e in items], total)
 
 
 @router.get("/{name}/{version}", response_model=PluginResponse)
@@ -132,7 +139,13 @@ def get_plugin_manifest(
     entity = services.plugins.get(name, version)
     plugin_path = Path(entity.install_path)
     manifest = load_manifest(plugin_path)
-    return manifest.model_dump(mode="json")
+    payload = manifest.model_dump(mode="json")
+    # Backward-compatible top-level aliases: clients written against the
+    # legacy manifest layout keep working alongside the v2 `contract` shape.
+    contract = payload.get("contract") or {}
+    payload.setdefault("inputs", contract.get("inputs", []))
+    payload.setdefault("outputs", contract.get("outputs", []))
+    return payload
 
 
 @router.delete("/{name}/{version}", status_code=status.HTTP_204_NO_CONTENT)

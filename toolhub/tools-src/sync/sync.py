@@ -50,6 +50,7 @@ manifest 文件(sync.json)结构:
 """
 
 import argparse
+import datetime
 import json
 import os
 import shutil
@@ -57,8 +58,6 @@ import subprocess
 import sys
 import tempfile
 from collections import OrderedDict
-from urllib.parse import urlparse
-import datetime
 
 DEFAULT_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sync.json")
 
@@ -72,7 +71,11 @@ DEFAULT_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sync.
 #   pack_dir = "/data/code/X86/app/calib"    -> 原样使用 (绝对路径)
 #
 # 如果你想换基准目录,在环境变量里设置 SYNC_PROJECT_ROOT 即可。
-PROJECT_ROOT = os.environ.get("SYNC_PROJECT_ROOT") or os.environ.get("IMFL_PRJ_ROOT") or os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = (
+    os.environ.get("SYNC_PROJECT_ROOT")
+    or os.environ.get("IMFL_PRJ_ROOT")
+    or os.path.dirname(os.path.abspath(__file__))
+)
 VERSION_FILE = ".sync_version.json"
 
 # 下载缓存开关。设为 True 时,download 会把 tar 包留在本地缓存目录里,
@@ -133,9 +136,9 @@ def _load_config(path):
     加载时立刻做一次 archive_name fallback:省略的 entry 用 JSON 顶层 key 顶上。
     这样 list / _resolve_url / 缓存路径等所有下游代码都不需要各自再做 fallback。"""
     if not os.path.exists(path):
-        sys.stderr.write("ERROR: config file not found: {}\n".format(path))
+        sys.stderr.write(f"ERROR: config file not found: {path}\n")
         sys.exit(2)
-    with open(path, "r") as f:
+    with open(path) as f:
         cfg = json.load(f, object_pairs_hook=OrderedDict)
     for name, entry in cfg.items():
         entry.setdefault("archive_name", name)
@@ -147,7 +150,7 @@ def _cred_args():
     优先级:环境变量 ARTIFACTORY_USER / ARTIFACTORY_PASS > 脚本顶部硬编码默认值。"""
     user = os.environ.get("ARTIFACTORY_USER") or DEFAULT_ARTIFACTORY_USER
     pwd = os.environ.get("ARTIFACTORY_PASS") or DEFAULT_ARTIFACTORY_PASS
-    return ["-u", "{}:{}".format(user, pwd)]
+    return ["-u", f"{user}:{pwd}"]
 
 
 def _resolve_url(entry):
@@ -170,7 +173,7 @@ def _run(cmd, **kw):
     sys.stdout.write("$ {}\n".format(" ".join(cmd)))
     rc = subprocess.call(cmd, **kw)
     if rc != 0:
-        sys.stderr.write("ERROR: command failed (rc={}): {}\n".format(rc, cmd))
+        sys.stderr.write(f"ERROR: command failed (rc={rc}): {cmd}\n")
         sys.exit(rc)
 
 
@@ -186,7 +189,7 @@ def _curl(method, url, extra=None, long_running=False):
            "-X", method] + _cred_args() + [url]
     if extra:
         cmd += extra
-    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    p = subprocess.run(cmd, capture_output=True, text=True)
     return p.returncode, p.stdout, p.stderr
 
 
@@ -199,7 +202,7 @@ def _head_exists(url):
     不设 --max-time —— 连接阶段慢的时候也不该被砍掉。"""
     cmd = ["curl", "-sS", "-I", "--connect-timeout", "10"] \
           + _cred_args() + [url]
-    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    p = subprocess.run(cmd, capture_output=True, text=True)
     if p.returncode != 0:
         return False
     if "timed out" in (p.stderr or "").lower():
@@ -232,7 +235,7 @@ def _validate_entry(name, entry, require_pack_dir=True):
     for field in ("version", "pack_dir", "archive_name", "extract_dirs"):
         if field not in entry:
             sys.stderr.write(
-                "ERROR: entry {!r} is missing required field {!r}\n".format(name, field))
+                f"ERROR: entry {name!r} is missing required field {field!r}\n")
             sys.exit(2)
     if "type" in entry and entry["type"] not in TYPE_BASE_URLS:
         sys.stderr.write(
@@ -241,7 +244,7 @@ def _validate_entry(name, entry, require_pack_dir=True):
         sys.exit(2)
     if not isinstance(entry["extract_dirs"], list) or not entry["extract_dirs"]:
         sys.stderr.write(
-            "ERROR: entry {!r}: extract_dirs must be a non-empty list\n".format(name))
+            f"ERROR: entry {name!r}: extract_dirs must be a non-empty list\n")
         sys.exit(2)
 
     # archive_name 的 fallback 在 _load_config 里已经做过,这里不用再 setdefault。
@@ -257,7 +260,7 @@ def _validate_entry(name, entry, require_pack_dir=True):
         entry["extract_dirs"][i] = _resolve_path(d)
         if entry["extract_dirs"][i] is None:
             sys.stderr.write(
-                "ERROR: entry {!r}: extract_dirs entry must be a string: {!r}\n".format(name, d))
+                f"ERROR: entry {name!r}: extract_dirs entry must be a string: {d!r}\n")
             sys.exit(2)
         if os.path.exists(entry["extract_dirs"][i]) and not os.path.isdir(entry["extract_dirs"][i]):
             sys.stderr.write(
@@ -275,8 +278,8 @@ def _validate_unique_archive_names(cfg):
         an = entry.get("archive_name", name)
         if an in seen:
             sys.stderr.write(
-                "ERROR: archive_name {!r} is used by both {!r} and {!r}; must be unique.\n".format(
-                    an, seen[an], name))
+                f"ERROR: archive_name {an!r} is used by both"
+                f" {seen[an]!r} and {name!r}; must be unique.\n")
             sys.exit(2)
         seen[an] = name
 
@@ -286,8 +289,7 @@ def _select_entries(cfg, key):
     if key is None:
         return list(cfg.items())
     if key not in cfg:
-        sys.stderr.write("ERROR: --key {!r} not found in config (have: {})\n".format(
-            key, sorted(cfg.keys())))
+        sys.stderr.write(f"ERROR: --key {key!r} not found in config (have: {sorted(cfg.keys())})\n")
         sys.exit(2)
     return [(key, cfg[key])]
 
@@ -314,8 +316,8 @@ def _detect_single_root(extract_dir):
     entries = os.listdir(extract_dir)
     if len(entries) != 1:
         sys.stderr.write(
-            "ERROR: expected exactly 1 top-level entry after extraction, got {}: {}\n".format(
-                len(entries), entries))
+            f"ERROR: expected exactly 1 top-level entry after extraction, got"
+            f" {len(entries)}: {entries}\n")
         sys.exit(1)
     return os.path.join(extract_dir, entries[0])
 
@@ -330,13 +332,13 @@ def _replace_with_copy(src_dir, dest_dir):
 
     注意:dest_dir 必须是目录路径(不能是已存在的文件);校验阶段已经拦过了。"""
     if os.path.exists(dest_dir):
-        sys.stdout.write("Removing existing: {}\n".format(dest_dir))
+        sys.stdout.write(f"Removing existing: {dest_dir}\n")
         shutil.rmtree(dest_dir)
     parent = os.path.dirname(os.path.abspath(dest_dir))
     if parent and not os.path.exists(parent):
-        sys.stdout.write("Creating parent: {}\n".format(parent))
+        sys.stdout.write(f"Creating parent: {parent}\n")
         os.makedirs(parent, exist_ok=True)
-    sys.stdout.write("Copying to: {}\n".format(dest_dir))
+    sys.stdout.write(f"Copying to: {dest_dir}\n")
     shutil.copytree(src_dir, dest_dir)
 
 
@@ -365,9 +367,9 @@ def _read_version_file(dir_path):
     if not os.path.isfile(vf):
         return None
     try:
-        with open(vf, "r") as f:
+        with open(vf) as f:
             return json.load(f)
-    except (json.JSONDecodeError, IOError):
+    except (OSError, json.JSONDecodeError):
         return None
 
 
@@ -385,7 +387,7 @@ def _write_version_file(dir_path, archive_name, version, url=""):
         os.makedirs(dir_path, exist_ok=True)
     with open(vf, "w") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
-    sys.stdout.write("  version file: {}\n".format(vf))
+    sys.stdout.write(f"  version file: {vf}\n")
     return vf
 
 
@@ -431,7 +433,7 @@ def _append_to_gitignore(config_path, abs_paths):
     gi_path = os.path.join(base_dir, ".gitignore")
     existing = []
     if os.path.exists(gi_path):
-        with open(gi_path, "r") as f:
+        with open(gi_path) as f:
             existing = [line.rstrip("\n") for line in f.readlines()]
 
     # ---- 步骤 1:确保 prefix 在文件里 ----
@@ -446,9 +448,9 @@ def _append_to_gitignore(config_path, abs_paths):
             f.write("\n".join(new_lines) + "\n")
         # 更新 existing,后续去重用
         existing = [line.rstrip("\n") for line in ("\n".join(new_lines)).split("\n")]
-        prefix_added = [l for l in DEFAULT_GITIGNORE_PREFIX if l]
+        prefix_added = [p for p in DEFAULT_GITIGNORE_PREFIX if p]
         for p in prefix_added:
-            sys.stdout.write("  gitignore +  : {}\n".format(p))
+            sys.stdout.write(f"  gitignore +  : {p}\n")
 
     # ---- 步骤 2:追加 abs_paths ----
     rels = []
@@ -457,10 +459,10 @@ def _append_to_gitignore(config_path, abs_paths):
         # 防御:如果走了 fallback 又出现 .. 路径,gitignore 也不会生效,直接警告
         if rel.startswith(".."):
             sys.stderr.write(
-                "WARNING: path {!r} resolves to {!r} which is outside the .gitignore's\n"
-                "  base directory {!r}; git cannot ignore paths with '..' in .gitignore.\n"
-                "  Move the path or add it to a parent .gitignore manually.\n".format(
-                    abs_path, rel, base_dir))
+                f"WARNING: path {abs_path!r} resolves to {rel!r}"
+                " which is outside the .gitignore's\n"
+                f"  base directory {base_dir!r}; git cannot ignore paths with '..' in .gitignore.\n"
+                "  Move the path or add it to a parent .gitignore manually.\n")
             continue
         # 去重:精确匹配 / 或带斜杠 / 不带斜杠都算已存在
         if rel in existing or (rel + "/") in existing or rel.rstrip("/") in existing:
@@ -470,7 +472,7 @@ def _append_to_gitignore(config_path, abs_paths):
 
     if rels:
         for r in rels:
-            sys.stdout.write("  gitignore +  : {}\n".format(r))
+            sys.stdout.write(f"  gitignore +  : {r}\n")
         with open(gi_path, "a") as f:
             if existing and existing[-1] != "":
                 f.write("\n")
@@ -508,14 +510,14 @@ def cmd_upload(args):
         _validate_entry(name, entry)
         url = _resolve_url(entry)
 
-        sys.stdout.write("\n=== upload {} ===\n".format(name))
+        sys.stdout.write(f"\n=== upload {name} ===\n")
         sys.stdout.write("  pack_dir : {}\n".format(entry["pack_dir"]))
-        sys.stdout.write("  url      : {}\n".format(url))
+        sys.stdout.write(f"  url      : {url}\n")
 
         if _head_exists(url):
             sys.stderr.write(
-                "ERROR: remote already has {} — refusing to overwrite. "
-                "Bump 'version' in the config and retry.\n".format(url))
+                f"ERROR: remote already has {url} — refusing to overwrite. "
+                "Bump 'version' in the config and retry.\n")
             sys.exit(1)
 
         with tempfile.TemporaryDirectory(prefix="sync_upload_") as tmp:
@@ -533,14 +535,14 @@ def cmd_upload(args):
                                          "-f"],
                                   long_running=True)
             if rc != 0:
-                sys.stderr.write("ERROR: PUT failed (curl rc={}): {}\n".format(rc, err))
+                sys.stderr.write(f"ERROR: PUT failed (curl rc={rc}): {err}\n")
                 sys.exit(rc)
             # Artifactory 返回的 JSON envelope 含 "created" 字段才算真成功。
             # 否则(HTML 错误页、空 body、"errors" 数组)都是静默失败。
             if not body or '"created"' not in body:
                 sys.stderr.write(
                     "ERROR: PUT response did not confirm upload.\n"
-                    "  url: {}\n  body: {}\n".format(url, body[:500]))
+                    f"  url: {url}\n  body: {body[:500]}\n")
                 sys.exit(1)
             # upload 成功后,把这条 entry 涉及的所有路径加到 .gitignore:
             # pack_dir(打包源)和所有 extract_dirs(下载目标)都交给 sync.py 管,
@@ -566,8 +568,8 @@ def cmd_download(args):
         _validate_entry(name, entry, require_pack_dir=False)
         url = _resolve_url(entry)
 
-        sys.stdout.write("\n=== download {} ===\n".format(name))
-        sys.stdout.write("  url          : {}\n".format(url))
+        sys.stdout.write(f"\n=== download {name} ===\n")
+        sys.stdout.write(f"  url          : {url}\n")
         sys.stdout.write("  extract_dirs : {}\n".format(entry["extract_dirs"]))
 
         # --- 版本检查:如果所有 extract_dir 都已是最新版本则跳过 ---
@@ -577,7 +579,7 @@ def cmd_download(args):
                 vf = _read_version_file(d)
                 if vf is None:
                     all_up_to_date = False
-                    sys.stdout.write("  [NEED] {} (no version file)\n".format(d))
+                    sys.stdout.write(f"  [NEED] {d} (no version file)\n")
                 elif vf.get("version") != entry["version"]:
                     all_up_to_date = False
                     sys.stdout.write("  [NEED] {} (local={} remote={})\n".format(
@@ -591,7 +593,7 @@ def cmd_download(args):
             sys.stdout.write("  --force: skipping version check\n")
 
         if not _head_exists(url):
-            sys.stderr.write("ERROR: remote does not have {}\n".format(url))
+            sys.stderr.write(f"ERROR: remote does not have {url}\n")
             sys.exit(1)
 
         archive = "{}-{}.tar.gz".format(entry["archive_name"], entry["version"])
@@ -599,7 +601,7 @@ def cmd_download(args):
 
         # 决定从哪读 tar:缓存命中直接用;否则下载,顺便把新 tar 复制到缓存。
         if USE_DOWNLOAD_CACHE and _cache_is_valid(cache_path):
-            sys.stdout.write("  using cache  : {}\n".format(cache_path))
+            sys.stdout.write(f"  using cache  : {cache_path}\n")
             tar_path = cache_path
         else:
             with tempfile.TemporaryDirectory(prefix="sync_download_") as tmp:
@@ -625,12 +627,12 @@ def cmd_download(args):
                     sys.exit(rc)
                 if not os.path.exists(tar_path) or os.path.getsize(tar_path) == 0:
                     sys.stderr.write(
-                        "ERROR: GET returned no bytes — remote may be unreachable. url={}\n".format(url))
+                        f"ERROR: GET returned no bytes — remote may be unreachable. url={url}\n")
                     sys.exit(1)
                 if USE_DOWNLOAD_CACHE:
                     os.makedirs(DEFAULT_CACHE_ROOT, exist_ok=True)
                     shutil.copy2(tar_path, cache_path)
-                    sys.stdout.write("  cached as   : {}\n".format(cache_path))
+                    sys.stdout.write(f"  cached as   : {cache_path}\n")
                 _extract_and_apply(tar_path, entry["extract_dirs"], entry)
 
         if tar_path == cache_path:

@@ -36,7 +36,7 @@ def parse_plugin_yaml(path):
             continue
         indent = len(line) - len(line.lstrip())
         content = line.strip()
-        if content.startswith("contract") or content.startswith("inputs") or content.startswith("outputs"):
+        if content.startswith(("contract", "inputs", "outputs")):
             section = None
             subsection = None
             continue

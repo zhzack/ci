@@ -1,10 +1,13 @@
 """Pipeline definition application service."""
 
+from __future__ import annotations
+
 import re
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any
 
 from mini_pipeline.database.models import PipelineDefinition as PipelineEntity
-from mini_pipeline.database.repositories import PipelineRepository
+from mini_pipeline.database.repositories import PipelineRepository, PluginRepository
 from mini_pipeline.pipeline.parser import parse_pipeline
 from mini_pipeline.pipeline.schema import PipelineDefinition
 from mini_pipeline.plugin.manifest import load_manifest
@@ -13,8 +16,14 @@ _STEP_PARAMS_PATTERN = re.compile(r"^\$\{\{\s*([^{}]+?)\s*\}\}$")
 
 
 class PipelineService:
-    def __init__(self, repository: PipelineRepository) -> None:
+    def __init__(
+        self,
+        repository: PipelineRepository,
+        *,
+        plugin_repository: PluginRepository | None = None,
+    ) -> None:
         self.repository = repository
+        self.plugin_repository = plugin_repository
 
     def create(self, definition: str) -> PipelineEntity:
         pipeline = parse_pipeline(definition)
@@ -39,7 +48,9 @@ class PipelineService:
     def list(self) -> list[PipelineEntity]:
         return self.repository.list()
 
-    def validate(self, definition: str, *, params: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    def validate(
+        self, definition: str, *, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Validate that all step.required inputs have a wiring source.
 
         Returns a structured report. The check does not consult the database
@@ -52,9 +63,18 @@ class PipelineService:
     def _validate_wiring(self, pipeline: PipelineDefinition) -> None:
         # Validate the structure; full wiring check uses the runtime's
         # plugin manifest store, which is unavailable here.
-        for step in pipeline.steps:
-            # The Pydantic schema already ensures step.plugin_reference is valid.
-            pass
+        # The Pydantic schema already ensures step.plugin_reference is valid.
+        _ = pipeline.steps
+
+    def _plugin_install_path(self, plugin_ref: tuple[str, str]) -> Path | None:
+        if self.plugin_repository is None:
+            return None
+        try:
+            version = self.plugin_repository.get_version(*plugin_ref)
+        except Exception:
+            return None
+        path = Path(version.install_path)
+        return path if path.is_dir() else None
 
     def _wiring_report(
         self,
@@ -69,54 +89,54 @@ class PipelineService:
         - A `${{ all.deps.outputs.<key> }}` expression
         - A per-step override key (the key itself must be the input name)
         - A literal scalar (boolean/number/string) that is not a ${{}} expression
+
+        Inputs declared with `source: artifact` or `source: upload` are
+        satisfied by the executor at runtime and are never flagged.
         """
         steps = {step.name: step for step in pipeline.steps}
         steps_with_problems: list[dict[str, Any]] = []
-        available_outputs: dict[str, set[str]] = {
-            name: set() for name in steps
-        }
-
-        # Build the per-step output key set by reading plugin manifests from
-        # disk (best-effort). Unknown manifests are reported as warnings.
-        try:
-            for step in pipeline.steps:
-                plugin_name, plugin_version = step.plugin_reference
-                # We look in the install path via the params-schema endpoint
-                # we have to do this via DB here; skip if unavailable.
-                pass
-        except Exception:
-            pass
+        available_outputs: dict[str, set[str]] = {name: set() for name in steps}
 
         for step in pipeline.steps:
             plugin_name, plugin_version = step.plugin_reference
+            required: dict[str, Any] = {}
+            install_path = self._plugin_install_path(step.plugin_reference)
+            if install_path is None:
+                # Plugin not registered (or repo unavailable): nothing to
+                # verify against — skip silently rather than fail the report.
+                continue
             try:
-                # Look up the plugin's installed manifest by scanning the
-                # plugins directory for the right name/version subfolder.
-                from mini_pipeline.core.config import load_settings
-
-                settings = load_settings()
-                install_path = settings.storage.plugins / plugin_name / plugin_version
-                if install_path.is_dir():
-                    manifest = load_manifest(install_path)
-                    available_outputs[step.name] = set(manifest.outputs.keys())
-                    required = {
-                        k: spec
-                        for k, spec in (manifest.inputs or {}).items()
-                        if getattr(spec, "required", False)
-                    }
-                else:
-                    required = {}
-            except Exception as exc:  # noqa: BLE001
+                manifest = load_manifest(install_path)
+            except Exception as exc:
                 steps_with_problems.append(
                     {
                         "step": step.name,
                         "warning": f"manifest unavailable: {exc}",
                     }
                 )
-                required = {}
+                manifest = None
+            if manifest is not None:
+                outputs = manifest.contract.outputs
+                if isinstance(outputs, list):
+                    available_outputs[step.name] = {o.name for o in outputs}
+                else:
+                    available_outputs[step.name] = set(outputs.keys())
+                inputs = manifest.contract.inputs
+                if isinstance(inputs, list):
+                    for r in inputs:
+                        if getattr(r, "required", False) and getattr(
+                            r, "source", "parameter"
+                        ) not in ("artifact", "upload"):
+                            required[r.name] = r
+                else:
+                    required = {
+                        k: spec
+                        for k, spec in (inputs or {}).items()
+                        if getattr(spec, "required", False)
+                    }
 
             missing: list[str] = []
-            for key, spec in required.items():
+            for key in required:
                 value = (step.parameters or {}).get(key)
                 if value is None:
                     missing.append(key)

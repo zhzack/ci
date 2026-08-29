@@ -1,5 +1,5 @@
 import React from "react";
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { Button, Space, Table } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
@@ -24,27 +24,24 @@ import { useDebounce } from '@/hooks/useDebounce';
 import { deletePipeline, listPipelines } from '@/api/pipeline';
 import type { PipelineRecord } from '@/types/pipeline';
 
+const PAGE_SIZE = 10;
+
 export default function PipelineListPage(): React.JSX.Element {
   const navigate = useNavigate();
   const [keyword, setKeyword] = useState('');
+  const [page, setPage] = useState(1);
   const debounced = useDebounce(keyword, 300);
-  const { data, isLoading, error, refetch } = useApiQuery(['pipelines'], listPipelines);
+  const { data, isLoading, error, refetch } = useApiQuery(
+    ['pipelines', { page, search: debounced }],
+    () => listPipelines({ page, page_size: PAGE_SIZE }),
+  );
 
   const deleteMutation = useApiMutation<unknown, string>(
     { mutationFn: (identifier: string) => deletePipeline(identifier) },
     [['pipelines']],
   );
 
-  const filtered = useMemo(() => {
-    if (!data) {
-      return [];
-    }
-    if (!debounced.trim()) {
-      return data;
-    }
-    const needle = debounced.toLowerCase();
-    return data.filter((item) => item.name.toLowerCase().includes(needle));
-  }, [data, debounced]);
+  const items = data?.items ?? [];
 
   const columns: ColumnsType<PipelineRecord> = [
     { title: 'Name', dataIndex: 'name' },
@@ -119,7 +116,16 @@ export default function PipelineListPage(): React.JSX.Element {
       />
       <div className="app-content-card">
         <TableToolbar
-          left={<SearchBar value={keyword} onChange={setKeyword} placeholder="Search by name" />}
+          left={
+            <SearchBar
+              value={keyword}
+              onChange={(value) => {
+                setKeyword(value);
+                setPage(1);
+              }}
+              placeholder="Search by name"
+            />
+          }
           right={
             <Button icon={<ReloadOutlined />} onClick={() => refetch()}>
               Refresh
@@ -130,14 +136,20 @@ export default function PipelineListPage(): React.JSX.Element {
           <Loading rows={6} />
         ) : error ? (
           <ErrorAlert error={error} onRetry={() => refetch()} />
-        ) : filtered.length === 0 ? (
+        ) : items.length === 0 ? (
           <EmptyState description="No pipelines yet" />
         ) : (
           <Table
             rowKey="id"
             columns={columns}
-            dataSource={filtered}
-            pagination={{ pageSize: 10 }}
+            dataSource={items}
+            pagination={{
+              current: page,
+              pageSize: PAGE_SIZE,
+              total: data?.total ?? 0,
+              showSizeChanger: false,
+              onChange: (next) => setPage(next),
+            }}
           />
         )}
       </div>

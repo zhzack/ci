@@ -4,22 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目一句话
 
-`Mini Pipeline` 是一个 FastAPI + React 的轻量级流水线执行平台。当前实现的是 **Pipeline Runtime Protocol v2**（见 `Pipeline Runtime Protocol v2（建议方案）.md`）：插件只是普通进程（无 SDK），平台负责资源解析、运行时分发、产物收集；流水线用 YAML 描述 DAG，输出通过 `${{ params.* }}` / `${{ steps.<dep>.outputs.* }}` / `${{ all.deps.outputs.* }}` 三种表达式接线。
+`Mini Pipeline` 是一个 FastAPI + React 的轻量级流水线执行平台。当前实现的是 **Pipeline Runtime Protocol v2**（见 `Pipeline Runtime Protocol v2（建议方案）.md`）：插件只是普通进程（无 SDK），平台负责资源解析、运行时分发、产物收集；流水线用 YAML 描述 DAG，输出通过 `${{ params.* }}` / `${{ steps.<dep>.outputs.* }}` / `${{ all.deps.outputs.* }}` 三种表达式接线。0.2 起平台具备 token 鉴权（admin/reader）、运行取消、step 重试、SSE 实时推送、Prometheus 指标、Alembic 迁移与保留策略 GC（详见 CHANGELOG.md 与 docs/operations.md）。
 
 ## 关键目录
 
 - `mini_pipeline/` — 后端 (Python 3.9+, FastAPI, SQLAlchemy 2, Pydantic v2)
-  - `core/` — Settings 加载（含 `${ENV}` 严格展开）、`Services` 装配容器
+  - `core/` — Settings 加载（含 `${ENV}` 严格展开）、`Services` 装配容器、`events.py`（EventBus + CancellationRegistry）、`logging.py`（text/JSON 结构化日志）
   - `domain/` — 跨模块契约：`contract.py`（v2 Resource：InputResource/OutputResource/PluginContract；ResourceType=string/number/boolean/json/file/directory/list；ResourceSource=parameter/upload/url/artifact/generated）、`states.py`、`exceptions.py`
   - `database/` — SQLAlchemy 模型 + 仓储（`PipelineRepository`/`PluginRepository`/`RunRepository`），统一通过 `repositories.py`
   - `source/` — 插件来源注册表：`git.py`、`http.py`、`upload.py`、`registry.py`、`archive.py`（ZIP 安全解压：路径穿越/符号链接/大小/文件数限制）
   - `plugin/manifest.py` — `PluginManifest`（已统一为 v2 schema，v1 flat inputs/outputs 通过 `_upgrade_v1_to_v2` 自动升级；`runtime.entry` 解析为 `manifest.entry`，默认 `run.sh`）
-  - `runtime/` — `RuntimeRegistry`，已注册 `shell`/`python`/`node`/`executable` 四种；`registry.get(type)` 校验、`runtime: docker` 已在 manifest 校验器中接受但未实现
+  - `runtime/` — `base.ProcessRunner`（进程生命周期：日志泵、超时、取消、POSIX killpg / Windows taskkill 树终止）；`shell`/`python`/`node`/`executable` 四种 Runtime 是它的薄封装（Windows 下解析 shebang 走 Git Bash）；`runtime: docker` 已在 manifest 校验器中接受但未实现
   - `pipeline/` — `schema.py`（PipelineDefinition/PipelineStep，ref=`name@semver`）、`dag.py`（拓扑序）、`resolver.py`（表达式解析）、`service.py`
   - `executor/` — v2 协议全生命周期：`task_executor.py` 主流程，`context.py` 创建 `workspace/{input,output,temp,cache,logs}` + 写入 `context.json`，`collector.py` 收集 outputs/metadata/artifacts 并校验 `error.json`
-  - `scheduler/` — `engine.PipelineEngine`（DAG coordinator，区分 coordinator pool 与 task pool）；`dispatcher.Dispatcher`（双线程池：coordinator_workers 默认 2、task_workers 默认 4）；`service.RunService`
-  - `artifact/local.py` — `LocalArtifactStore`（本地持久化，下载用不透明 `artifact_id`，API 不暴露路径）
-  - `api/router.py` 组装：`/health` + `/api/{plugins,pipelines,runs,artifacts,dashboard,debug}`；错误统一映射
+  - `scheduler/` — `engine.PipelineEngine`（DAG coordinator + 取消/重试/事件发布）；`dispatcher.Dispatcher`（双线程池）；`service.RunService`（submit/cancel/branch）；`recovery.py`（启动孤儿收割）
+  - `artifact/local.py` — `LocalArtifactStore`（本地持久化，下载用不透明 `artifact_id`，API 不暴露路径；下载响应带 sha256 ETag/304）
+  - `api/router.py` 组装：根级 `observability.py`（`/health`、`/health/ready`、`/health/version`、`/metrics`）+ `/api/{plugins,pipelines,runs,artifacts,dashboard,debug}`；整个 `/api` 挂 `api/auth.py::require_auth`（启用鉴权时校验 token/角色，debug 仅 admin）；列表接口统一返回 `api/pagination.py` 的分页信封 `{items,total,page,page_size,pages}`；错误统一映射
 - `frontend/` — React 19 + Vite 5 + TS strict + AntD 5 + TanStack Query 5 + Zustand；目录严格按 `api/hooks/components/pages/store/types` 分层（详见 `docs/frontend.md` 和 `简化流水线平台前端开发设计文档.md`）
 - `examples/` — 示例插件（每个含 `plugin.yaml` + `run.sh`）和 Pipeline YAML（如 `v2-full-demo.yaml`、`fanout-demo.yaml`）
 - `config/{default,docker}.yaml` — 主配置；`docker.yaml` 用 `${DATABASE_URL}` 占位由 docker-compose 注入
@@ -103,9 +103,10 @@ contract:
 
 ```
 Task:    PENDING -> READY -> RUNNING -> SUCCESS
-                            |-> FAILED
-                            +-> SKIPPED (依赖失败/被跳过)
-Pipeline: PENDING -> RUNNING -> SUCCESS | FAILED   (任一 FAILED/SKIPPED 即整 Pipeline FAILED)
+                            |-> FAILED (重试耗尽后)
+                            |-> SKIPPED (依赖失败/被跳过)
+                            +-> CANCELLED (运行取消或依赖被取消)
+Pipeline: PENDING -> RUNNING -> SUCCESS | FAILED | CANCELLED
 ```
 
 ## REST API 摘要
@@ -135,14 +136,17 @@ Pipeline: PENDING -> RUNNING -> SUCCESS | FAILED   (任一 FAILED/SKIPPED 即整
 - `PipelineGraph` 当前是节点/边列表预览；`summarizeGraph` 契约稳定，未来替换 React Flow 只换实现
 - TypeScript `strict`；`any` 在 ESLint 报错；`@/*` alias → `src/*`
 
-## Phase 1 之后
+## Phase 1 之后（0.2 已完成）
 
-下一阶段候选（见 `readme.md` 末尾）：Docker/Kubernetes Runtime、MinIO/S3 ArtifactStore、Alembic、鉴权、持久队列、分布式 Runner、Monaco YAML 编辑器、React Flow DAG 可视化、暗色主题。
+0.2 补齐了：鉴权、Alembic、结构化日志/Prometheus/就绪探针、分页/限流/CORS/GZip/OpenAPI、取消、重试、SSE（run 事件流 + 日志流）、产物 ETag、启动孤儿收割、保留策略 GC、前端暗色主题/服务端分页/SSE 日志。下一阶段计划（Docker Runtime、S3 ArtifactStore、持久队列/分布式 Runner、React Flow DAG 等）见 `docs/roadmap.md`；已完成项明细见 `CHANGELOG.md`。
 
 ## 文档入口
 
 - 平台 README：`readme.md`
 - 架构：`docs/architecture.md`
+- 运维手册（探针/指标/GC/恢复/排障）：`docs/operations.md`
+- 演进路线：`docs/roadmap.md`
+- 变更历史：`CHANGELOG.md`
 - 前端规范：`docs/frontend.md` + `简化流水线平台前端开发设计文档.md`
 - v2 协议提案：`Pipeline Runtime Protocol v2（建议方案）.md`
 - 原始需求稿：`docs/original-design.md`

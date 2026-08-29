@@ -20,6 +20,43 @@ execution:
   coordinator_workers: 2
   task_workers: 4
   task_timeout_seconds: 3600
+  # Mark runs stuck in PENDING/RUNNING at startup as FAILED (crash recovery).
+  reap_orphans_on_start: true
+  # Base delay for step retries; doubles per attempt, capped at 60s.
+  retry_backoff_seconds: 2
+
+logging:
+  # text (console friendly) | json (log-collector friendly)
+  level: INFO
+  format: text
+
+observability:
+  # Expose GET /metrics in Prometheus text format.
+  metrics_enabled: true
+
+auth:
+  # Development default: disabled, every request is anonymous admin.
+  # Production (see config/docker.yaml): enable and inject tokens from env.
+  enabled: false
+  tokens: []
+  # tokens:
+  #   - token: <secret>          # e.g. ${MINI_PIPELINE_ADMIN_TOKEN}
+  #     name: ci-bot
+  #     role: admin             # admin | reader
+
+security:
+  # CORS origins allowed to call the API from a browser. Empty = no CORS.
+  cors_origins: ["http://localhost:5173", "http://127.0.0.1:5173"]
+  # Max mutating (POST/PUT/PATCH/DELETE) requests per client IP per minute.
+  # 0 disables rate limiting.
+  rate_limit_per_minute: 0
+
+retention:
+  # Days to keep per-run data after the run finishes. 0 = keep forever.
+  workspaces_days: 14
+  logs_days: 30
+  artifacts_days: 90
+  temp_hours: 24
 
 sources:
   http_timeout_seconds: 30

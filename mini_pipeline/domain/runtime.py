@@ -1,7 +1,8 @@
 """Protocols shared by runtime implementations."""
 
+import threading
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Protocol, TextIO
 
@@ -13,12 +14,14 @@ class RuntimeRequest:
     environment: Mapping[str, str]
     timeout_seconds: int
     log_stream: TextIO
+    cancel_event: Optional[threading.Event] = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)
 class RuntimeResult:
     exit_code: int
     timed_out: bool = False
+    cancelled: bool = False
     error: Optional[str] = None
 
 

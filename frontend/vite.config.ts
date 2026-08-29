@@ -11,11 +11,32 @@ export default defineConfig({
       '@': path.resolve(__dirname, 'src'),
     },
   },
+  build: {
+    // The antd vendor chunk is ~1 MB raw (330 kB gzip) and cached across
+    // releases; above the default limit by design.
+    chunkSizeWarningLimit: 1100,
+    rollupOptions: {
+      output: {
+        // Split the large vendor libraries into cacheable chunks instead of
+        // one oversized app bundle.
+        manualChunks: {
+          react: ['react', 'react-dom', 'react-router-dom'],
+          antd: ['antd', '@ant-design/icons'],
+          query: ['@tanstack/react-query', 'axios', 'zustand'],
+        },
+      },
+    },
+  },
   server: {
     host: '127.0.0.1',
     port: 5173,
     proxy: {
       '/api': {
+        target: API_TARGET,
+        changeOrigin: true,
+      },
+      // System endpoints live outside the /api prefix (health probes).
+      '/health': {
         target: API_TARGET,
         changeOrigin: true,
       },

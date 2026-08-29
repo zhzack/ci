@@ -668,9 +668,11 @@ export default function PipelineVisualEditorPage(): React.JSX.Element {
     }
   }, [existingQuery.data]);
 
-  const pluginsQuery = useApiQuery(['plugins'], listPlugins);
+  const pluginsQuery = useApiQuery(['plugins'], () =>
+    listPlugins({ page: 1, page_size: 200 }),
+  );
   const plugins = useMemo<PluginVersion[]>(
-    () => pluginsQuery.data ?? [],
+    () => pluginsQuery.data?.items ?? [],
     [pluginsQuery.data],
   );
 

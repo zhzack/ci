@@ -35,41 +35,13 @@ class Database:
         cursor.close()
 
     def create_schema(self) -> None:
-        # For SQLite dev convenience: if the model defines a column that the
-        # existing DB doesn't have, drop and recreate. In production this is a
-        # no-op because the schema starts in sync.
-        self._upgrade_schema()
+        """Create any missing tables.
+
+        Schema *evolution* is owned by Alembic (``alembic upgrade head``);
+        this only bootstraps fresh databases so `pip install` + run works
+        with zero setup. It never mutates or drops existing tables.
+        """
         Base.metadata.create_all(self.engine)
-
-    def _upgrade_schema(self) -> None:
-        from sqlalchemy import inspect, text
-
-        if not self.engine.url.drivername.startswith("sqlite"):
-            return
-        inspector = inspect(self.engine)
-        existing = set(inspector.get_table_names())
-        for table in Base.metadata.sorted_tables:
-            if table.name not in existing:
-                continue
-            model_cols = {c.name: bool(c.nullable) for c in table.columns}
-            db_cols = {
-                c["name"]: bool(c.get("nullable", True))
-                for c in inspector.get_columns(table.name)
-            }
-            needs_rebuild = False
-            for name, nullable in model_cols.items():
-                if name not in db_cols:
-                    needs_rebuild = True
-                    break
-                if db_cols[name] != nullable:
-                    needs_rebuild = True
-                    break
-            if not needs_rebuild:
-                continue
-            # Rebuild by dropping then recreating. The user has been told
-            # that the DB is dev-only; data loss here is acceptable.
-            Base.metadata.drop_all(self.engine, tables=[table])
-            Base.metadata.create_all(self.engine, tables=[table])
 
     @contextmanager
     def session(self) -> Iterator[Session]:

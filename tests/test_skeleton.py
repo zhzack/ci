@@ -35,4 +35,20 @@ def test_health(tmp_path: Path) -> None:
         response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["version"]
+    assert "uptime_seconds" in body
+
+
+def test_readiness_checks_dependencies(tmp_path: Path) -> None:
+    with TestClient(create_app(build_settings(tmp_path))) as client:
+        response = client.get("/health/ready")
+        version = client.get("/health/version")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ready"
+    assert body["checks"]["database"] == "ok"
+    assert body["checks"]["storage"] == "ok"
+    assert version.json()["name"] == "mini-pipeline"

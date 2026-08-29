@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 
 from mini_pipeline.domain.contract import (
-    InputResource,
     PluginContract,
     ResourceSource,
 )
@@ -176,3 +175,32 @@ def resolve_inputs(
         json.dumps(params, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     return resolved
+
+
+def write_legacy_input_json(
+    workspace: Path,
+    *,
+    task_id: str,
+    params: dict[str, Any],
+    dependencies: dict[str, Any],
+) -> Path:
+    """Write the v1-protocol ``input.json`` at the workspace root.
+
+    v1 plugins read a single JSON payload ``{task_id, workspace, params,
+    dependencies}`` instead of the v2 ``input/`` directory tree. Writing
+    both keeps every historical plugin working on the v2 executor.
+    """
+    payload = {
+        "task_id": task_id,
+        "workspace": str(workspace.resolve()),
+        "params": params,
+        "dependencies": {
+            name: entry.model_dump() if hasattr(entry, "model_dump") else entry
+            for name, entry in (dependencies or {}).items()
+        },
+    }
+    path = workspace / "input.json"
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return path

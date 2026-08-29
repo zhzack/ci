@@ -1,4 +1,5 @@
 import React from "react";
+import { useState } from 'react';
 import { Button, Table, Tag, Typography } from 'antd';
 import type { TableColumnsType } from 'antd';
 import { DownloadOutlined } from '@ant-design/icons';
@@ -10,6 +11,8 @@ import { useApiQuery } from '@/hooks/useApiQuery';
 import { listArtifacts } from '@/api/artifact';
 import { downloadArtifactUrl } from '@/api/run';
 import type { ArtifactListItem } from '@/types/artifact';
+
+const PAGE_SIZE = 10;
 
 const columns: TableColumnsType<ArtifactListItem> = [
   { title: 'Name', dataIndex: 'name' },
@@ -53,7 +56,12 @@ const columns: TableColumnsType<ArtifactListItem> = [
 ];
 
 export default function ArtifactPage(): React.JSX.Element {
-  const { data, isLoading, error, refetch } = useApiQuery(['artifacts'], listArtifacts);
+  const [page, setPage] = useState(1);
+  const { data, isLoading, error, refetch } = useApiQuery(
+    ['artifacts', { page }],
+    () => listArtifacts({ page, page_size: PAGE_SIZE }),
+  );
+  const items = data?.items ?? [];
 
   return (
     <>
@@ -66,15 +74,21 @@ export default function ArtifactPage(): React.JSX.Element {
         <Loading rows={6} />
       ) : error ? (
         <ErrorAlert error={error} onRetry={() => refetch()} />
-      ) : !data || data.length === 0 ? (
+      ) : items.length === 0 ? (
         <EmptyState description="No artifacts collected yet" />
       ) : (
         <Table
           rowKey="id"
           size="middle"
           columns={columns}
-          dataSource={data}
-          pagination={{ pageSize: 10 }}
+          dataSource={items}
+          pagination={{
+            current: page,
+            pageSize: PAGE_SIZE,
+            total: data?.total ?? 0,
+            showSizeChanger: false,
+            onChange: (next) => setPage(next),
+          }}
         />
       )}
     </>

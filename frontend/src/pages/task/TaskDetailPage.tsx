@@ -18,7 +18,12 @@ import {
   message as antdMessage,
 } from 'antd';
 import type { TableColumnsType } from 'antd';
-import { BranchesOutlined, DownloadOutlined, ReloadOutlined } from '@ant-design/icons';
+import {
+  BranchesOutlined,
+  DownloadOutlined,
+  ReloadOutlined,
+  StopOutlined,
+} from '@ant-design/icons';
 import { useNavigate, useParams } from 'react-router-dom';
 import { PageHeader } from '@/components/PageHeader';
 import { Loading } from '@/components/Loading';
@@ -26,9 +31,19 @@ import { ErrorAlert } from '@/components/ErrorAlert';
 import { LogViewer } from '@/components/LogViewer';
 import { StatusTag } from '@/components/StatusTag';
 import { JsonViewer } from '@/components/JsonViewer';
-import { useApiQuery } from '@/hooks/useApiQuery';
+import { confirmDanger } from '@/components/Confirm';
+import { useApiQuery, describeError } from '@/hooks/useApiQuery';
 import { useApiMutation } from '@/hooks/useApiMutation';
-import { getRun, getTaskLog, getAggregatedLog, branchRun as branchRunApi, submitRun, downloadArtifactUrl } from '@/api/run';
+import { useRunEventStream } from '@/hooks/useRunEventStream';
+import { useLogStream } from '@/hooks/useLogStream';
+import {
+  getRun,
+  getAggregatedLog,
+  branchRun as branchRunApi,
+  submitRun,
+  downloadArtifactUrl,
+  cancelRun,
+} from '@/api/run';
 import type { PipelineRun, TaskRun } from '@/types/run';
 
 const ACTIVE = new Set(['PENDING', 'READY', 'RUNNING']);
@@ -42,20 +57,19 @@ function isEmptyObj(v: unknown): boolean {
 export default function TaskDetailPage(): React.JSX.Element {
   const { runId } = useParams<{ runId: string }>();
   const navigate = useNavigate();
-  const { data, isLoading, error, refetch } = useApiQuery(
+  // REST query seeds the first render and reconciles the cache; live updates
+  // arrive over SSE (see useRunEventStream) without polling.
+  const { data: fetched, isLoading, error, refetch } = useApiQuery(
     ['run', runId],
     () => getRun(runId ?? ''),
-    { enabled: Boolean(runId), refetchInterval: (query) => {
-      const status = query.state.data?.status;
-      return status && ACTIVE.has(status) ? 2_000 : false;
-    } },
+    { enabled: Boolean(runId) },
   );
+  const live = useRunEventStream(runId ?? '', fetched ?? null, {
+    enabled: Boolean(runId) && Boolean(fetched) && ACTIVE.has(fetched?.status ?? ''),
+  });
+  const data: PipelineRun | undefined = live.run ?? fetched;
 
   const [selectedStep, setSelectedStep] = useState<string | null>(null);
-  const [logText, setLogText] = useState('');
-  const [logLoading, setLogLoading] = useState(false);
-  const [logError, setLogError] = useState<unknown>(null);
-
   const [logMode, setLogMode] = useState<'per-step' | 'aggregated'>('aggregated');
   const [aggLogText, setAggLogText] = useState('');
   const [aggLogLoading, setAggLogLoading] = useState(false);
@@ -65,6 +79,7 @@ export default function TaskDetailPage(): React.JSX.Element {
   const [branchParams, setBranchParams] = useState('{}');
 
   const steps = useMemo(() => data?.tasks ?? [], [data?.tasks]);
+  const runActive = Boolean(data?.status && ACTIVE.has(data.status));
 
   const branchMutation = useApiMutation(
     {
@@ -74,6 +89,11 @@ export default function TaskDetailPage(): React.JSX.Element {
     [['runs'], ['recent-runs'], ['dashboard', 'summary']],
   );
 
+  const cancelMutation = useApiMutation(
+    { mutationFn: (id: string) => cancelRun(id) },
+    [['run', runId], ['runs'], ['dashboard', 'summary']],
+  );
+
   const submitRunMutation = useApiMutation(
     {
       mutationFn: (payload: { pipeline: string; params: Record<string, unknown> }) =>
@@ -81,6 +101,23 @@ export default function TaskDetailPage(): React.JSX.Element {
     },
     [['runs'], ['recent-runs'], ['dashboard', 'summary']],
   );
+
+  const handleCancel = async () => {
+    if (!runId) return;
+    const ok = await confirmDanger({
+      title: 'Cancel run',
+      content: 'Running plugin processes will be terminated and remaining steps cancelled.',
+      okText: 'Cancel run',
+    });
+    if (!ok) return;
+    try {
+      await cancelMutation.mutateAsync(runId);
+      antdMessage.success('Run cancelled');
+      void refetch();
+    } catch (err) {
+      console.error(describeError(err));
+    }
+  };
 
   const handleBranch = async () => {
     let params: Record<string, unknown> = {};
@@ -111,25 +148,11 @@ export default function TaskDetailPage(): React.JSX.Element {
     }
   }, [selectedStep, steps]);
 
-  const refreshLog = useCallback(async () => {
-    if (!runId || !selectedStep) {
-      return;
-    }
-    setLogLoading(true);
-    setLogError(null);
-    try {
-      const text = await getTaskLog(runId, selectedStep);
-      setLogText(text);
-    } catch (err) {
-      setLogError(err);
-    } finally {
-      setLogLoading(false);
-    }
-  }, [runId, selectedStep]);
-
-  useEffect(() => {
-    void refreshLog();
-  }, [refreshLog]);
+  // Live per-step log: SSE tail while the task runs, full content otherwise.
+  const perStepLog = useLogStream(runId ?? '', selectedStep ?? '', {
+    live: true,
+    enabled: Boolean(runId) && Boolean(selectedStep),
+  });
 
   const fetchAggregatedLog = useCallback(async () => {
     if (!runId) return;
@@ -149,35 +172,17 @@ export default function TaskDetailPage(): React.JSX.Element {
     void fetchAggregatedLog();
   }, [fetchAggregatedLog]);
 
-  // Poll aggregated log while the run is still active.
+  // Poll aggregated log while the run is active; refresh once on terminal.
+  const runStatus = data?.status;
   useEffect(() => {
-    if (!runId || !data) return;
-    const status = data.status;
-    if (status && ACTIVE.has(status)) {
+    if (!runId || !runStatus) return;
+    if (ACTIVE.has(runStatus)) {
       const handle = window.setInterval(() => { void fetchAggregatedLog(); }, 2_000);
       return () => window.clearInterval(handle);
     }
+    void fetchAggregatedLog();
     return undefined;
-  }, [runId, data?.status, fetchAggregatedLog]);
-
-  // Also refresh aggregated log when the run transitions to terminal state.
-  useEffect(() => {
-    if (data && !ACTIVE.has(data.status)) {
-      void fetchAggregatedLog();
-    }
-  }, [data?.status, fetchAggregatedLog]);
-
-  useEffect(() => {
-    if (!runId || !selectedStep) {
-      return;
-    }
-    const status = steps.find((step) => step.name === selectedStep)?.status;
-    if (status && ACTIVE.has(status)) {
-      const handle = window.setInterval(refreshLog, 2_000);
-      return () => window.clearInterval(handle);
-    }
-    return undefined;
-  }, [runId, selectedStep, steps, refreshLog]);
+  }, [runId, runStatus, fetchAggregatedLog]);
 
   const taskColumns: TableColumnsType<TaskRun> = [
     { title: 'Step', dataIndex: 'name' },
@@ -186,6 +191,11 @@ export default function TaskDetailPage(): React.JSX.Element {
       title: 'Status',
       dataIndex: 'status',
       render: (value: string) => <StatusTag status={value} />,
+    },
+    {
+      title: 'Attempt',
+      dataIndex: 'attempt',
+      render: (value: number | undefined) => (value && value > 1 ? `#${value}` : '—'),
     },
     { title: 'Duration', dataIndex: 'finished_at' },
   ];
@@ -198,7 +208,17 @@ export default function TaskDetailPage(): React.JSX.Element {
         extra={
           <Space>
             <Tag color="blue">id: {runId}</Tag>
-            {data && data.status !== 'PENDING' && data.status !== 'RUNNING' && data.status !== 'READY' ? (
+            {data && runActive ? (
+              <Button
+                danger
+                icon={<StopOutlined />}
+                onClick={handleCancel}
+                loading={cancelMutation.isPending}
+              >
+                Cancel
+              </Button>
+            ) : null}
+            {data && !runActive ? (
               <>
                 <Button
                   type="primary"
@@ -262,12 +282,10 @@ export default function TaskDetailPage(): React.JSX.Element {
                   {
                     key: 'per-step',
                     label: `Step log · ${selectedStep ?? ''}`,
-                    children: logError ? (
-                      <ErrorAlert error={logError} onRetry={refreshLog} />
-                    ) : (
+                    children: (
                       <LogViewer
-                        log={logText}
-                        loading={logLoading}
+                        log={perStepLog.content}
+                        loading={perStepLog.loading}
                         title={selectedStep ?? 'Step'}
                         downloadName={`${selectedStep ?? 'task'}.log`}
                       />
@@ -296,7 +314,10 @@ export default function TaskDetailPage(): React.JSX.Element {
               <Descriptions column={1} size="small">
                 <Descriptions.Item label="Pipeline">{data.pipeline_name}</Descriptions.Item>
                 <Descriptions.Item label="Status">
-                  <StatusTag status={data.status} />
+                  <Space>
+                    <StatusTag status={data.status} />
+                    {runActive ? <Tag color="green">live</Tag> : null}
+                  </Space>
                 </Descriptions.Item>
                 <Descriptions.Item label="Created">
                   {new Date(data.created_at).toLocaleString()}

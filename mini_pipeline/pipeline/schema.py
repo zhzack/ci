@@ -22,6 +22,8 @@ class PipelineStep(BaseModel):
     plugin: str
     depends: list[str] = Field(default_factory=list)
     parameters: dict[str, Any] = Field(default_factory=dict, alias="with")
+    # Automatic retry count for this step after a failure (0 = no retry).
+    retries: int = Field(default=0, ge=0, le=10)
 
     @field_validator("name")
     @classmethod

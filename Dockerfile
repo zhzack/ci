@@ -9,10 +9,13 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY pyproject.toml readme.md ./
+COPY pyproject.toml readme.md alembic.ini ./
+COPY migrations ./migrations
 COPY mini_pipeline ./mini_pipeline
 COPY config ./config
-RUN pip install --no-cache-dir .
+COPY scripts/start.sh ./scripts/start.sh
+RUN pip install --no-cache-dir . \
+    && chmod +x scripts/start.sh
 
 RUN useradd --create-home --uid 10001 pipeline \
     && mkdir -p /app/data \
@@ -20,4 +23,4 @@ RUN useradd --create-home --uid 10001 pipeline \
 USER pipeline
 
 EXPOSE 8000
-CMD ["uvicorn", "mini_pipeline.server.app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["scripts/start.sh"]

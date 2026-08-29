@@ -1,7 +1,16 @@
 import { http } from './http';
+import type { Paged } from '@/types/common';
 import type { ArtifactListItem } from '@/types/artifact';
 
-export async function listArtifacts(): Promise<ArtifactListItem[]> {
-  const { data } = await http.get<ArtifactListItem[]>('/artifacts');
+export type ArtifactListParams = {
+  page?: number;
+  page_size?: number;
+  run_id?: string;
+};
+
+export async function listArtifacts(
+  params: ArtifactListParams = {},
+): Promise<Paged<ArtifactListItem>> {
+  const { data } = await http.get<Paged<ArtifactListItem>>('/artifacts', { params });
   return data;
 }

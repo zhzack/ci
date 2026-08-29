@@ -122,40 +122,6 @@ class PipelineRun(Base):
     )
 
 
-class RunNode(Base):
-    """A globally addressable execution unit. Each `TaskRun` row points to
-    at most one `RunNode`; a `RunNode` can be referenced by many `TaskRun`
-    rows (e.g. when a branch run reuses the parent's task results)."""
-
-    __tablename__ = "run_nodes"
-    __table_args__ = (
-        UniqueConstraint("hash", name="uq_run_node_hash"),
-        Index("ix_run_node_pipeline_step", "pipeline_definition_id", "step_name"),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    pipeline_definition_id: Mapped[str] = mapped_column(
-        ForeignKey("pipeline_definitions.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    step_name: Mapped[str] = mapped_column(String(128), nullable=False)
-    plugin_name: Mapped[str] = mapped_column(String(128), nullable=False)
-    plugin_version: Mapped[str] = mapped_column(String(64), nullable=False)
-    hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    resolved_params: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
-    inputs_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
-    outputs: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
-    log_path: Mapped[Optional[str]] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String(32), nullable=False)
-    message: Mapped[Optional[str]] = mapped_column(Text)
-    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
-    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
-
-    task_runs: Mapped[list["TaskRun"]] = relationship(back_populates="node")
-
-
 class TaskRun(Base):
     __tablename__ = "task_runs"
     __table_args__ = (UniqueConstraint("run_id", "step_name", name="uq_run_step"),)
@@ -171,20 +137,16 @@ class TaskRun(Base):
     status: Mapped[str] = mapped_column(
         String(32), default=TaskStatus.PENDING.value, nullable=False, index=True
     )
+    # 1-based execution attempt; > 1 when automatic retries were applied.
+    attempt: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     message: Mapped[Optional[str]] = mapped_column(Text)
     outputs: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     log_path: Mapped[Optional[str]] = mapped_column(Text)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
-    node_id: Mapped[Optional[str]] = mapped_column(
-        ForeignKey("run_nodes.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
 
     run: Mapped[PipelineRun] = relationship(back_populates="tasks")
-    node: Mapped[Optional[RunNode]] = relationship(back_populates="task_runs")
     artifacts: Mapped[list["Artifact"]] = relationship(
         back_populates="task", cascade="all, delete-orphan"
     )

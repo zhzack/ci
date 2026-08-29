@@ -1,84 +1,71 @@
 """Local shell process runtime."""
 
-import os
-import subprocess
-import time
-from queue import Empty, Queue
-from threading import Thread
+from __future__ import annotations
+
+import shutil
+import sys
+from pathlib import Path
 
 from mini_pipeline.domain.runtime import RuntimeRequest, RuntimeResult
+from mini_pipeline.runtime.base import ProcessRunner
+
+_SHEBANG_INTERPRETERS = {
+    "sh": "bash",
+    "bash": "bash",
+    "dash": "bash",
+    "zsh": "bash",
+    "ksh": "bash",
+}
+
+
+def resolve_shell_command(entry: Path) -> list[str] | None:
+    """Resolve how to launch a shell script on the current platform.
+
+    On POSIX the kernel honours the shebang, so the script is executed
+    directly. On Windows a script is not a valid Win32 executable: we parse
+    the shebang and dispatch to an interpreter found on PATH (Git Bash's
+    ``bash`` covers the common ``#!/bin/sh`` / ``#!/usr/bin/env bash`` cases).
+    Returns ``None`` when no resolution is possible.
+    """
+    if sys.platform != "win32":
+        return [str(entry)]
+    try:
+        first_line = entry.open("r", encoding="utf-8", errors="replace").readline()
+    except OSError:
+        first_line = ""
+    if not first_line.startswith("#!"):
+        if entry.suffix.lower() in {".sh", ".bash"}:
+            bash = shutil.which("bash")
+            return [bash, str(entry)] if bash else None
+        return [str(entry)]
+    tokens = first_line[2:].strip().split()
+    if not tokens:
+        return [str(entry)]
+    if tokens[0].endswith("env") and len(tokens) > 1:
+        tokens = tokens[1:]
+    program = Path(tokens[0]).name
+    interpreter = _SHEBANG_INTERPRETERS.get(program)
+    if interpreter:
+        resolved = shutil.which(interpreter)
+        return [resolved, str(entry)] if resolved else None
+    resolved = shutil.which(program)
+    if resolved:
+        return [resolved, str(entry)]
+    return [str(entry)]
 
 
 class ShellRuntime:
     runtime_type = "shell"
 
+    def __init__(self) -> None:
+        self._runner = ProcessRunner()
+
     def execute(self, request: RuntimeRequest) -> RuntimeResult:
-        environment = os.environ.copy()
-        environment.update(request.environment)
-        try:
-            process = subprocess.Popen(
-                list(request.command),
-                cwd=request.cwd,
-                env=environment,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-                start_new_session=True,
+        entry = Path(request.command[0])
+        command = resolve_shell_command(entry)
+        if command is None:
+            return RuntimeResult(
+                exit_code=-1,
+                error="No shell interpreter found to execute the plugin entry",
             )
-        except OSError as exc:
-            return RuntimeResult(exit_code=-1, error=str(exc))
-
-        output: Queue = Queue()
-        sentinel = object()
-
-        def read_output() -> None:
-            assert process.stdout is not None
-            try:
-                for line in iter(process.stdout.readline, ""):
-                    output.put(line)
-            finally:
-                output.put(sentinel)
-                process.stdout.close()
-
-        reader = Thread(target=read_output, daemon=True)
-        reader.start()
-        timed_out = False
-        finished_reading = False
-        deadline = time.monotonic() + request.timeout_seconds
-        try:
-            while not finished_reading:
-                if time.monotonic() >= deadline and not timed_out:
-                    timed_out = True
-                    self._terminate_process_group(process)
-                try:
-                    item = output.get(timeout=0.1)
-                except Empty:
-                    continue
-                if item is sentinel:
-                    finished_reading = True
-                else:
-                    request.log_stream.write(item)
-                    request.log_stream.flush()
-            exit_code = process.wait(timeout=5)
-        finally:
-            if process.poll() is None:
-                self._terminate_process_group(process)
-            reader.join(timeout=1)
-
-        if timed_out:
-            return RuntimeResult(exit_code=exit_code, timed_out=True, error="Execution timed out")
-        return RuntimeResult(exit_code=exit_code)
-
-    @staticmethod
-    def _terminate_process_group(process: subprocess.Popen) -> None:
-        try:
-            os.killpg(process.pid, 15)
-            process.wait(timeout=2)
-        except (ProcessLookupError, subprocess.TimeoutExpired):
-            try:
-                os.killpg(process.pid, 9)
-            except ProcessLookupError:
-                pass
+        return self._runner.run(command, request)

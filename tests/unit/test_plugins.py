@@ -50,7 +50,7 @@ def test_upload_registration_and_duplicate(client, plugin_zip) -> None:
     assert response.json()["name"] == "hello"
     listing = client.get("/api/plugins")
     assert listing.status_code == 200
-    assert listing.json()[0]["version"] == "1.0.0"
+    assert listing.json()["items"][0]["version"] == "1.0.0"
 
     duplicate = client.post(
         "/api/plugins/upload",

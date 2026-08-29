@@ -42,10 +42,14 @@ def main() -> int:
         except Exception:
             precision = 2
 
-    values = [float(v) for v in numbers if isinstance(v, (int, float, str)) and str(v).replace(".", "", 1).lstrip("-").isdigit()]
+    values = [
+        float(v) for v in numbers
+        if isinstance(v, (int, float, str)) and str(v).replace(".", "", 1).lstrip("-").isdigit()
+    ]
     if not values:
         print("ERROR: no valid numeric values", file=sys.stderr)
-        (WORKSPACE / "error.json").write_text(json.dumps({"code": "INPUT_EMPTY", "message": "numbers list is empty or invalid"}))
+        (WORKSPACE / "error.json").write_text(json.dumps(
+            {"code": "INPUT_EMPTY", "message": "numbers list is empty or invalid"}))
         return 1
 
     n = len(values)

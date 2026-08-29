@@ -8,7 +8,6 @@ Implements the full lifecycle described in the v2 protocol:
 
 from __future__ import annotations
 
-import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,8 +18,17 @@ from mini_pipeline.core.config import ExecutionConfig, StorageConfig
 from mini_pipeline.database.models import PluginVersion, TaskRun
 from mini_pipeline.domain.exceptions import ExecutionError
 from mini_pipeline.domain.runtime import RuntimeRequest
-from mini_pipeline.executor.collector import collect_outputs, read_error_json
-from mini_pipeline.executor.context import create_workspace, resolve_inputs, write_context
+from mini_pipeline.executor.collector import (
+    collect_outputs,
+    merge_legacy_output_json,
+    read_error_json,
+)
+from mini_pipeline.executor.context import (
+    create_workspace,
+    resolve_inputs,
+    write_context,
+    write_legacy_input_json,
+)
 from mini_pipeline.plugin.manifest import PluginManifest, load_manifest
 from mini_pipeline.runtime.registry import RuntimeRegistry
 
@@ -33,6 +41,7 @@ class TaskExecutionResult:
     artifacts: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] | None = None
     log_path: Path | None = None
+    cancelled: bool = False
 
 
 class TaskExecutor:
@@ -58,6 +67,8 @@ class TaskExecutor:
         params: dict[str, Any],
         dependencies: dict[str, Any],
         uploads: dict[str, Path] | None = None,
+        run_params: dict[str, Any] | None = None,
+        cancel_event=None,
     ) -> TaskExecutionResult:
         workspace = self.storage.workspaces / run_id / task.id
         log_path = self.storage.logs / run_id / f"{task.id}.log"
@@ -97,6 +108,15 @@ class TaskExecutor:
             dependencies=dependencies,
             uploads=uploads,
         )
+        # v1 back-compat: single input.json payload alongside the v2 tree.
+        # Legacy plugins see run-level params merged with the resolved step
+        # params, so pipeline-level settings are always reachable.
+        write_legacy_input_json(
+            workspace,
+            task_id=task.id,
+            params={**(run_params or {}), **params},
+            dependencies=dependencies,
+        )
 
         # Execute
         entry = (workspace / manifest.entry).resolve()
@@ -116,9 +136,14 @@ class TaskExecutor:
                     },
                     timeout_seconds=self.execution.task_timeout_seconds,
                     log_stream=log_stream,
+                    cancel_event=cancel_event,
                 )
             )
 
+        if result.cancelled:
+            return TaskExecutionResult(
+                False, "Cancelled", log_path=log_path, cancelled=True
+            )
         if result.timed_out:
             return TaskExecutionResult(False, "Plugin execution timed out", log_path=log_path)
         if result.error:
@@ -141,6 +166,16 @@ class TaskExecutor:
             workspace, manifest.contract, run_id=run_id, task_id=task.id,
             artifact_store=self.artifact_store,
         )
+        # v1 back-compat: merge a legacy output.json (status/outputs/artifacts)
+        legacy_failure = merge_legacy_output_json(
+            workspace,
+            collected,
+            run_id=run_id,
+            task_id=task.id,
+            artifact_store=self.artifact_store,
+        )
+        if legacy_failure:
+            return TaskExecutionResult(False, legacy_failure, log_path=log_path)
         return TaskExecutionResult(
             True,
             "Plugin completed successfully",

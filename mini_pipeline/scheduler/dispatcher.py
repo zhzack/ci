@@ -45,3 +45,8 @@ class Dispatcher:
             self._accepting = False
         self._coordinators.shutdown(wait=True, cancel_futures=True)
         self._tasks.shutdown(wait=True, cancel_futures=True)
+
+    @property
+    def accepting(self) -> bool:
+        """True while new work may be submitted (readiness probe)."""
+        return self._accepting

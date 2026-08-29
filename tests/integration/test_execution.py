@@ -28,7 +28,10 @@ def test_pipeline_run_logs_outputs_and_artifact(client, plugin_zip) -> None:
         name="producer",
         script="""#!/bin/sh
 set -eu
-python3 - <<'PY'
+for c in python3 python; do
+  command -v $c >/dev/null 2>&1 && $c -c 'import sys' >/dev/null 2>&1 && PY_BIN=$c && break
+done
+$PY_BIN - <<'PY'
 import json
 value = json.load(open('input.json'))['params']['value']
 open('result.txt', 'w').write(str(value))
@@ -48,7 +51,10 @@ echo producer-log
         name="consumer",
         script="""#!/bin/sh
 set -eu
-python3 - <<'PY'
+for c in python3 python; do
+  command -v $c >/dev/null 2>&1 && $c -c 'import sys' >/dev/null 2>&1 && PY_BIN=$c && break
+done
+$PY_BIN - <<'PY'
 import json
 params = json.load(open('input.json'))['params']
 json.dump({'status':'success','outputs':{'seen':params['seen']}}, open('output.json','w'))
@@ -76,7 +82,7 @@ steps:
     assert submitted.status_code == 202, submitted.text
     run = wait_for_run(client, submitted.json()["id"])
 
-    assert run["status"] == "SUCCESS"
+    assert run["status"] == "SUCCESS", run
     assert run["tasks"][1]["outputs"] == {"seen": 7}
     assert "producer-log" in client.get(f"/api/runs/{run['id']}/tasks/produce/log").text
     artifact = run["tasks"][0]["artifacts"][0]

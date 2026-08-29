@@ -1,87 +1,31 @@
 """Python runtime: executes a .py file as a plugin."""
 
-import os
+from __future__ import annotations
+
 import shutil
-import subprocess
 import sys
-from queue import Empty, Queue
-from threading import Thread
 
 from mini_pipeline.domain.runtime import RuntimeRequest, RuntimeResult
+from mini_pipeline.runtime.base import ProcessRunner
 
 
 class PythonRuntime:
     runtime_type = "python"
 
+    def __init__(self) -> None:
+        self._runner = ProcessRunner()
+
     def execute(self, request: RuntimeRequest) -> RuntimeResult:
-        # Prefer the system `python3` (likely a newer version) over the venv
-        # interpreter so plugin authors can use modern Python syntax. Fall
-        # back to the current interpreter if `python3` is not on PATH.
-        interpreter = shutil.which("python3") or sys.executable
+        interpreter = self._resolve_interpreter()
         command = [interpreter, "-u", str(request.command[0])]
-        return self._run(command, request)
+        return self._runner.run(command, request)
 
     @staticmethod
-    def _run(cmd: list[str], request: RuntimeRequest) -> RuntimeResult:
-        env = os.environ.copy()
-        env.update(request.environment)
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                cwd=request.cwd,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-            )
-        except OSError as exc:
-            return RuntimeResult(exit_code=-1, error=str(exc))
-        output: Queue = Queue()
-        sentinel = object()
-
-        def read_output() -> None:
-            assert proc.stdout is not None
-            for line in iter(proc.stdout.readline, ""):
-                output.put(line)
-            output.put(sentinel)
-            proc.stdout.close()
-
-        reader = Thread(target=read_output, daemon=True)
-        reader.start()
-        finished = False
-        try:
-            while not finished:
-                item = output.get(timeout=0.1)
-                if item is sentinel:
-                    finished = True
-                else:
-                    request.log_stream.write(item)
-                    request.log_stream.flush()
-            proc.wait(timeout=request.timeout_seconds)
-            timed_out = False
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            proc.wait(timeout=2)
-        except Empty:
-            timed_out = True
-            try:
-                proc.kill()
-            except Exception:
-                pass
-        finally:
-            if proc.poll() is None:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-            reader.join(timeout=1)
-        if timed_out:
-            return RuntimeResult(exit_code=proc.returncode or -1, timed_out=True, error="Timed out")
-        return RuntimeResult(exit_code=proc.returncode or 0)
+    def _resolve_interpreter() -> str:
+        # On POSIX `python3` is the canonical name. On Windows `python3`
+        # usually resolves to the Microsoft Store alias stub (exit code
+        # 9009), so prefer `python` there and fall back to the running
+        # interpreter.
+        if sys.platform == "win32":
+            return shutil.which("python") or sys.executable
+        return shutil.which("python3") or sys.executable

@@ -37,7 +37,10 @@ outputs:
     (repository / "run.sh").write_text(
         """#!/bin/sh
 set -eu
-python3 - <<'PY'
+for c in python3 python; do
+  command -v $c >/dev/null 2>&1 && $c -c 'import sys' >/dev/null 2>&1 && PY_BIN=$c && break
+done
+$PY_BIN - <<'PY'
 import json
 from pathlib import Path
 value = json.loads(Path('input.json').read_text())['params']['value']
