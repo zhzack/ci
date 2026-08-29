@@ -1,0 +1,72 @@
+# Development Docker Compose setup with volume mounts and hot-reloading
+services:
+  database:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: mini_pipeline
+      POSTGRES_USER: mini_pipeline
+      POSTGRES_PASSWORD: mini_pipeline
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mini_pipeline"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-dev-data:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      MINI_PIPELINE_CONFIG: /app/config/docker.yaml
+      DATABASE_URL: postgresql+psycopg://mini_pipeline:mini_pipeline@database:5432/mini_pipeline
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+      MINI_PIPELINE_ADMIN_TOKEN: ${MINI_PIPELINE_ADMIN_TOKEN:-dev-admin-token}
+      MINI_PIPELINE_READER_TOKEN: ${MINI_PIPELINE_READER_TOKEN:-dev-reader-token}
+      MINI_PIPELINE_SECRET_KEY: ${MINI_PIPELINE_SECRET_KEY:-dev-secret-key-32-chars-long-xxx}
+    depends_on:
+      database:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      # Map host source code to container for instant hot reloading
+      - ./mini_pipeline:/app/mini_pipeline
+      - ./config:/app/config
+      - ./scripts:/app/scripts
+      - pipeline-dev-data:/app/data
+    # Launch uvicorn with --reload for auto-reloading upon Python code change
+    command: ["uvicorn", "mini_pipeline.server.app:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app/mini_pipeline"]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3).status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    environment:
+      VITE_API_TARGET: http://api:8000
+      VITE_USE_POLLING: "true"
+      CHOKIDAR_USEPOLLING: "true"
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "5173:5173"
+    volumes:
+      # Map host frontend source to container
+      - ./frontend:/app
+      # Anonymous volume for container-native node_modules to avoid Windows/Linux binary conflicts
+      - /app/node_modules
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+
+volumes:
+  postgres-dev-data:
+  pipeline-dev-data:

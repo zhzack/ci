@@ -1,0 +1,62 @@
+# ==============================================================================
+# Mini Pipeline 生产环境部署编排文件（非源码/预构建镜像版本）
+# ==============================================================================
+services:
+  database:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: mini_pipeline
+      POSTGRES_USER: ${DB_USER:-mini_pipeline}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-mini_pipeline}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-mini_pipeline}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  api:
+    image: ${IMAGE_REGISTRY:-}ci-api:${APP_VERSION:-0.3.0}
+    restart: unless-stopped
+    environment:
+      MINI_PIPELINE_CONFIG: /app/config/docker.yaml
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://${DB_USER:-mini_pipeline}:${DB_PASSWORD:-mini_pipeline}@database:5432/mini_pipeline}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      MINI_PIPELINE_ADMIN_TOKEN: ${MINI_PIPELINE_ADMIN_TOKEN:?请在.env中设置MINI_PIPELINE_ADMIN_TOKEN}
+      MINI_PIPELINE_READER_TOKEN: ${MINI_PIPELINE_READER_TOKEN:?请在.env中设置MINI_PIPELINE_READER_TOKEN}
+      MINI_PIPELINE_SECRET_KEY: ${MINI_PIPELINE_SECRET_KEY:?请在.env中设置MINI_PIPELINE_SECRET_KEY}
+    depends_on:
+      database:
+        condition: service_healthy
+    expose:
+      - "8000"
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - pipeline-data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3).status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  frontend:
+    image: ${IMAGE_REGISTRY:-}ci-frontend:${APP_VERSION:-0.3.0}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  postgres-data:
+  pipeline-data:

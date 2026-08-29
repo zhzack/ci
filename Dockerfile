@@ -1,4 +1,4 @@
-FROM python:3.9-slim
+FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -14,8 +14,9 @@ COPY migrations ./migrations
 COPY mini_pipeline ./mini_pipeline
 COPY config ./config
 COPY scripts/start.sh ./scripts/start.sh
-RUN pip install --no-cache-dir . \
-    && chmod +x scripts/start.sh
+RUN sed -i 's/\r$//' scripts/start.sh \
+    && chmod +x scripts/start.sh \
+    && pip install --no-cache-dir .
 
 RUN useradd --create-home --uid 10001 pipeline \
     && mkdir -p /app/data \

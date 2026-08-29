@@ -90,15 +90,28 @@ npm run dev                        # http://127.0.0.1:5173
 
 Vite 将 `/api` 与 `/health` 代理到 `http://127.0.0.1:8000`（`VITE_API_TARGET` 可覆盖）。
 
-### Docker Compose
+### Docker Compose 双环境支持
 
+项目提供两套开箱即用的 Docker Compose 环境：
+
+#### 1. 正式发布版（Production，全容器打包 + Nginx 网关）
+包含完整构建的前端静态资源、Nginx 反向代理、生产后端与 PostgreSQL 16，无需宿主机安装任何 Node 或 Python 环境：
 ```bash
-cp .env.example .env               # 填入鉴权 token 三件套（缺失拒绝启动）
-docker compose up --build
-curl http://127.0.0.1:8000/health
+cp .env.example .env               # 填入鉴权 token 三件套与端口配置
+docker compose up -d --build       # 后台启动
+curl http://127.0.0.1/health       # 浏览器打开 http://localhost （默认 80 端口）
 ```
 
-Compose 启动 API + PostgreSQL 16，`docker.yaml` 强制开启鉴权（JSON 日志、120 req/min 限流）；容器 entrypoint 自动执行 `alembic upgrade head`，API 容器带健康检查，数据落在 named volume。生产部署与运维操作见 [docs/operations.md](docs/operations.md)。
+#### 2. 开发热重载版（Development，目录源码映射 + 实时热更新）
+前后端通过卷映射（Volume Mount）实时同步宿主机源码。后端改动自动触发 Uvicorn 重载，前端改动自动触发 Vite HMR 毫秒级热更新：
+```bash
+docker compose -f docker-compose.dev.yml up -d --build
+# 前端热重载地址：http://localhost:5173
+# 后端 API 地址：  http://localhost:8000
+# 数据库直连调试：localhost:5432
+```
+
+生产部署与运维操作见 [docs/operations.md](docs/operations.md)。
 
 ## 插件规范
 
