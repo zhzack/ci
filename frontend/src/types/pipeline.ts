@@ -8,6 +8,7 @@ export type PipelineStep = {
 export type PipelineRecord = {
   id: string;
   name: string;
+  owner_id?: string | null;
   created_at: string;
   updated_at: string;
 };

@@ -31,6 +31,7 @@ class ValidateRequest(BaseModel):
 class PipelineResponse(BaseModel):
     id: str
     name: str
+    owner_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -39,6 +40,7 @@ class PipelineResponse(BaseModel):
         return cls(
             id=entity.id,
             name=entity.name,
+            owner_id=getattr(entity, "owner_id", None),
             created_at=entity.created_at,
             updated_at=entity.updated_at,
         )

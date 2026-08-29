@@ -1,11 +1,11 @@
-import React from "react";
-import { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Button,
   Card,
   Col,
   Descriptions,
+  Drawer,
   Form,
   Input,
   InputNumber,
@@ -22,17 +22,18 @@ import {
   message as antdMessage,
 } from 'antd';
 import type { TableColumnsType } from 'antd';
-import { InboxOutlined, PlayCircleOutlined } from '@ant-design/icons';
+import { InboxOutlined, PlayCircleOutlined, ShareAltOutlined } from '@ant-design/icons';
 import { useNavigate, useParams } from 'react-router-dom';
 import * as yaml from 'js-yaml';
 import { PageHeader } from '@/components/PageHeader';
 import { Loading } from '@/components/Loading';
 import { ErrorAlert } from '@/components/ErrorAlert';
-import { useApiQuery } from '@/hooks/useApiQuery';
+import { useApiQuery, describeError } from '@/hooks/useApiQuery';
 import { useApiMutation } from '@/hooks/useApiMutation';
 import { getPipelineParamsSchema, getPipelineYaml, listPipelines } from '@/api/pipeline';
 import { submitRun } from '@/api/run';
-import { listMachines, type Machine } from '@/api/machine';
+import { listMachines, listGrants, createGrant, deleteGrant, listTeams, type Machine, type Grant, type Team } from '@/api/machine';
+import { adminListUsers, type AdminUser } from '@/api/admin';
 import type {
   ParamField,
   PipelineDefinition,
@@ -69,6 +70,7 @@ export default function PipelineDetailPage(): React.JSX.Element {
   const [targetMachine, setTargetMachine] = useState<string | undefined>(undefined);
   const machinesQuery = useApiQuery(['machines'], listMachines, { enabled: Boolean(identifier) });
   const [runModalOpen, setRunModalOpen] = useState(false);
+  const [shareDrawerOpen, setShareDrawerOpen] = useState(false);
   const [paramsForm] = Form.useForm<{ params: string }>();
   const [runMode, setRunMode] = useState<'form' | 'json'>('form');
 
@@ -202,6 +204,14 @@ export default function PipelineDetailPage(): React.JSX.Element {
         description="Steps, parameters, and run history"
         extra={
           <Space>
+            {record?.id ? (
+              <Button
+                icon={<ShareAltOutlined />}
+                onClick={() => setShareDrawerOpen(true)}
+              >
+                Share
+              </Button>
+            ) : null}
             <Button
               type="primary"
               icon={<PlayCircleOutlined />}
@@ -340,6 +350,15 @@ export default function PipelineDetailPage(): React.JSX.Element {
           ]}
         />
       </Modal>
+      {record?.id ? (
+        <PipelineShareDrawer
+          pipelineId={record.id}
+          pipelineName={record.name}
+          ownerId={record.owner_id}
+          open={shareDrawerOpen}
+          onClose={() => setShareDrawerOpen(false)}
+        />
+      ) : null}
       {/* suppress unused constants lint check. */}
       <span style={{ display: 'none' }}>{RECENT_RUNS_QUERY_KEY.length}</span>
     </>
@@ -410,3 +429,173 @@ function StepRunForm({ step, rawWith, value, onChange }: StepRunFormProps): Reac
     </Card>
   );
 }
+
+function PipelineShareDrawer({
+  pipelineId,
+  pipelineName,
+  ownerId,
+  open,
+  onClose,
+}: {
+  pipelineId: string;
+  pipelineName: string;
+  ownerId?: string | null;
+  open: boolean;
+  onClose: () => void;
+}): React.JSX.Element {
+  const [grants, setGrants] = useState<Grant[]>([]);
+  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [granteeType, setGranteeType] = useState<'user' | 'team'>('user');
+  const [selectedGrantee, setSelectedGrantee] = useState<string | null>(null);
+  const [grantPermission, setGrantPermission] = useState<'viewer' | 'operator'>('viewer');
+  const [loading, setLoading] = useState(false);
+
+  const fetchGrants = useCallback(async () => {
+    if (!pipelineId) return;
+    try {
+      const list = await listGrants('pipeline', pipelineId);
+      setGrants(list);
+    } catch {
+      setGrants([]);
+    }
+  }, [pipelineId]);
+
+  useEffect(() => {
+    if (open && pipelineId) {
+      void fetchGrants();
+      void adminListUsers().then(setUsers).catch(() => setUsers([]));
+      void listTeams().then(setTeams).catch(() => setTeams([]));
+    }
+  }, [open, pipelineId, fetchGrants]);
+
+  const handleShare = async () => {
+    if (!selectedGrantee) return;
+    setLoading(true);
+    try {
+      await createGrant({
+        resource_type: 'pipeline',
+        resource_id: pipelineId,
+        grantee_type: granteeType,
+        grantee_id: selectedGrantee,
+        permission: grantPermission,
+      });
+      antdMessage.success(`Pipeline shared with ${granteeType}`);
+      setSelectedGrantee(null);
+      void fetchGrants();
+    } catch (err) {
+      antdMessage.error(describeError(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRevoke = async (grantId: string) => {
+    try {
+      await deleteGrant(grantId);
+      antdMessage.success('Access revoked');
+      void fetchGrants();
+    } catch (err) {
+      antdMessage.error(describeError(err));
+    }
+  };
+
+  return (
+    <Drawer title={`Share · ${pipelineName}`} open={open} onClose={onClose} width={480}>
+      <Space direction="vertical" style={{ width: '100%' }} size={16}>
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+          Grant users or teams access to view or run this pipeline.
+        </Typography.Paragraph>
+
+        <Typography.Title level={5} style={{ marginBottom: 0 }}>
+          Access List
+        </Typography.Title>
+        {grants.length === 0 ? (
+          <Typography.Text type="secondary">Not shared with anyone yet.</Typography.Text>
+        ) : (
+          grants.map((grant) => {
+            const isTeam = grant.grantee_type === 'team';
+            const displayName = isTeam
+              ? teams.find((t) => t.id === grant.grantee_id)?.name ?? grant.grantee_id
+              : users.find((u) => u.id === grant.grantee_id)?.username ?? grant.grantee_id;
+            return (
+              <Space key={grant.id}>
+                <Tag color="purple">{grant.permission}</Tag>
+                <Tag color={isTeam ? 'cyan' : 'geekblue'}>{grant.grantee_type}</Tag>
+                <Typography.Text>{displayName}</Typography.Text>
+                <Button type="link" size="small" danger onClick={() => void handleRevoke(grant.id)}>
+                  Revoke
+                </Button>
+              </Space>
+            );
+          })
+        )}
+
+        <Typography.Title level={5} style={{ marginBottom: 0 }}>
+          Add Access
+        </Typography.Title>
+        <Space.Compact style={{ width: '100%' }}>
+          <Select
+            value={granteeType}
+            onChange={(v) => {
+              setGranteeType(v);
+              setSelectedGrantee(null);
+            }}
+            style={{ width: 100 }}
+            options={[
+              { value: 'user', label: 'User' },
+              { value: 'team', label: 'Team' },
+            ]}
+          />
+          <Select
+            placeholder={granteeType === 'user' ? 'Select user' : 'Select team'}
+            style={{ flex: 1 }}
+            value={selectedGrantee}
+            onChange={setSelectedGrantee}
+            showSearch
+            filterOption={(input, opt) =>
+              (opt?.label ?? '').toLowerCase().includes(input.toLowerCase())
+            }
+            options={
+              granteeType === 'user'
+                ? users
+                    .filter(
+                      (u) =>
+                        u.id !== ownerId &&
+                        !grants.some((g) => g.grantee_type === 'user' && g.grantee_id === u.id),
+                    )
+                    .map((u) => ({
+                      value: u.id,
+                      label: `${u.username}${u.display_name ? ` (${u.display_name})` : ''}`,
+                    }))
+                : teams
+                    .filter(
+                      (t) =>
+                        !grants.some((g) => g.grantee_type === 'team' && g.grantee_id === t.id),
+                    )
+                    .map((t) => ({ value: t.id, label: t.name }))
+            }
+          />
+          <Select
+            value={grantPermission}
+            onChange={setGrantPermission}
+            style={{ width: 105 }}
+            options={[
+              { value: 'viewer', label: 'Viewer' },
+              { value: 'operator', label: 'Operator' },
+            ]}
+          />
+          <Button
+            type="primary"
+            loading={loading}
+            disabled={!selectedGrantee}
+            onClick={() => void handleShare()}
+          >
+            Share
+          </Button>
+        </Space.Compact>
+      </Space>
+    </Drawer>
+  );
+}
+

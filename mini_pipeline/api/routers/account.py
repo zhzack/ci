@@ -495,3 +495,24 @@ def _grant_out(grant) -> dict[str, Any]:
         "permission": grant.permission,
         "created_at": grant.created_at,
     }
+
+
+@router.get("/teams")
+def list_teams(
+    principal: PrincipalDep,
+    services: Annotated[Services, Depends(get_services)],
+) -> list[dict[str, Any]]:
+    """List available teams for sharing resources."""
+    _ = principal
+    result = []
+    for team in services.teams.list():
+        members = services.teams.members_of(team.id)
+        result.append(
+            {
+                "id": team.id,
+                "name": team.name,
+                "member_ids": [m.user_id for m in members],
+            }
+        )
+    return result
+

@@ -147,3 +147,15 @@ export async function createGrant(payload: {
 export async function deleteGrant(grantId: string): Promise<void> {
   await http.delete(`/grants/${encodeURIComponent(grantId)}`);
 }
+
+export type Team = {
+  id: string;
+  name: string;
+  member_ids: string[];
+};
+
+export async function listTeams(): Promise<Team[]> {
+  const { data } = await http.get<Team[]>('/teams');
+  return data;
+}
+

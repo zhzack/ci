@@ -42,8 +42,10 @@ import {
   listGrants,
   createGrant,
   deleteGrant,
+  listTeams,
   type Machine,
   type RegisterMachineRequest,
+  type Team,
 } from '@/api/machine';
 import { adminListUsers, type AdminUser } from '@/api/admin';
 
@@ -193,6 +195,10 @@ function MachineDrawer({
 }) {
   const [grants, setGrants] = React.useState<Awaited<ReturnType<typeof listGrants>>>([]);
   const [users, setUsers] = React.useState<AdminUser[]>([]);
+  const [teams, setTeams] = React.useState<Team[]>([]);
+  const [granteeType, setGranteeType] = React.useState<'user' | 'team'>('user');
+  const [selectedGrantee, setSelectedGrantee] = React.useState<string | null>(null);
+  const [grantPermission, setGrantPermission] = React.useState<'operator' | 'viewer'>('operator');
   const [credentials, setCredentials] = React.useState<Record<string, string> | null | undefined>(undefined);
   const [testingConn, setTestingConn] = React.useState(false);
 
@@ -203,6 +209,7 @@ function MachineDrawer({
     void listGrants('machine', machine.id).then(setGrants).catch(() => setGrants([]));
     if (canManage) {
       void adminListUsers().then(setUsers).catch(() => setUsers([]));
+      void listTeams().then(setTeams).catch(() => setTeams([]));
     }
   }, [machine, canManage]);
 
@@ -210,16 +217,17 @@ function MachineDrawer({
     return <Drawer open={false} onClose={onClose} />;
   }
 
-  const share = async (userId: string) => {
+  const share = async (type: 'user' | 'team', id: string, perm: 'operator' | 'viewer') => {
     try {
       await createGrant({
         resource_type: 'machine',
         resource_id: machine.id,
-        grantee_type: 'user',
-        grantee_id: userId,
-        permission: 'operator',
+        grantee_type: type,
+        grantee_id: id,
+        permission: perm,
       });
-      antdMessage.success('Machine shared');
+      antdMessage.success(`Machine shared with ${type}`);
+      setSelectedGrantee(null);
       void listGrants('machine', machine.id).then(setGrants);
     } catch (err) {
       antdMessage.error(describeError(err));
@@ -317,28 +325,86 @@ function MachineDrawer({
             {grants.length === 0 ? (
               <Typography.Text type="secondary">Not shared yet.</Typography.Text>
             ) : (
-              grants.map((grant) => (
-                <Space key={grant.id}>
-                  <Tag color="purple">{grant.permission}</Tag>
-                  <Typography.Text>
-                    {grant.grantee_type}:{' '}
-                    {users.find((u) => u.id === grant.grantee_id)?.username ?? grant.grantee_id}
-                  </Typography.Text>
-                  <Button type="link" size="small" onClick={() => void revokeShare(grant.id)}>
-                    Remove
-                  </Button>
-                </Space>
-              ))
+              grants.map((grant) => {
+                const isTeam = grant.grantee_type === 'team';
+                const displayName = isTeam
+                  ? teams.find((t) => t.id === grant.grantee_id)?.name ?? grant.grantee_id
+                  : users.find((u) => u.id === grant.grantee_id)?.username ?? grant.grantee_id;
+                return (
+                  <Space key={grant.id}>
+                    <Tag color="purple">{grant.permission}</Tag>
+                    <Tag color={isTeam ? 'cyan' : 'geekblue'}>{grant.grantee_type}</Tag>
+                    <Typography.Text>{displayName}</Typography.Text>
+                    <Button type="link" size="small" onClick={() => void revokeShare(grant.id)}>
+                      Remove
+                    </Button>
+                  </Space>
+                );
+              })
             )}
-            <Select
-              placeholder="Share with user (operator)"
-              style={{ width: '100%' }}
-              value={null}
-              onChange={(value: string) => void share(value)}
-              options={users
-                .filter((u) => u.id !== machine.owner_id)
-                .map((u) => ({ value: u.id, label: u.username }))}
-            />
+            <Space.Compact style={{ width: '100%' }}>
+              <Select
+                value={granteeType}
+                onChange={(v) => {
+                  setGranteeType(v);
+                  setSelectedGrantee(null);
+                }}
+                style={{ width: 100 }}
+                options={[
+                  { value: 'user', label: 'User' },
+                  { value: 'team', label: 'Team' },
+                ]}
+              />
+              <Select
+                placeholder={granteeType === 'user' ? 'Select user' : 'Select team'}
+                style={{ flex: 1 }}
+                value={selectedGrantee}
+                onChange={setSelectedGrantee}
+                showSearch
+                filterOption={(input, opt) =>
+                  (opt?.label ?? '').toLowerCase().includes(input.toLowerCase())
+                }
+                options={
+                  granteeType === 'user'
+                    ? users
+                        .filter(
+                          (u) =>
+                            u.id !== machine.owner_id &&
+                            !grants.some((g) => g.grantee_type === 'user' && g.grantee_id === u.id),
+                        )
+                        .map((u) => ({
+                          value: u.id,
+                          label: `${u.username}${u.display_name ? ` (${u.display_name})` : ''}`,
+                        }))
+                    : teams
+                        .filter(
+                          (t) =>
+                            !grants.some((g) => g.grantee_type === 'team' && g.grantee_id === t.id),
+                        )
+                        .map((t) => ({ value: t.id, label: t.name }))
+                }
+              />
+              <Select
+                value={grantPermission}
+                onChange={setGrantPermission}
+                style={{ width: 105 }}
+                options={[
+                  { value: 'operator', label: 'Operator' },
+                  { value: 'viewer', label: 'Viewer' },
+                ]}
+              />
+              <Button
+                type="primary"
+                disabled={!selectedGrantee}
+                onClick={() => {
+                  if (selectedGrantee) {
+                    void share(granteeType, selectedGrantee, grantPermission);
+                  }
+                }}
+              >
+                Share
+              </Button>
+            </Space.Compact>
 
             <Typography.Title level={5} style={{ marginBottom: 0 }}>
               Transfer ownership
