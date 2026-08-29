@@ -24,6 +24,9 @@ class PipelineStep(BaseModel):
     parameters: dict[str, Any] = Field(default_factory=dict, alias="with")
     # Automatic retry count for this step after a failure (0 = no retry).
     retries: int = Field(default=0, ge=0, le=10)
+    # Optional execution target: machine id or name. Overrides the run-level
+    # machine. Resolved and validated at submit time.
+    machine: str | None = None
 
     @field_validator("name")
     @classmethod

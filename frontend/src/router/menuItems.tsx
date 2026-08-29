@@ -9,6 +9,9 @@ import {
   HistoryOutlined,
   PlayCircleOutlined,
   SettingOutlined,
+  ShopOutlined,
+  DesktopOutlined,
+  SafetyOutlined,
 } from '@ant-design/icons';
 
 export type MenuEntry = {
@@ -16,6 +19,7 @@ export type MenuEntry = {
   path: string;
   label: string;
   icon: React.ReactNode;
+  adminOnly?: boolean;
   children?: MenuEntry[];
 };
 
@@ -29,6 +33,7 @@ export const MENU_ITEMS: MenuEntry[] = [
     children: [
       { key: 'plugin-list', path: '/plugin/list', label: 'List', icon: <DatabaseOutlined /> },
       { key: 'plugin-register', path: '/plugin/register', label: 'Register', icon: <FileTextOutlined /> },
+      { key: 'store', path: '/store', label: 'Store', icon: <ShopOutlined /> },
     ],
   },
   {
@@ -53,9 +58,15 @@ export const MENU_ITEMS: MenuEntry[] = [
       { key: 'task-history', path: '/task/history', label: 'History', icon: <HistoryOutlined /> },
     ],
   },
+  { key: 'machine', path: '/machine', label: 'Machines', icon: <DesktopOutlined /> },
   { key: 'artifact', path: '/artifact', label: 'Artifact', icon: <FileTextOutlined /> },
+  { key: 'admin', path: '/admin', label: 'Admin', icon: <SafetyOutlined />, adminOnly: true },
   { key: 'setting', path: '/setting', label: 'Setting', icon: <SettingOutlined /> },
 ];
+
+export function visibleMenuItems(role: string | undefined): MenuEntry[] {
+  return MENU_ITEMS.filter((item) => !item.adminOnly || role === 'admin');
+}
 
 export function toAntdMenu(items: MenuEntry[]): MenuProps['items'] {
   return items.map((item) => {

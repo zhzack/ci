@@ -18,6 +18,39 @@ _SHEBANG_INTERPRETERS = {
 }
 
 
+def _find_windows_bash() -> str | None:
+    """Find a functional bash interpreter on Windows (preferring Git Bash)."""
+    import os
+
+    program_files = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+    program_files_x86 = Path(
+        os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+    )
+    local_appdata = Path(os.environ.get("LOCALAPPDATA", ""))
+    candidates = [
+        program_files / "Git" / "bin" / "bash.exe",
+        program_files / "Git" / "usr" / "bin" / "bash.exe",
+        program_files_x86 / "Git" / "bin" / "bash.exe",
+        local_appdata / "Programs" / "Git" / "bin" / "bash.exe",
+    ]
+    for c in candidates:
+        if c.is_file():
+            return str(c)
+
+    git = shutil.which("git")
+    if git:
+        git_dir = Path(git).resolve().parents[1]
+        for rel in ("bin/bash.exe", "usr/bin/bash.exe"):
+            c = git_dir / rel
+            if c.is_file():
+                return str(c)
+
+    found = shutil.which("bash")
+    if found and "system32" not in found.lower():
+        return found
+    return None
+
+
 def resolve_shell_command(entry: Path) -> list[str] | None:
     """Resolve how to launch a shell script on the current platform.
 
@@ -35,7 +68,7 @@ def resolve_shell_command(entry: Path) -> list[str] | None:
         first_line = ""
     if not first_line.startswith("#!"):
         if entry.suffix.lower() in {".sh", ".bash"}:
-            bash = shutil.which("bash")
+            bash = _find_windows_bash()
             return [bash, str(entry)] if bash else None
         return [str(entry)]
     tokens = first_line[2:].strip().split()
@@ -46,7 +79,7 @@ def resolve_shell_command(entry: Path) -> list[str] | None:
     program = Path(tokens[0]).name
     interpreter = _SHEBANG_INTERPRETERS.get(program)
     if interpreter:
-        resolved = shutil.which(interpreter)
+        resolved = _find_windows_bash() if interpreter == "bash" else shutil.which(interpreter)
         return [resolved, str(entry)] if resolved else None
     resolved = shutil.which(program)
     if resolved:

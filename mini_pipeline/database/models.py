@@ -37,6 +37,14 @@ class Plugin(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    # NULL owner = platform/legacy plugin, visible to everyone.
+    owner_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # private | public  (public requires an approved store review)
+    visibility: Mapped[str] = mapped_column(String(16), default="private", nullable=False)
+    # none | pending | approved | rejected  (store publish review)
+    review_status: Mapped[str] = mapped_column(String(16), default="none", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, onupdate=utcnow, nullable=False
@@ -82,12 +90,56 @@ class PipelineDefinition(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
     definition: Mapped[str] = mapped_column(Text, nullable=False)
+    # NULL owner = platform/legacy pipeline, visible to everyone.
+    owner_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, onupdate=utcnow, nullable=False
     )
 
     runs: Mapped[list["PipelineRun"]] = relationship(back_populates="pipeline")
+
+
+class Machine(Base):
+    """A registered execution host.
+
+    kind='admin' machines are created by platform admins and *assigned* to a
+    user: the assignee can run tasks but never sees `credentials`.
+    kind='personal' machines belong to `owner_id`, who has admin-equivalent
+    control (shares, transfer, token rotation) for that machine.
+
+    connection_type='agent' machines run the mini-pipeline-runner agent
+    (pull model). connection_type='ssh' machines are reached by the server
+    over SSH: `credentials` holds {host, port, username, password/private_key}
+    and no agent needs to be installed on the target.
+    """
+
+    __tablename__ = "machines"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), default="personal", nullable=False)
+    # agent (runner pulls) | ssh (server pushes over SSH)
+    connection_type: Mapped[str] = mapped_column(String(16), default="agent", nullable=False)
+    owner_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    assigned_user_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    labels: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    max_concurrency: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    # Fernet-encrypted JSON; only platform admins and the personal owner can read.
+    credentials: Mapped[Optional[str]] = mapped_column(Text)
+    notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    agent_version: Mapped[Optional[str]] = mapped_column(String(64))
+    last_heartbeat: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    # active | revoked
+    status: Mapped[str] = mapped_column(String(16), default="active", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class PipelineRun(Base):
@@ -104,6 +156,14 @@ class PipelineRun(Base):
         String(32), default=PipelineStatus.PENDING.value, nullable=False, index=True
     )
     params: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    # Run submitter; NULL = legacy/anonymous.
+    owner_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # Execution target: NULL = built-in local runner.
+    machine_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("machines.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     message: Mapped[Optional[str]] = mapped_column(Text)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
@@ -139,6 +199,12 @@ class TaskRun(Base):
     )
     # 1-based execution attempt; > 1 when automatic retries were applied.
     attempt: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    # Execution target: NULL = built-in local runner.
+    machine_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("machines.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # Remote-execution lease; refreshed by runner heartbeats while executing.
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     message: Mapped[Optional[str]] = mapped_column(Text)
     outputs: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     log_path: Mapped[Optional[str]] = mapped_column(Text)
@@ -169,3 +235,112 @@ class Artifact(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
     task: Mapped[TaskRun] = relationship(back_populates="artifacts")
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    display_name: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+    # admin | user
+    role: Mapped[str] = mapped_column(String(16), default="user", nullable=False)
+    # active | disabled
+    status: Mapped[str] = mapped_column(String(16), default="active", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+    sessions: Mapped[list["AuthSession"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # sha256 hex of the opaque bearer token; the raw token is never stored.
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+    user: Mapped[User] = relationship(back_populates="sessions")
+
+
+class Team(Base):
+    __tablename__ = "teams"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    created_by: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+    members: Mapped[list["TeamMember"]] = relationship(
+        back_populates="team", cascade="all, delete-orphan"
+    )
+
+
+class TeamMember(Base):
+    __tablename__ = "team_members"
+    __table_args__ = (UniqueConstraint("team_id", "user_id", name="uq_team_member"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    team_id: Mapped[str] = mapped_column(
+        ForeignKey("teams.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+    team: Mapped[Team] = relationship(back_populates="members")
+
+
+class ShareGrant(Base):
+    """A permission row tying a resource to a user or team.
+
+    resource_type: pipeline | plugin | machine
+    grantee_type:  user | team
+    permission:    viewer (read) | operator (read + run)
+    """
+
+    __tablename__ = "share_grants"
+    __table_args__ = (
+        UniqueConstraint(
+            "resource_type", "resource_id", "grantee_type", "grantee_id",
+            name="uq_share_grant",
+        ),
+        Index("ix_share_grant_resource", "resource_type", "resource_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    resource_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    resource_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    grantee_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    grantee_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    permission: Mapped[str] = mapped_column(String(16), default="viewer", nullable=False)
+    granted_by: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    action: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    resource_type: Mapped[Optional[str]] = mapped_column(String(16))
+    resource_id: Mapped[Optional[str]] = mapped_column(String(36))
+    detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    request_id: Mapped[Optional[str]] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)

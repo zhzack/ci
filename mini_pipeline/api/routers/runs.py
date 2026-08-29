@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, Up
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from mini_pipeline.api.auth import PrincipalDep
 from mini_pipeline.api.dependencies import get_services
 from mini_pipeline.api.pagination import Page, PageParams
 from mini_pipeline.core.container import Services
@@ -29,6 +30,8 @@ LOG_STREAM_POLL_INTERVAL = 0.3
 class RunRequest(BaseModel):
     pipeline: str
     params: dict[str, Any] = Field(default_factory=dict)
+    # Optional execution target: machine id or name (built-in runner if omitted).
+    machine: str | None = None
 
 
 class BranchRequest(BaseModel):
@@ -123,9 +126,17 @@ class RunResponse(RunSummary):
 @router.post("", response_model=RunResponse, status_code=status.HTTP_202_ACCEPTED)
 def submit_run(
     payload: RunRequest,
+    principal: PrincipalDep,
     services: Annotated[Services, Depends(get_services)],
 ) -> RunResponse:
-    return RunResponse.from_entity(services.runs.submit(payload.pipeline, payload.params))
+    run = services.runs.submit(
+        payload.pipeline, payload.params, principal=principal, machine=payload.machine
+    )
+    services.audit.record(
+        principal, "run.submit", resource_type="run", resource_id=run.id,
+        detail={"pipeline": run.pipeline_name, "machine": payload.machine},
+    )
+    return RunResponse.from_entity(run)
 
 
 @router.post("/upload", response_model=RunResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -133,6 +144,8 @@ async def submit_run_with_files(
     pipeline: Annotated[str, Form()],
     params_json: Annotated[str, Form()] = "{}",
     files: Annotated[list[UploadFile] | None, File()] = None,
+    machine: Annotated[str | None, Form()] = None,
+    principal: PrincipalDep = None,
     services: Annotated[Services, Depends(get_services)] = None,
 ) -> RunResponse:
     try:
@@ -150,44 +163,75 @@ async def submit_run_with_files(
         with tmp.open("wb") as dest:
             shutil.copyfileobj(f.file, dest)
         uploads[input_name] = tmp
-    return RunResponse.from_entity(
-        services.runs.submit_with_uploads(pipeline, params, uploads),
+    run = services.runs.submit_with_uploads(
+        pipeline, params, uploads, principal=principal, machine=machine
     )
+    services.audit.record(
+        principal, "run.submit", resource_type="run", resource_id=run.id,
+        detail={"pipeline": run.pipeline_name, "machine": machine},
+    )
+    return RunResponse.from_entity(run)
 
 
 @router.get("", response_model=Page[RunSummary])
 def list_runs(
+    principal: PrincipalDep,
     services: Annotated[Services, Depends(get_services)],
     page_params: Annotated[PageParams, Depends()],
     run_status: Annotated[str | None, Query(alias="status")] = None,
     pipeline: Annotated[str | None, Query()] = None,
 ) -> Page[RunSummary]:
     """Paginated run history, newest first, filterable by status/pipeline."""
-    items, total = services.runs.list(
-        offset=page_params.offset,
-        limit=page_params.page_size,
-        status=run_status,
-        pipeline_name=pipeline,
+    items, _ = services.runs.list(
+        offset=0, limit=10_000, status=run_status, pipeline_name=pipeline
     )
-    return page_params.envelope([RunSummary.from_entity(r) for r in items], total)
+    visible = [
+        run
+        for run in items
+        if services.permissions.can_read_resource(
+            principal, resource_type="run", resource_id=run.id, owner_id=run.owner_id
+        )
+    ]
+    total = len(visible)
+    window = visible[page_params.offset : page_params.offset + page_params.page_size]
+    return page_params.envelope([RunSummary.from_entity(r) for r in window], total)
 
 
 @router.get("/{run_id}", response_model=RunResponse)
 def get_run(
     run_id: str,
+    principal: PrincipalDep,
     services: Annotated[Services, Depends(get_services)],
 ) -> RunResponse:
-    return RunResponse.from_entity(services.runs.get(run_id))
+    run = services.runs.get(run_id)
+    _require_run_visible(services, principal, run)
+    return RunResponse.from_entity(run)
 
 
 @router.post("/{run_id}/cancel", response_model=RunResponse)
 def cancel_run(
     run_id: str,
+    principal: PrincipalDep,
     services: Annotated[Services, Depends(get_services)],
 ) -> RunResponse:
     """Cancel a pending/running run and terminate running plugin processes."""
+    run = services.runs.get(run_id)
+    _require_run_visible(services, principal, run)
+    if not services.permissions.can_manage_resource(
+        principal, resource_type="run", resource_id=run.id, owner_id=run.owner_id
+    ):
+        from mini_pipeline.domain.exceptions import PermissionDeniedError
+
+        raise PermissionDeniedError("Only the run owner or an admin can cancel it")
     services.runs.cancel(run_id)
     return RunResponse.from_entity(services.runs.get(run_id))
+
+
+def _require_run_visible(services: Services, principal, run) -> None:
+    if not services.permissions.can_read_resource(
+        principal, resource_type="run", resource_id=run.id, owner_id=run.owner_id
+    ):
+        raise NotFoundError(f"Pipeline run {run.id!r} was not found")
 
 
 @router.get("/{run_id}/tasks/{step_name}/log", response_class=Response)
@@ -207,11 +251,14 @@ def download_artifact(
     run_id: str,
     artifact_id: str,
     request: Request,
+    principal: PrincipalDep,
     services: Annotated[Services, Depends(get_services)],
 ) -> Response:
     artifact = services.runs.get_artifact(artifact_id)
     if artifact.run_id != run_id:
         raise NotFoundError(f"Artifact {artifact_id!r} was not found in run {run_id!r}")
+    run = services.runs.get(run_id)
+    _require_run_visible(services, principal, run)
     # Strong validator: repeat downloads hit the client cache (304) instead
     # of re-transferring the body — large artifacts cost one conditional GET.
     etag = f'"{artifact.sha256}"'

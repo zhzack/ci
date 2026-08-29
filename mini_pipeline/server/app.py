@@ -12,16 +12,24 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 
 from mini_pipeline import __version__
-from mini_pipeline.api.router import api_router, router
+from mini_pipeline.api.router import (
+    account_public_api_router,
+    api_router,
+    router,
+    runner_api_router,
+)
 from mini_pipeline.core.config import Settings, load_settings
 from mini_pipeline.core.container import Services
 from mini_pipeline.core.logging import configure_logging
 from mini_pipeline.domain.exceptions import (
+    AuthFailedError,
     ConflictError,
     MiniPipelineError,
     NotFoundError,
+    PermissionDeniedError,
     ValidationError,
 )
+from mini_pipeline.server.installer import installer_router
 from mini_pipeline.server.middleware import RateLimitMiddleware, RequestIDMiddleware
 
 DEFAULT_CONFIG_CANDIDATES = (
@@ -130,22 +138,33 @@ def create_app(
     app.add_middleware(RequestIDMiddleware)
 
     app.include_router(router)
+    app.include_router(installer_router)
     app.include_router(api_router, prefix=resolved_settings.app.api_prefix)
+    app.include_router(
+        account_public_api_router, prefix=resolved_settings.app.api_prefix
+    )
+    app.include_router(runner_api_router, prefix=resolved_settings.app.api_prefix)
 
     @app.exception_handler(MiniPipelineError)
     async def domain_error_handler(_request: Request, exc: MiniPipelineError) -> JSONResponse:
+        headers = {"X-Request-ID": _request.headers.get("x-request-id", "")}
         if isinstance(exc, NotFoundError):
             status_code = 404
         elif isinstance(exc, ConflictError):
             status_code = 409
         elif isinstance(exc, ValidationError):
             status_code = 422
+        elif isinstance(exc, AuthFailedError):
+            status_code = 401
+            headers["WWW-Authenticate"] = "Bearer"
+        elif isinstance(exc, PermissionDeniedError):
+            status_code = 403
         else:
             status_code = 400
         return JSONResponse(
             status_code=status_code,
             content={"detail": str(exc)},
-            headers={"X-Request-ID": _request.headers.get("x-request-id", "")},
+            headers=headers,
         )
 
     return app

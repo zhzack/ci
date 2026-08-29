@@ -5,6 +5,7 @@ from typing import Annotated, Any, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from pydantic import BaseModel, ConfigDict
 
+from mini_pipeline.api.auth import PrincipalDep
 from mini_pipeline.api.dependencies import get_services
 from mini_pipeline.api.pagination import Page, PageParams
 from mini_pipeline.core.container import Services
@@ -39,9 +40,14 @@ class PluginResponse(BaseModel):
     runtime_type: str
     entry: str
     status: str
+    plugin_id: str = ""
+    owner_id: Optional[str] = None
+    visibility: str = "public"
+    review_status: str = "approved"
 
     @classmethod
     def from_entity(cls, entity: Any) -> "PluginResponse":
+        plugin = entity.plugin
         return cls(
             id=entity.id,
             name=entity.name,
@@ -53,24 +59,40 @@ class PluginResponse(BaseModel):
             runtime_type=entity.runtime_type,
             entry=entity.entry,
             status=entity.status,
+            plugin_id=entity.plugin_id,
+            owner_id=plugin.owner_id if plugin is not None else None,
+            visibility=plugin.visibility if plugin is not None else "public",
+            review_status=plugin.review_status if plugin is not None else "approved",
         )
 
 
 @router.post("/register", response_model=PluginResponse, status_code=status.HTTP_201_CREATED)
 def register_plugin(
     payload: RegisterPluginRequest,
+    principal: PrincipalDep,
     services: Annotated[Services, Depends(get_services)],
 ) -> PluginResponse:
-    entity = services.plugins.register(payload.source.model_dump(exclude_none=True))
+    entity = services.plugins.register(
+        payload.source.model_dump(exclude_none=True), owner_id=principal.user_id
+    )
+    services.audit.record(
+        principal, "plugin.register", resource_type="plugin",
+        resource_id=entity.id, detail={"ref": f"{entity.name}@{entity.version}"},
+    )
     return PluginResponse.from_entity(entity)
 
 
 @router.post("/upload", response_model=PluginResponse, status_code=status.HTTP_201_CREATED)
 def upload_plugin(
     file: Annotated[UploadFile, File(description="Plugin ZIP archive")],
+    principal: PrincipalDep,
     services: Annotated[Services, Depends(get_services)],
 ) -> PluginResponse:
-    entity = services.plugins.register_upload(file.file)
+    entity = services.plugins.register_upload(file.file, owner_id=principal.user_id)
+    services.audit.record(
+        principal, "plugin.upload", resource_type="plugin",
+        resource_id=entity.id, detail={"ref": f"{entity.name}@{entity.version}"},
+    )
     return PluginResponse.from_entity(entity)
 
 
@@ -84,6 +106,7 @@ async def upload_plugin_folder(
         list[UploadFile],
         File(description="Plugin folder contents (one multipart per file)"),
     ],
+    principal: PrincipalDep,
     services: Annotated[Services, Depends(get_services)],
 ) -> PluginResponse:
     if not files:
@@ -99,20 +122,37 @@ async def upload_plugin_folder(
             FolderFile(path=rel_path, content=content, is_dir=False)
         )
 
-    entity = services.plugins.register_folder(folder_files)
+    entity = services.plugins.register_folder(folder_files, owner_id=principal.user_id)
     return PluginResponse.from_entity(entity)
 
 
 @router.get("", response_model=Page[PluginResponse])
 def list_plugins(
+    principal: PrincipalDep,
     services: Annotated[Services, Depends(get_services)],
     page_params: Annotated[PageParams, Depends()],
     search: Annotated[Optional[str], Query(max_length=128)] = None,
 ) -> Page[PluginResponse]:
-    items = services.plugin_repository.list_versions_paged(
-        offset=page_params.offset, limit=page_params.page_size, search=search
-    )
-    total = services.plugin_repository.count_versions(search=search)
+    rows = services.plugin_repository.list_versions()
+    visible = [
+        row
+        for row in rows
+        if services.permissions.can_read_resource(
+            principal,
+            resource_type="plugin",
+            resource_id=row.plugin_id,
+            owner_id=row.plugin.owner_id,
+            visibility=row.plugin.visibility,
+        )
+    ]
+    if search:
+        needle = search.lower()
+        visible = [
+            row for row in visible
+            if needle in row.name.lower() or needle in row.version.lower()
+        ]
+    total = len(visible)
+    items = visible[page_params.offset : page_params.offset + page_params.page_size]
     return page_params.envelope([PluginResponse.from_entity(e) for e in items], total)
 
 
@@ -123,6 +163,94 @@ def get_plugin(
     services: Annotated[Services, Depends(get_services)],
 ) -> PluginResponse:
     return PluginResponse.from_entity(services.plugins.get(name, version))
+
+
+@router.get("/store")
+def store_plugins(
+    principal: PrincipalDep,
+    services: Annotated[Services, Depends(get_services)],
+    page_params: Annotated[PageParams, Depends()],
+) -> Page[PluginResponse]:
+    """Plugin catalog: approved public plugins + everything the caller owns."""
+    rows = services.plugin_repository.list_versions()
+    visible = [
+        row
+        for row in rows
+        if services.permissions.can_read_resource(
+            principal,
+            resource_type="plugin",
+            resource_id=row.plugin_id,
+            owner_id=row.plugin.owner_id,
+            visibility=row.plugin.visibility,
+        )
+    ]
+    # Store front page shows installable-by-others plugins first.
+    visible.sort(
+        key=lambda row: (
+            row.plugin.review_status != "approved" or row.plugin.visibility != "public",
+            row.name,
+        )
+    )
+    total = len(visible)
+    items = visible[page_params.offset : page_params.offset + page_params.page_size]
+    return page_params.envelope([PluginResponse.from_entity(e) for e in items], total)
+
+
+class PublishRequest(BaseModel):
+    plugin_id: str
+
+
+@router.post("/store/publish", status_code=202)
+def request_publish(
+    payload: PublishRequest,
+    principal: PrincipalDep,
+    services: Annotated[Services, Depends(get_services)],
+) -> dict[str, str]:
+    """Submit a personal plugin for store review (admin approves)."""
+    from mini_pipeline.database.account_repositories import set_plugin_review
+
+    plugin = services.plugin_repository.get(payload.plugin_id)
+    if not services.permissions.can_manage_resource(
+        principal, resource_type="plugin", resource_id=plugin.id, owner_id=plugin.owner_id
+    ):
+        from mini_pipeline.domain.exceptions import PermissionDeniedError
+
+        raise PermissionDeniedError("Only the plugin owner can publish it")
+    if plugin.owner_id is None:
+        from mini_pipeline.domain.exceptions import ValidationError
+
+        raise ValidationError("Platform plugins are already public")
+    set_plugin_review(services.database, plugin.id, "pending")
+    services.audit.record(
+        principal, "plugin.publish_request", resource_type="plugin", resource_id=plugin.id,
+    )
+    return {"plugin_id": plugin.id, "review_status": "pending"}
+
+
+@router.post("/store/review")
+def review_plugin(
+    payload: PublishRequest,
+    principal: PrincipalDep,
+    services: Annotated[Services, Depends(get_services)],
+    approve: bool = True,
+) -> dict[str, str]:
+    if not principal.is_admin:
+        from mini_pipeline.domain.exceptions import PermissionDeniedError
+
+        raise PermissionDeniedError("Admin role required")
+    from mini_pipeline.database.account_repositories import set_plugin_review
+
+    plugin = services.plugin_repository.get(payload.plugin_id)
+    if approve:
+        set_plugin_review(services.database, plugin.id, "approved", visibility="public")
+    else:
+        set_plugin_review(services.database, plugin.id, "rejected", visibility="private")
+    services.audit.record(
+        principal, "plugin.review", resource_type="plugin", resource_id=plugin.id,
+        detail={"approved": approve},
+    )
+    status = "approved" if approve else "rejected"
+    return {"plugin_id": plugin.id, "review_status": status}
 
 
 @router.get("/{name}/{version}/manifest")

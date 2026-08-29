@@ -25,10 +25,12 @@ class PipelineService:
         self.repository = repository
         self.plugin_repository = plugin_repository
 
-    def create(self, definition: str) -> PipelineEntity:
+    def create(self, definition: str, *, owner_id: str | None = None) -> PipelineEntity:
         pipeline = parse_pipeline(definition)
         self._validate_wiring(pipeline)
-        return self.repository.create(name=pipeline.name, definition=definition)
+        return self.repository.create(
+            name=pipeline.name, definition=definition, owner_id=owner_id
+        )
 
     def get(self, identifier: str) -> PipelineEntity:
         return self.repository.get(identifier)
@@ -37,7 +39,10 @@ class PipelineService:
         entity = self.get(identifier)
         return entity, parse_pipeline(entity.definition)
 
-    def update(self, identifier: str, definition: str) -> PipelineEntity:
+    def update(
+        self, identifier: str, definition: str, *, owner_id: str | None = None
+    ) -> PipelineEntity:
+        _ = owner_id  # ownership is checked at the API layer
         pipeline = parse_pipeline(definition)
         self._validate_wiring(pipeline)
         return self.repository.update(identifier, definition=definition)

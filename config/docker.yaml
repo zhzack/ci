@@ -45,6 +45,8 @@ security:
   # Browser origins allowed to call the API (adjust to your deployment).
   cors_origins: []
   rate_limit_per_minute: 120
+  # Encrypts machine credentials at rest (required for admin machines).
+  secret_key: ${MINI_PIPELINE_SECRET_KEY}
 
 retention:
   workspaces_days: 14

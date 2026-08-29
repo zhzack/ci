@@ -27,3 +27,11 @@ class SourceError(MiniPipelineError):
 
 class ExecutionError(MiniPipelineError):
     """Raised when a plugin cannot be executed or its output is invalid."""
+
+
+class AuthFailedError(MiniPipelineError):
+    """Raised when credentials are missing or invalid (HTTP 401)."""
+
+
+class PermissionDeniedError(MiniPipelineError):
+    """Raised when an authenticated caller lacks the required role/grant (403)."""

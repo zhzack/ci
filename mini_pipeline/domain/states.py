@@ -20,6 +20,7 @@ class PipelineStatus(str, Enum):
 class TaskStatus(str, Enum):
     PENDING = "PENDING"
     READY = "READY"
+    QUEUED = "QUEUED"  # assigned to a remote machine, not yet claimed
     RUNNING = "RUNNING"
     SUCCESS = "SUCCESS"
     FAILED = "FAILED"

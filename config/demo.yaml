@@ -1,0 +1,60 @@
+app:
+  name: Mini Pipeline
+  host: 127.0.0.1
+  port: 8000
+  api_prefix: /api
+
+database:
+  url: sqlite:///./data/demo_pipeline.db
+  echo: false
+
+storage:
+  root: ./data
+  plugins: ./data/plugins
+  workspaces: ./data/workspaces
+  logs: ./data/logs
+  artifacts: ./data/artifacts
+  temp: ./data/tmp
+
+execution:
+  coordinator_workers: 2
+  task_workers: 4
+  task_timeout_seconds: 120
+  reap_orphans_on_start: true
+  retry_backoff_seconds: 2
+
+logging:
+  level: INFO
+  format: text
+
+observability:
+  metrics_enabled: true
+
+auth:
+  enabled: true
+  registration_enabled: true
+  session_ttl_hours: 72
+  tokens: []
+
+security:
+  cors_origins: []
+  rate_limit_per_minute: 0
+  secret_key: demo-secret-key-not-for-production
+
+retention:
+  workspaces_days: 14
+  logs_days: 30
+  artifacts_days: 90
+  temp_hours: 24
+
+runner:
+  lease_seconds: 120
+  heartbeat_interval_seconds: 5
+  offline_after_seconds: 30
+  poll_interval_seconds: 0.5
+
+sources:
+  http_timeout_seconds: 30
+  max_archive_bytes: 104857600
+  max_extracted_bytes: 524288000
+  max_archive_files: 10000

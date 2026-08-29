@@ -46,6 +46,8 @@ npm run build                           # typecheck + vite build
 - **前端开发代理**：`/api` 和 `/health` → `http://127.0.0.1:8000`，可通过 `VITE_API_TARGET` 覆盖。
 - **Docker**：以非 root 的 `pipeline` 用户运行（UID 10001）。PostgreSQL 通过 `docker-compose.yml` 配置；容器 entrypoint 自动 `alembic upgrade head`。
 - **列表接口是分页信封**：`{items,total,page,page_size,pages}`（page_size 上限 200）。别再当裸数组消费。
+- **鉴权开启后的测试**：默认配置 `auth.enabled: false`（匿名 admin）。开启后所有 `/api` 请求要 `Authorization: Bearer mpt_…`；`/api/auth/{mode,register,login}` 是公开路由；runner 端点用 `mrt_` 机器令牌，与用户令牌不通用。
+- **远程执行测试**：目标机器的任务先变 `QUEUED`（协调器是异步的），测试要轮询等待后再 claim；owner 为 NULL 的资源是平台资源（全员可见），新注册用户的资源默认私有。
 
 ## Agent 容易忽略的架构细节
 

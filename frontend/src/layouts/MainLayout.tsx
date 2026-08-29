@@ -6,10 +6,12 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   UserOutlined,
+  LogoutOutlined,
 } from '@ant-design/icons';
-import { MENU_ITEMS, toAntdMenu } from '@/router/menuItems';
+import { MENU_ITEMS, toAntdMenu, visibleMenuItems } from '@/router/menuItems';
 import { useMenuStore } from '@/store/menu';
-import { useUserStore } from '@/store/user';
+import { useAuthStore } from '@/store/auth';
+import { logout } from '@/api/auth';
 
 const { Header, Sider, Content, Footer } = Layout;
 
@@ -18,10 +20,14 @@ export function MainLayout(): React.JSX.Element {
   const navigate = useNavigate();
   const collapsed = useMenuStore((state) => state.collapsed);
   const toggle = useMenuStore((state) => state.toggle);
-  const user = useUserStore((state) => state.user);
+  const user = useAuthStore((state) => state.user);
+  const clear = useAuthStore((state) => state.clear);
   const { token } = antdTheme.useToken();
 
-  const items = useMemo(() => toAntdMenu(MENU_ITEMS), []);
+  const items = useMemo(
+    () => toAntdMenu(visibleMenuItems(user?.role)),
+    [user?.role],
+  );
 
   const selectedKey = useMemo(() => {
     const candidates = MENU_ITEMS.flatMap((item) =>
@@ -31,6 +37,8 @@ export function MainLayout(): React.JSX.Element {
     return sorted.find((path) => location.pathname.startsWith(path)) ?? '/dashboard';
   }, [location.pathname]);
 
+  const displayName = user?.display_name || user?.username || 'Anonymous';
+
   return (
     <Layout style={{ minHeight: '100vh' }}>
       <Sider
@@ -39,16 +47,18 @@ export function MainLayout(): React.JSX.Element {
         collapsed={collapsed}
         trigger={null}
         width={232}
+        style={{ position: 'sticky', top: 0, height: '100vh', overflow: 'auto' }}
       >
         <div
           style={{
             color: '#fff',
             textAlign: 'center',
-            fontWeight: 600,
-            fontSize: 18,
+            fontWeight: 700,
+            fontSize: 17,
             letterSpacing: 1,
-            padding: '16px 0',
-            borderBottom: '1px solid rgba(255,255,255,0.1)',
+            padding: '18px 0',
+            background: 'linear-gradient(90deg, rgba(22,119,255,0.25), transparent)',
+            borderBottom: '1px solid rgba(255,255,255,0.08)',
           }}
         >
           {collapsed ? 'MP' : 'Mini Pipeline'}
@@ -67,9 +77,12 @@ export function MainLayout(): React.JSX.Element {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            padding: '0 16px',
+            padding: '0 20px',
             background: token.colorBgContainer,
-            borderBottom: '1px solid #f0f0f0',
+            borderBottom: `1px solid ${token.colorBorderSecondary}`,
+            position: 'sticky',
+            top: 0,
+            zIndex: 10,
           }}
         >
           <div
@@ -84,15 +97,25 @@ export function MainLayout(): React.JSX.Element {
           <Dropdown
             menu={{
               items: [
-                { key: 'docs', label: <Link to="/setting">Settings</Link> },
+                { key: 'profile', disabled: true, label: `${displayName}${user?.role === 'admin' ? ' · admin' : ''}` },
                 { type: 'divider' as const },
-                { key: 'signout', label: 'Sign out', disabled: true },
+                { key: 'settings', label: <Link to="/setting">Settings</Link> },
+                {
+                  key: 'signout',
+                  icon: <LogoutOutlined />,
+                  label: 'Sign out',
+                  onClick: () => {
+                    void logout().catch(() => undefined);
+                    clear();
+                    navigate('/login');
+                  },
+                },
               ],
             }}
           >
             <span style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-              <Avatar size="small" icon={<UserOutlined />} />
-              <span>{user.name}</span>
+              <Avatar size="small" style={{ background: token.colorPrimary }} icon={<UserOutlined />} />
+              <span>{displayName}</span>
             </span>
           </Dropdown>
         </Header>
@@ -100,7 +123,7 @@ export function MainLayout(): React.JSX.Element {
           <Outlet />
         </Content>
         <Footer className="app-footer">
-          Mini Pipeline · v0.1.0
+          Mini Pipeline · v0.3.0
         </Footer>
       </Layout>
     </Layout>

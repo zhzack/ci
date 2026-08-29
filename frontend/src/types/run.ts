@@ -43,6 +43,8 @@ export type RunSummary = Omit<PipelineRun, 'params' | 'tasks'> & {
 export type RunRequest = {
   pipeline: string;
   params: Record<string, unknown>;
+  /** Execution target: machine id (built-in runner if omitted). */
+  machine?: string;
 };
 
 export type RunListParams = {

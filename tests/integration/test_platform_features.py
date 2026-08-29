@@ -98,10 +98,11 @@ def wait_for_status(client, run_id, statuses, timeout=20.0):
     raise AssertionError(f"Run {run_id} did not reach {statuses}")
 
 
-def register_plugin(client, archive, name="sleeper"):
+def register_plugin(client, archive, name="sleeper", headers=None):
     resp = client.post(
         "/api/plugins/upload",
         files={"file": (f"{name}.zip", io.BytesIO(archive), "application/zip")},
+        headers=headers or {},
     )
     assert resp.status_code == 201, resp.text
 

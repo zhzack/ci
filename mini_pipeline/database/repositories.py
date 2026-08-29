@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -40,12 +40,21 @@ class PluginRepository:
         runtime_type: str,
         entry: str,
         manifest: dict[str, Any],
+        owner_id: str | None = None,
     ) -> PluginVersion:
         try:
             with self.database.session() as session:
                 plugin = session.scalar(select(Plugin).where(Plugin.name == name))
                 if plugin is None:
-                    plugin = Plugin(name=name, description=description)
+                    plugin = Plugin(
+                        name=name,
+                        description=description,
+                        owner_id=owner_id,
+                        # First version of a user plugin stays private until a
+                        # store review approves it; platform plugins (owner
+                        # NULL) are public by definition.
+                        visibility="public" if owner_id is None else "private",
+                    )
                     session.add(plugin)
                     session.flush()
                 elif description and plugin.description != description:
@@ -66,15 +75,35 @@ class PluginRepository:
                 )
                 session.add(item)
                 session.flush()
+                # Touch the relationship while still attached so the response
+                # layer can read plugin.owner_id after expunge.
+                _ = item.plugin
                 session.expunge(item)
                 return item
         except IntegrityError as exc:
             raise ConflictError(f"Plugin {name}@{version} already exists") from exc
 
+    def get(self, plugin_id: str) -> Plugin:
+        with self.database.session() as session:
+            plugin = session.get(Plugin, plugin_id)
+            if plugin is None:
+                raise NotFoundError(f"Plugin {plugin_id!r} was not found")
+            session.expunge(plugin)
+            return plugin
+
+    def list_plugins(self) -> list[Plugin]:
+        with self.database.session() as session:
+            rows = list(session.scalars(select(Plugin).order_by(Plugin.name)))
+            for row in rows:
+                session.expunge(row)
+            return rows
+
     def get_version(self, name: str, version: str) -> PluginVersion:
         with self.database.session() as session:
             item = session.scalar(
-                select(PluginVersion).where(
+                select(PluginVersion)
+                .options(selectinload(PluginVersion.plugin))
+                .where(
                     PluginVersion.name == name,
                     PluginVersion.version == version,
                 )
@@ -100,7 +129,9 @@ class PluginRepository:
         with self.database.session() as session:
             items = list(
                 session.scalars(
-                    select(PluginVersion).order_by(PluginVersion.name, PluginVersion.created_at)
+                    select(PluginVersion)
+                    .options(selectinload(PluginVersion.plugin))
+                    .order_by(PluginVersion.name, PluginVersion.created_at)
                 )
             )
             for item in items:
@@ -115,8 +146,10 @@ class PluginRepository:
         search: str | None = None,
     ) -> list[PluginVersion]:
         with self.database.session() as session:
-            query = select(PluginVersion).order_by(
-                PluginVersion.name, PluginVersion.created_at
+            query = (
+                select(PluginVersion)
+                .options(selectinload(PluginVersion.plugin))
+                .order_by(PluginVersion.name, PluginVersion.created_at)
             )
             if search:
                 query = query.where(PluginVersion.name.contains(search))
@@ -150,10 +183,14 @@ class PipelineRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def create(self, *, name: str, definition: str) -> PipelineDefinition:
+    def create(
+        self, *, name: str, definition: str, owner_id: str | None = None
+    ) -> PipelineDefinition:
         try:
             with self.database.session() as session:
-                pipeline = PipelineDefinition(name=name, definition=definition)
+                pipeline = PipelineDefinition(
+                    name=name, definition=definition, owner_id=owner_id
+                )
                 session.add(pipeline)
                 session.flush()
                 session.expunge(pipeline)
@@ -243,7 +280,11 @@ class RunRepository:
         tasks: Sequence[tuple[str, str, str]],
         parent_run_id: str | None = None,
         branched_from_step: str | None = None,
+        machine_id: str | None = None,
+        task_machines: dict[str, str] | None = None,
+        owner_id: str | None = None,
     ) -> PipelineRun:
+        task_machines = task_machines or {}
         try:
             with self.database.session() as session:
                 run = PipelineRun(
@@ -252,6 +293,8 @@ class RunRepository:
                     params=params,
                     parent_run_id=parent_run_id,
                     branched_from_step=branched_from_step,
+                    machine_id=machine_id,
+                    owner_id=owner_id,
                 )
                 session.add(run)
                 session.flush()
@@ -263,6 +306,7 @@ class RunRepository:
                             position=position,
                             plugin_name=plugin_name,
                             plugin_version=plugin_version,
+                            machine_id=task_machines.get(step_name) or machine_id,
                         )
                     )
                 session.flush()
@@ -279,6 +323,18 @@ class RunRepository:
                 ) from exc
             raise
         return self.get(run_id)
+
+    def get_task_by_id(self, task_id: str) -> TaskRun:
+        with self.database.session() as session:
+            task = session.scalar(
+                select(TaskRun)
+                .options(selectinload(TaskRun.artifacts))
+                .where(TaskRun.id == task_id)
+            )
+            if task is None:
+                raise NotFoundError(f"Task run {task_id!r} was not found")
+            session.expunge(task)
+            return task
 
     def get(self, run_id: str) -> PipelineRun:
         with self.database.session() as session:
@@ -527,6 +583,7 @@ class RunRepository:
         unfinished_tasks = [
             TaskStatus.PENDING.value,
             TaskStatus.READY.value,
+            TaskStatus.QUEUED.value,
             TaskStatus.RUNNING.value,
         ]
         with self.database.session() as session:
@@ -548,3 +605,66 @@ class RunRepository:
                 .values(status=PipelineStatus.FAILED.value, message=message)
             )
             return len(run_ids)
+
+    def fail_expired_leases(self, *, cutoff: datetime, message: str) -> int:
+        """Mark RUNNING remote tasks whose lease expired as FAILED.
+
+        Returns the number of tasks reaped.
+        """
+        from sqlalchemy import update
+
+        with self.database.session() as session:
+            result = session.execute(
+                update(TaskRun)
+                .where(
+                    TaskRun.status == TaskStatus.RUNNING.value,
+                    TaskRun.machine_id.isnot(None),
+                    TaskRun.lease_expires_at.isnot(None),
+                    TaskRun.lease_expires_at < cutoff,
+                )
+                .values(
+                    status=TaskStatus.FAILED.value,
+                    message=message,
+                    finished_at=datetime.utcnow(),
+                )
+            )
+            return int(result.rowcount or 0)
+
+    def claim_next_task(
+        self, *, machine_id: str, lease_seconds: int
+    ) -> TaskRun | None:
+        """Atomically claim the oldest QUEUED task for this machine.
+
+        Transitions QUEUED → RUNNING and sets the heartbeat lease. The
+        status guard in the UPDATE makes concurrent claims safe.
+        """
+        from sqlalchemy import update
+
+        with self.database.session() as session:
+            task_id = session.scalar(
+                select(TaskRun.id)
+                .where(
+                    TaskRun.machine_id == machine_id,
+                    TaskRun.status == TaskStatus.QUEUED.value,
+                )
+                .order_by(TaskRun.position)
+                .limit(1)
+            )
+            if task_id is None:
+                return None
+            result = session.execute(
+                update(TaskRun)
+                .where(
+                    TaskRun.id == task_id,
+                    TaskRun.status == TaskStatus.QUEUED.value,
+                )
+                .values(
+                    status=TaskStatus.RUNNING.value,
+                    started_at=datetime.utcnow(),
+                    lease_expires_at=datetime.utcnow()
+                    + timedelta(seconds=lease_seconds),
+                )
+            )
+            if not result.rowcount:
+                return None
+        return self.get_task_by_id(task_id)

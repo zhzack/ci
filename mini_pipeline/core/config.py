@@ -72,6 +72,10 @@ class AuthToken(BaseModel):
 
 class AuthConfig(BaseModel):
     enabled: bool = False
+    # Open user self-registration (the very first user becomes admin).
+    registration_enabled: bool = True
+    # Login session lifetime.
+    session_ttl_hours: int = Field(default=72, ge=1)
     tokens: list[AuthToken] = Field(default_factory=list)
 
 
@@ -81,6 +85,23 @@ class SecurityConfig(BaseModel):
     # Max mutating (POST/PUT/PATCH/DELETE) requests per client IP per minute.
     # 0 disables rate limiting.
     rate_limit_per_minute: int = Field(default=0, ge=0)
+    # Fernet key source for machine credentials at rest. Required when admin
+    # machines store credentials.
+    secret_key: str = ""
+
+
+class RunnerConfig(BaseModel):
+    """Remote execution (runner agents on user machines)."""
+
+    # A claimed task must be heartbeated at least this often or the lease
+    # reaper marks it FAILED. Agents renew via heartbeat while executing.
+    lease_seconds: int = Field(default=120, ge=30)
+    # Recommended agent heartbeat interval (keep <= lease/2).
+    heartbeat_interval_seconds: int = Field(default=15, ge=5)
+    # A machine is shown offline when its last heartbeat is older than this.
+    offline_after_seconds: int = Field(default=45, ge=10)
+    # How often the engine polls a remote task's persisted state.
+    poll_interval_seconds: float = Field(default=0.5, ge=0.1)
 
 
 class RetentionConfig(BaseModel):
@@ -112,6 +133,7 @@ class Settings(BaseModel):
     auth: AuthConfig = Field(default_factory=AuthConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     retention: RetentionConfig = Field(default_factory=RetentionConfig)
+    runner: RunnerConfig = Field(default_factory=RunnerConfig)
 
     def prepare_directories(self) -> None:
         for directory in self.storage.directories():

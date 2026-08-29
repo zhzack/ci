@@ -31,7 +31,9 @@ class PluginService:
         self.sources = sources
         self.upload_source = upload_source
 
-    def register(self, source: Mapping[str, Any]) -> PluginVersion:
+    def register(
+        self, source: Mapping[str, Any], *, owner_id: Optional[str] = None
+    ) -> PluginVersion:
         source_type = str(source.get("type", "")).strip()
         if not source_type:
             raise SourceError("Plugin source requires a type")
@@ -40,17 +42,19 @@ class PluginService:
             source_type=source_type,
             source_url=str(source.get("url")) if source.get("url") else None,
             source_revision=self._source_revision(source),
+            owner_id=owner_id,
         )
 
-    def register_upload(self, stream: BinaryIO) -> PluginVersion:
+    def register_upload(self, stream: BinaryIO, *, owner_id: Optional[str] = None) -> PluginVersion:
         return self._install(
             lambda destination: self.upload_source.fetch_stream(stream, destination),
             source_type="upload",
             source_url=None,
             source_revision=None,
+            owner_id=owner_id,
         )
 
-    def register_folder(self, files) -> PluginVersion:
+    def register_folder(self, files, *, owner_id: Optional[str] = None) -> PluginVersion:
         """Register a plugin from a list of FolderFile entries."""
         from mini_pipeline.source.upload import FolderFile  # local import to avoid cycles
 
@@ -61,6 +65,7 @@ class PluginService:
             source_type="upload",
             source_url=None,
             source_revision=None,
+            owner_id=owner_id,
         )
 
     def list(self) -> list[PluginVersion]:
@@ -83,6 +88,7 @@ class PluginService:
         source_type: str,
         source_url: Optional[str],
         source_revision: Optional[str],
+        owner_id: Optional[str] = None,
     ) -> PluginVersion:
         staging_parent = Path(
             tempfile.mkdtemp(prefix="plugin-register-", dir=str(self.storage.temp))
@@ -125,6 +131,7 @@ class PluginService:
                     runtime_type=manifest.runtime.type,
                     entry=manifest.entry,
                     manifest=manifest.model_dump(mode="json"),
+                    owner_id=owner_id,
                 )
             except Exception:
                 shutil.rmtree(target, ignore_errors=True)

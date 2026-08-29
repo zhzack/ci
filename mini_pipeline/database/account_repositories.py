@@ -1,0 +1,531 @@
+"""Repositories for users, sessions, teams, grants, machines, and audit."""
+
+from __future__ import annotations
+
+import hashlib
+import secrets
+from datetime import datetime, timedelta
+from typing import Any
+
+from sqlalchemy import delete, select, update
+from sqlalchemy.exc import IntegrityError
+
+from mini_pipeline.database.models import (
+    AuditLog,
+    AuthSession,
+    Machine,
+    ShareGrant,
+    Team,
+    TeamMember,
+    User,
+)
+from mini_pipeline.database.session import Database
+from mini_pipeline.domain.exceptions import ConflictError, NotFoundError
+
+
+def hash_token(raw: str) -> str:
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def generate_token(prefix: str) -> str:
+    return f"{prefix}_{secrets.token_urlsafe(32)}"
+
+
+class UserRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def create(
+        self,
+        *,
+        username: str,
+        password_hash: str,
+        display_name: str = "",
+        role: str = "user",
+    ) -> User:
+        try:
+            with self.database.session() as session:
+                user = User(
+                    username=username,
+                    password_hash=password_hash,
+                    display_name=display_name or username,
+                    role=role,
+                )
+                session.add(user)
+                session.flush()
+                session.expunge(user)
+                return user
+        except IntegrityError as exc:
+            raise ConflictError(f"Username {username!r} already exists") from exc
+
+    def count(self) -> int:
+        with self.database.session() as session:
+            from sqlalchemy import func
+
+            return int(session.scalar(select(func.count(User.id))) or 0)
+
+    def get(self, user_id: str) -> User:
+        with self.database.session() as session:
+            user = session.get(User, user_id)
+            if user is None:
+                raise NotFoundError(f"User {user_id!r} was not found")
+            session.expunge(user)
+            return user
+
+    def get_by_username(self, username: str) -> User | None:
+        with self.database.session() as session:
+            user = session.scalar(select(User).where(User.username == username))
+            if user is None:
+                return None
+            session.expunge(user)
+            return user
+
+    def list(self) -> list[User]:
+        with self.database.session() as session:
+            rows = list(session.scalars(select(User).order_by(User.created_at)))
+            for row in rows:
+                session.expunge(row)
+            return rows
+
+    def set_status(self, user_id: str, status: str) -> None:
+        with self.database.session() as session:
+            session.execute(
+                update(User).where(User.id == user_id).values(status=status)
+            )
+
+    def set_role(self, user_id: str, role: str) -> None:
+        with self.database.session() as session:
+            session.execute(
+                update(User).where(User.id == user_id).values(role=role)
+            )
+
+
+class SessionRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def create(self, *, user_id: str, ttl_hours: int) -> tuple[str, AuthSession]:
+        raw = generate_token("mpt")
+        with self.database.session() as session:
+            auth_session = AuthSession(
+                user_id=user_id,
+                token_hash=hash_token(raw),
+                expires_at=datetime.utcnow() + timedelta(hours=ttl_hours),
+            )
+            session.add(auth_session)
+            session.flush()
+            session.expunge(auth_session)
+        return raw, auth_session
+
+    def resolve(self, raw_token: str) -> tuple[AuthSession, User] | None:
+        """Return (session, user) for a valid, unexpired token."""
+        token_hash = hash_token(raw_token)
+        with self.database.session() as session:
+            auth_session = session.scalar(
+                select(AuthSession).where(AuthSession.token_hash == token_hash)
+            )
+            if auth_session is None:
+                return None
+            if auth_session.expires_at < datetime.utcnow():
+                return None
+            user = session.get(User, auth_session.user_id)
+            if user is None or user.status != "active":
+                return None
+            session.execute(
+                update(AuthSession)
+                .where(AuthSession.id == auth_session.id)
+                .values(last_seen_at=datetime.utcnow())
+            )
+            session.expunge(auth_session)
+            session.expunge(user)
+            return auth_session, user
+
+    def revoke(self, raw_token: str) -> None:
+        with self.database.session() as session:
+            session.execute(
+                delete(AuthSession).where(
+                    AuthSession.token_hash == hash_token(raw_token)
+                )
+            )
+
+    def revoke_user_sessions(self, user_id: str) -> None:
+        with self.database.session() as session:
+            session.execute(delete(AuthSession).where(AuthSession.user_id == user_id))
+
+
+class TeamRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def create(self, *, name: str, created_by: str | None) -> Team:
+        try:
+            with self.database.session() as session:
+                team = Team(name=name, created_by=created_by)
+                session.add(team)
+                session.flush()
+                session.expunge(team)
+                return team
+        except IntegrityError as exc:
+            raise ConflictError(f"Team {name!r} already exists") from exc
+
+    def list(self) -> list[Team]:
+        with self.database.session() as session:
+            rows = list(session.scalars(select(Team).order_by(Team.name)))
+            for row in rows:
+                session.expunge(row)
+            return rows
+
+    def get(self, team_id: str) -> Team:
+        with self.database.session() as session:
+            team = session.get(Team, team_id)
+            if team is None:
+                raise NotFoundError(f"Team {team_id!r} was not found")
+            session.expunge(team)
+            return team
+
+    def add_member(self, *, team_id: str, user_id: str) -> None:
+        try:
+            with self.database.session() as session:
+                session.add(TeamMember(team_id=team_id, user_id=user_id))
+        except IntegrityError as exc:
+            raise ConflictError("User is already a team member") from exc
+
+    def remove_member(self, *, team_id: str, user_id: str) -> None:
+        with self.database.session() as session:
+            session.execute(
+                delete(TeamMember).where(
+                    TeamMember.team_id == team_id, TeamMember.user_id == user_id
+                )
+            )
+
+    def members_of(self, team_id: str) -> list[TeamMember]:
+        with self.database.session() as session:
+            rows = list(
+                session.scalars(
+                    select(TeamMember).where(TeamMember.team_id == team_id)
+                )
+            )
+            for row in rows:
+                session.expunge(row)
+            return rows
+
+    def member_user_ids(self, team_ids: set[str]) -> set[str]:
+        if not team_ids:
+            return set()
+        with self.database.session() as session:
+            rows = list(
+                session.scalars(
+                    select(TeamMember.user_id).where(TeamMember.team_id.in_(team_ids))
+                )
+            )
+            return set(rows)
+
+    def teams_of_user(self, user_id: str) -> list[Team]:
+        with self.database.session() as session:
+            rows = list(
+                session.scalars(
+                    select(Team)
+                    .join(TeamMember, TeamMember.team_id == Team.id)
+                    .where(TeamMember.user_id == user_id)
+                )
+            )
+            for row in rows:
+                session.expunge(row)
+            return rows
+
+
+class GrantRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def create(
+        self,
+        *,
+        resource_type: str,
+        resource_id: str,
+        grantee_type: str,
+        grantee_id: str,
+        permission: str,
+        granted_by: str | None,
+    ) -> ShareGrant:
+        try:
+            with self.database.session() as session:
+                grant = ShareGrant(
+                    resource_type=resource_type,
+                    resource_id=resource_id,
+                    grantee_type=grantee_type,
+                    grantee_id=grantee_id,
+                    permission=permission,
+                    granted_by=granted_by,
+                )
+                session.add(grant)
+                session.flush()
+                session.expunge(grant)
+                return grant
+        except IntegrityError as exc:
+            raise ConflictError("Grant already exists") from exc
+
+    def get(self, grant_id: str) -> ShareGrant | None:
+        with self.database.session() as session:
+            grant = session.get(ShareGrant, grant_id)
+            if grant is None:
+                return None
+            session.expunge(grant)
+            return grant
+
+    def list_for_resource(
+        self, resource_type: str, resource_id: str
+    ) -> list[ShareGrant]:
+        with self.database.session() as session:
+            rows = list(
+                session.scalars(
+                    select(ShareGrant)
+                    .where(
+                        ShareGrant.resource_type == resource_type,
+                        ShareGrant.resource_id == resource_id,
+                    )
+                    .order_by(ShareGrant.created_at)
+                )
+            )
+            for row in rows:
+                session.expunge(row)
+            return rows
+
+    def list_for_grantee(
+        self, *, user_id: str, team_ids: set[str], resource_type: str | None = None
+    ) -> list[ShareGrant]:
+        """All grants that effectively apply to this user."""
+        grantee_ids = {user_id, *team_ids}
+        with self.database.session() as session:
+            query = select(ShareGrant).where(ShareGrant.grantee_id.in_(grantee_ids))
+            if resource_type:
+                query = query.where(ShareGrant.resource_type == resource_type)
+            rows = list(session.scalars(query))
+            for row in rows:
+                session.expunge(row)
+            return rows
+
+    def delete(self, grant_id: str) -> None:
+        with self.database.session() as session:
+            session.execute(delete(ShareGrant).where(ShareGrant.id == grant_id))
+
+
+class MachineRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def create(
+        self,
+        *,
+        name: str,
+        kind: str,
+        owner_id: str | None,
+        assigned_user_id: str | None,
+        token_hash: str,
+        labels: dict[str, Any],
+        max_concurrency: int,
+        credentials: str | None,
+        notes: str,
+        connection_type: str = "agent",
+    ) -> Machine:
+        try:
+            with self.database.session() as session:
+                machine = Machine(
+                    name=name,
+                    kind=kind,
+                    connection_type=connection_type,
+                    owner_id=owner_id,
+                    assigned_user_id=assigned_user_id,
+                    token_hash=token_hash,
+                    labels=labels,
+                    max_concurrency=max_concurrency,
+                    credentials=credentials,
+                    notes=notes,
+                )
+                session.add(machine)
+                session.flush()
+                session.expunge(machine)
+                return machine
+        except IntegrityError as exc:
+            raise ConflictError("Machine token collision; retry") from exc
+
+    def get(self, machine_id: str) -> Machine:
+        with self.database.session() as session:
+            machine = session.get(Machine, machine_id)
+            if machine is None:
+                raise NotFoundError(f"Machine {machine_id!r} was not found")
+            session.expunge(machine)
+            return machine
+
+    def get_by_token_hash(self, token_hash: str) -> Machine | None:
+        with self.database.session() as session:
+            machine = session.scalar(
+                select(Machine).where(Machine.token_hash == token_hash)
+            )
+            if machine is None:
+                return None
+            session.expunge(machine)
+            return machine
+
+    def list(self) -> list[Machine]:
+        with self.database.session() as session:
+            rows = list(
+                session.scalars(select(Machine).order_by(Machine.created_at.desc()))
+            )
+            for row in rows:
+                session.expunge(row)
+            return rows
+
+    def heartbeat(self, machine_id: str, agent_version: str | None) -> None:
+        with self.database.session() as session:
+            values: dict[str, Any] = {"last_heartbeat": datetime.utcnow()}
+            if agent_version:
+                values["agent_version"] = agent_version
+            session.execute(
+                update(Machine).where(Machine.id == machine_id).values(**values)
+            )
+
+    def extend_leases(
+        self, machine_id: str, task_ids: list[str], lease_until: datetime
+    ) -> None:
+        if not task_ids:
+            return
+        with self.database.session() as session:
+            from mini_pipeline.database.models import TaskRun
+
+            session.execute(
+                update(TaskRun)
+                .where(
+                    TaskRun.id.in_(task_ids),
+                    TaskRun.machine_id == machine_id,
+                    TaskRun.status == "RUNNING",
+                )
+                .values(lease_expires_at=lease_until)
+            )
+
+    def cancel_requested_task_ids(
+        self, machine_id: str, active_task_ids: list[str]
+    ) -> list[str]:
+        """Active tasks of this machine whose parent run was cancelled."""
+        if not active_task_ids:
+            return []
+        with self.database.session() as session:
+            from mini_pipeline.database.models import PipelineRun, TaskRun
+
+            rows = list(
+                session.execute(
+                    select(TaskRun.id)
+                    .join(PipelineRun, PipelineRun.id == TaskRun.run_id)
+                    .where(
+                        TaskRun.id.in_(active_task_ids),
+                        TaskRun.machine_id == machine_id,
+                        PipelineRun.status == "CANCELLED",
+                    )
+                )
+            )
+            return [r[0] for r in rows]
+
+    def update(
+        self,
+        machine_id: str,
+        *,
+        name: str | None = None,
+        assigned_user_id: Any = "__unset__",
+        labels: dict[str, Any] | None = None,
+        max_concurrency: int | None = None,
+        credentials: Any = "__unset__",
+        notes: Any = "__unset__",
+        owner_id: Any = "__unset__",
+        status: str | None = None,
+        token_hash: str | None = None,
+    ) -> None:
+        values: dict[str, Any] = {}
+        if name is not None:
+            values["name"] = name
+        if assigned_user_id != "__unset__":
+            values["assigned_user_id"] = assigned_user_id
+        if labels is not None:
+            values["labels"] = labels
+        if max_concurrency is not None:
+            values["max_concurrency"] = max_concurrency
+        if credentials != "__unset__":
+            values["credentials"] = credentials
+        if notes != "__unset__":
+            values["notes"] = notes
+        if owner_id != "__unset__":
+            values["owner_id"] = owner_id
+        if status is not None:
+            values["status"] = status
+        if token_hash is not None:
+            values["token_hash"] = token_hash
+        if not values:
+            return
+        with self.database.session() as session:
+            session.execute(update(Machine).where(Machine.id == machine_id).values(**values))
+
+    def delete(self, machine_id: str) -> None:
+        with self.database.session() as session:
+            machine = session.get(Machine, machine_id)
+            if machine is not None:
+                session.delete(machine)
+
+
+class AuditRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def record(
+        self,
+        *,
+        user_id: str | None,
+        action: str,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+        detail: dict[str, Any] | None = None,
+        request_id: str | None = None,
+    ) -> None:
+        try:
+            with self.database.session() as session:
+                session.add(
+                    AuditLog(
+                        user_id=user_id,
+                        action=action,
+                        resource_type=resource_type,
+                        resource_id=resource_id,
+                        detail=detail or {},
+                        request_id=request_id,
+                    )
+                )
+        except Exception:
+            # Audit failures must never break the request path.
+            import logging
+
+            logging.getLogger(__name__).exception("Failed to write audit log")
+
+    def list(self, *, limit: int = 200) -> list[AuditLog]:
+        with self.database.session() as session:
+            rows = list(
+                session.scalars(
+                    select(AuditLog)
+                    .order_by(AuditLog.created_at.desc())
+                    .limit(limit)
+                )
+            )
+            for row in rows:
+                session.expunge(row)
+            return rows
+
+
+def set_plugin_review(
+    database: Database, plugin_id: str, review_status: str, visibility: str | None = None
+) -> None:
+    """Update a plugin's store review state (and optionally its visibility)."""
+    from sqlalchemy import update
+
+    from mini_pipeline.database.models import Plugin
+
+    values: dict[str, Any] = {"review_status": review_status}
+    if visibility is not None:
+        values["visibility"] = visibility
+    with database.session() as session:
+        session.execute(update(Plugin).where(Plugin.id == plugin_id).values(**values))

@@ -3,8 +3,11 @@ import { createBrowserRouter, Navigate, type RouteObject } from 'react-router-do
 import { Loading } from '@/components/Loading';
 import { MainLayout } from '@/layouts/MainLayout';
 import { RouterErrorElement } from '@/components/RouteErrorBoundary';
+import { AuthGate } from '@/router/AuthGate';
 import React from 'react';
 
+const LoginPage = lazy(() => import('@/pages/auth/LoginPage'));
+const RegisterPage = lazy(() => import('@/pages/auth/RegisterPage'));
 const DashboardPage = lazy(() => import('@/pages/dashboard'));
 const PluginListPage = lazy(() => import('@/pages/plugin/PluginListPage'));
 const PluginRegisterPage = lazy(() => import('@/pages/plugin/PluginRegisterPage'));
@@ -19,6 +22,9 @@ const PipelineHistoryPage = lazy(() => import('@/pages/pipeline/PipelineHistoryP
 const TaskRunningPage = lazy(() => import('@/pages/task/TaskRunningPage'));
 const TaskHistoryPage = lazy(() => import('@/pages/task/TaskHistoryPage'));
 const TaskDetailPage = lazy(() => import('@/pages/task/TaskDetailPage'));
+const MachinePage = lazy(() => import('@/pages/machine/MachinesPage'));
+const StorePage = lazy(() => import('@/pages/store/StorePage'));
+const AdminPage = lazy(() => import('@/pages/admin/AdminPage'));
 const ArtifactPage = lazy(() => import('@/pages/artifact/ArtifactPage'));
 const SettingPage = lazy(() => import('@/pages/setting/SettingPage'));
 
@@ -29,9 +35,15 @@ const withSuspense = (element: React.JSX.Element): React.JSX.Element => (
 const breadcrumb = (label: string) => ({ breadcrumb: label });
 
 const routes: RouteObject[] = [
+  { path: '/login', element: withSuspense(<LoginPage />) },
+  { path: '/register', element: withSuspense(<RegisterPage />) },
   {
     path: '/',
-    element: <MainLayout />,
+    element: (
+      <AuthGate>
+        <MainLayout />
+      </AuthGate>
+    ),
     errorElement: <RouterErrorElement />,
     children: [
       { index: true, element: <Navigate to="/dashboard" replace /> },
@@ -46,6 +58,7 @@ const routes: RouteObject[] = [
           { path: ':name/:version', element: withSuspense(<PluginDetailPage />), handle: breadcrumb('Detail') },
         ],
       },
+      { path: 'store', element: withSuspense(<StorePage />), handle: breadcrumb('Store') },
       {
         path: 'pipeline',
         handle: breadcrumb('Pipeline'),
@@ -69,7 +82,9 @@ const routes: RouteObject[] = [
           { path: ':runId', element: withSuspense(<TaskDetailPage />), handle: breadcrumb('Detail') },
         ],
       },
+      { path: 'machine', element: withSuspense(<MachinePage />), handle: breadcrumb('Machines') },
       { path: 'artifact', element: withSuspense(<ArtifactPage />), handle: breadcrumb('Artifact') },
+      { path: 'admin', element: withSuspense(<AdminPage />), handle: breadcrumb('Admin') },
       { path: 'setting', element: withSuspense(<SettingPage />), handle: breadcrumb('Setting') },
       { path: '*', element: <Navigate to="/dashboard" replace /> },
     ],

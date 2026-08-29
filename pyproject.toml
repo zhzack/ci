@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mini-pipeline"
-version = "0.2.0"
+version = "0.3.0"
 description = "A lightweight and extensible pipeline execution platform"
 readme = "readme.md"
 requires-python = ">=3.9"
@@ -20,6 +20,8 @@ dependencies = [
     "psycopg[binary]>=3.2,<4",
     "prometheus-client>=0.20,<1",
     "alembic>=1.13,<2",
+    "cryptography>=42,<46",
+    "paramiko>=3.4,<4",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +34,7 @@ dev = [
 [project.scripts]
 mini-pipeline = "mini_pipeline.server.main:run"
 mini-pipeline-gc = "mini_pipeline.maintenance.gc:main"
+mini-pipeline-runner = "mini_pipeline.runner.agent:main"
 
 [tool.setuptools.packages.find]
 include = ["mini_pipeline*"]

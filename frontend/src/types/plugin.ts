@@ -9,6 +9,10 @@ export type PluginVersion = {
   runtime_type: string;
   entry: string;
   status: string;
+  plugin_id?: string;
+  owner_id?: string | null;
+  visibility?: 'private' | 'public' | string;
+  review_status?: 'none' | 'pending' | 'approved' | 'rejected' | string;
 };
 
 export type PluginManifestValue = {

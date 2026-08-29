@@ -1,7 +1,20 @@
 #!/bin/sh
 set -eu
 
-python3 - << 'PY'
+PY=""
+for c in python3 python; do
+  if command -v "$c" >/dev/null 2>&1 && "$c" -c "import sys" >/dev/null 2>&1; then
+    PY="$c"
+    break
+  fi
+done
+
+if [ -z "$PY" ]; then
+  echo "Error: Python interpreter not found" >&2
+  exit 1
+fi
+
+"$PY" - << 'PY'
 import json, sys, traceback
 from pathlib import Path
 

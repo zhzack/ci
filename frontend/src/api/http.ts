@@ -17,12 +17,59 @@ export function getModalApi(): Omit<ModalStaticFunctions, 'warn'> | null {
   return modalApi;
 }
 
+export const AUTH_STORAGE_KEY = 'mini-pipeline-auth';
+
+export type StoredAuth = {
+  token: string;
+  user: { id: string; username: string; display_name: string; role: string };
+};
+
+export function loadStoredAuth(): StoredAuth | null {
+  try {
+    const raw = localStorage.getItem(AUTH_STORAGE_KEY);
+    if (!raw) return null;
+    // The zustand persist middleware stores {"state": {...}, "version": 0};
+    // accept both that envelope and a bare {token, user} object.
+    const parsed = JSON.parse(raw) as Partial<StoredAuth> & {
+      state?: Partial<StoredAuth>;
+    };
+    const candidate = parsed.state?.token ? parsed.state : parsed;
+    return candidate.token ? (candidate as StoredAuth) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function storeAuth(auth: StoredAuth | null): void {
+  // Null removes the key entirely; non-null writes are handled by the
+  // zustand persist middleware (this stays for force-logout cleanup).
+  if (!auth) {
+    localStorage.removeItem(AUTH_STORAGE_KEY);
+  }
+}
+
+/** A 401 from the API means the session is gone — drop it and re-login. */
+export function onUnauthorized(): void {
+  storeAuth(null);
+  if (!window.location.pathname.startsWith('/login')) {
+    window.location.assign('/login');
+  }
+}
+
 export const http = axios.create({
   baseURL: '/api',
   headers: {
     'Content-Type': 'application/json',
   },
   timeout: 30_000,
+});
+
+http.interceptors.request.use((config) => {
+  const auth = loadStoredAuth();
+  if (auth) {
+    config.headers.set('Authorization', `Bearer ${auth.token}`);
+  }
+  return config;
 });
 
 http.interceptors.response.use(
@@ -37,6 +84,10 @@ http.interceptors.response.use(
         error.response.data.detail) ||
       error.message ||
       'Request failed';
+
+    if (status === 401) {
+      onUnauthorized();
+    }
 
     if (messageApi) {
       if (status === 404) {

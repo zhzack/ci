@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 from queue import Empty, Queue
 
 from mini_pipeline.domain.runtime import RuntimeRequest, RuntimeResult
@@ -60,6 +61,10 @@ class ProcessRunner:
 
     def run(self, command: list[str], request: RuntimeRequest) -> RuntimeResult:
         environment = os.environ.copy()
+        current_py_dir = str(Path(sys.executable).parent)
+        existing_path = environment.get("PATH", "")
+        if current_py_dir not in existing_path.split(os.pathsep):
+            environment["PATH"] = f"{current_py_dir}{os.pathsep}{existing_path}"
         environment.update(request.environment)
         popen_kwargs: dict = {}
         if sys.platform == "win32":

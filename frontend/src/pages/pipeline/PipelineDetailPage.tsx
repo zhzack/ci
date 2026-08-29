@@ -11,6 +11,7 @@ import {
   InputNumber,
   Modal,
   Row,
+  Select,
   Space,
   Switch,
   Table,
@@ -31,6 +32,7 @@ import { useApiQuery } from '@/hooks/useApiQuery';
 import { useApiMutation } from '@/hooks/useApiMutation';
 import { getPipelineParamsSchema, getPipelineYaml, listPipelines } from '@/api/pipeline';
 import { submitRun } from '@/api/run';
+import { listMachines, type Machine } from '@/api/machine';
 import type {
   ParamField,
   PipelineDefinition,
@@ -64,6 +66,8 @@ export default function PipelineDetailPage(): React.JSX.Element {
   const navigate = useNavigate();
   const [paramsText, setParamsText] = useState('{}');
   const [formParams, setFormParams] = useState<Record<string, unknown>>({});
+  const [targetMachine, setTargetMachine] = useState<string | undefined>(undefined);
+  const machinesQuery = useApiQuery(['machines'], listMachines, { enabled: Boolean(identifier) });
   const [runModalOpen, setRunModalOpen] = useState(false);
   const [paramsForm] = Form.useForm<{ params: string }>();
   const [runMode, setRunMode] = useState<'form' | 'json'>('form');
@@ -113,8 +117,11 @@ export default function PipelineDetailPage(): React.JSX.Element {
 
   const submitRunMutation = useApiMutation(
     {
-      mutationFn: (payload: { pipeline: string; params: Record<string, unknown> }) =>
-        submitRun(payload),
+      mutationFn: (payload: {
+        pipeline: string;
+        params: Record<string, unknown>;
+        machine?: string;
+      }) => submitRun(payload),
     },
     [['runs'], ['recent-runs'], ['dashboard', 'summary']],
   );
@@ -152,6 +159,7 @@ export default function PipelineDetailPage(): React.JSX.Element {
       const run = await submitRunMutation.mutateAsync({
         pipeline: identifier ?? '',
         params,
+        machine: targetMachine || undefined,
       });
       setRunModalOpen(false);
       navigate(`/task/${(run as PipelineRun).id}`);
@@ -278,6 +286,23 @@ export default function PipelineDetailPage(): React.JSX.Element {
         okText="Run"
         width={640}
       >
+        <Form layout="vertical" style={{ marginBottom: 12 }}>
+          <Form.Item label="Run on" style={{ marginBottom: 0 }}>
+            <Select
+              allowClear
+              placeholder="Built-in runner (this host)"
+              style={{ width: '100%' }}
+              value={targetMachine ?? null}
+              onChange={(value: string | undefined) => setTargetMachine(value ?? undefined)}
+              options={(machinesQuery.data ?? [])
+                .filter((m: Machine) => m.can_use && m.online)
+                .map((m: Machine) => ({
+                  value: m.id,
+                  label: `${m.name} (${m.kind === 'admin' ? 'assigned' : 'personal'})`,
+                }))}
+            />
+          </Form.Item>
+        </Form>
         <Tabs
           activeKey={runMode}
           onChange={(key) => setRunMode(key as 'form' | 'json')}

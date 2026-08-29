@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from datetime import datetime
@@ -46,6 +47,43 @@ _ALL_DEPS_EXPR = re.compile(
 _MAX_BACKOFF_SECONDS = 60.0
 
 
+class RemoteTaskInputs:
+    """Resolved inputs for a task dispatched to a remote runner, kept until
+    the runner claims it (then used to build the download bundle)."""
+
+    __slots__ = (
+        "run_id", "task_id", "step_name", "plugin", "params", "run_params",
+        "dependencies", "uploads", "timeout_seconds", "machine_id",
+        "bundle_path",
+    )
+
+    def __init__(
+        self,
+        *,
+        run_id: str,
+        task_id: str,
+        step_name: str,
+        plugin: Any,
+        params: dict[str, Any],
+        run_params: dict[str, Any] | None,
+        dependencies: dict[str, Any],
+        uploads: dict[str, Path] | None,
+        timeout_seconds: int,
+        machine_id: str,
+    ) -> None:
+        self.run_id = run_id
+        self.task_id = task_id
+        self.step_name = step_name
+        self.plugin = plugin
+        self.params = params
+        self.run_params = run_params or {}
+        self.dependencies = dependencies
+        self.uploads = uploads
+        self.timeout_seconds = timeout_seconds
+        self.machine_id = machine_id
+        self.bundle_path: Path | None = None
+
+
 class PipelineEngine:
     def __init__(
         self,
@@ -56,6 +94,10 @@ class PipelineEngine:
         dispatcher: Dispatcher,
         events: EventBus | None = None,
         retry_backoff_seconds: float = 2.0,
+        storage: Any | None = None,
+        poll_interval_seconds: float = 0.5,
+        task_timeout_seconds: int = 3600,
+        ssh_executor: Any | None = None,
     ) -> None:
         self.plugins = plugins
         self.runs = runs
@@ -63,11 +105,20 @@ class PipelineEngine:
         self.dispatcher = dispatcher
         self.events = events or EventBus()
         self.retry_backoff_seconds = retry_backoff_seconds
+        self.storage = storage
+        self.poll_interval_seconds = poll_interval_seconds
+        self.ssh_executor = ssh_executor
+        self.task_timeout_seconds = task_timeout_seconds
         self.cancellations = CancellationRegistry()
+        # Set on service shutdown so remote-task wait loops exit instead of
+        # blocking dispatcher shutdown forever.
+        self.shutdown_event = threading.Event()
         # Last resolved inputs per (run, step) so retry submissions reuse them.
         # The coordinator is single-threaded per run; a plain dict is enough.
         self._resolved_params_cache: dict[tuple[str, str], dict[str, Any]] = {}
         self._dependency_results_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        # Remote tasks awaiting runner pickup, keyed by task id.
+        self.remote_inputs: dict[str, RemoteTaskInputs] = {}
 
     # ------------------------------------------------------------------
     # Submission
@@ -80,6 +131,9 @@ class PipelineEngine:
         definition: PipelineDefinition,
         params: dict[str, Any],
         uploads: dict[str, Path] | None = None,
+        machine_id: str | None = None,
+        task_machines: dict[str, str] | None = None,
+        owner_id: str | None = None,
     ) -> PipelineRun:
         merged_params = dict(definition.params)
         merged_params.update(params)
@@ -99,6 +153,9 @@ class PipelineEngine:
             pipeline_name=definition.name,
             params=merged_params,
             tasks=[(name, *steps[name].plugin_reference) for name in ordered],
+            machine_id=machine_id,
+            task_machines=task_machines,
+            owner_id=owner_id,
         )
         self.dispatcher.submit_run(
             lambda run_id, defn, prms: self._coordinate(run_id, defn, prms, uploads=uploads),
@@ -390,9 +447,12 @@ class PipelineEngine:
                                 f"Attempt {attempt}/{step.retries + 1} failed: "
                                 f"{result.message}; retrying in {delay:.0f}s"
                             )
+                            pre_claim = (
+                                TaskStatus.QUEUED if task.machine_id else TaskStatus.RUNNING
+                            )
                             self.runs.set_task_state(
                                 task.id,
-                                TaskStatus.RUNNING,
+                                pre_claim,
                                 message=message,
                                 attempt=attempt + 1,
                             )
@@ -401,21 +461,37 @@ class PipelineEngine:
                                 task_id=task.id, step_name=step_name,
                                 data={"attempt": attempt + 1, "message": message},
                             )
-                            future = self.dispatcher.submit_task(
-                                self._execute_with_backoff,
-                                delay=delay,
-                                run_id=run_id,
-                                task=task,
-                                plugin=self.plugins.get_version(*step.plugin_reference),
-                                params=self._resolved_params_cache.get(
-                                    (run_id, step_name), {}
-                                ),
-                                dependencies=self._dependency_results_cache.get(
-                                    (run_id, step_name), {}
-                                ),
-                                uploads=uploads,
-                                run_cancel=run_cancel,
-                            )
+                            if task.machine_id:
+                                future = self.dispatcher.submit_task(
+                                    self._requeue_remote_with_backoff,
+                                    delay=delay,
+                                    task=task,
+                                    plugin=self.plugins.get_version(*step.plugin_reference),
+                                    params=self._resolved_params_cache.get(
+                                        (run_id, step_name), {}
+                                    ),
+                                    dependencies=self._dependency_results_cache.get(
+                                        (run_id, step_name), {}
+                                    ),
+                                    uploads=uploads,
+                                    cancel_event=run_cancel,
+                                )
+                            else:
+                                future = self.dispatcher.submit_task(
+                                    self._execute_with_backoff,
+                                    delay=delay,
+                                    run_id=run_id,
+                                    task=task,
+                                    plugin=self.plugins.get_version(*step.plugin_reference),
+                                    params=self._resolved_params_cache.get(
+                                        (run_id, step_name), {}
+                                    ),
+                                    dependencies=self._dependency_results_cache.get(
+                                        (run_id, step_name), {}
+                                    ),
+                                    uploads=uploads,
+                                    run_cancel=run_cancel,
+                                )
                             futures[future] = step_name
                             continue
 
@@ -511,6 +587,21 @@ class PipelineEngine:
         """
         self.dispatcher.submit_run(self._coordinate, run_id, definition, params)
 
+    def _execute_ssh_task(self, *, run_id: str, task, plugin, params, dependencies,
+                          uploads, run_params, cancel_event=None):
+        if task.machine_id is None or self.ssh_executor is None:
+            return TaskExecutionResult(False, "SSH executor unavailable")
+        return self.ssh_executor.execute(
+            run_id=run_id,
+            task=task,
+            plugin=plugin,
+            params=params,
+            dependencies=dependencies,
+            uploads=uploads,
+            run_params=run_params,
+            cancel_event=cancel_event,
+        )
+
     def _execute_with_backoff(self, *, delay: float, run_cancel, **kwargs):
         time.sleep(delay)
         return self.executor.execute(
@@ -522,6 +613,35 @@ class PipelineEngine:
             uploads=kwargs.get("uploads"),
             cancel_event=run_cancel,
         )
+
+    def _requeue_remote_with_backoff(
+        self, *, delay: float, task, plugin, params, dependencies, uploads, cancel_event=None
+    ):
+        """Re-park a retried task in QUEUED so a runner can claim it again."""
+        time.sleep(delay)
+        self.remote_inputs[task.id] = RemoteTaskInputs(
+            run_id=task.run_id,
+            task_id=task.id,
+            step_name=task.step_name,
+            plugin=plugin,
+            params=params,
+            run_params=self._resolved_params_cache.get((task.run_id, task.step_name)),
+            dependencies=dependencies,
+            uploads=uploads,
+            timeout_seconds=self.task_timeout_seconds,
+            machine_id=task.machine_id,
+        )
+        self.runs.set_task_state(
+            task.id,
+            TaskStatus.QUEUED,
+            started_at=datetime.utcnow(),
+        )
+        self._publish(
+            task.run_id, "task.status",
+            task_id=task.id, step_name=task.step_name,
+            data={"status": TaskStatus.QUEUED.value},
+        )
+        return self._await_remote_task(task=task, cancel_event=cancel_event)
 
     def _advance_ready(
         self,
@@ -623,10 +743,81 @@ class PipelineEngine:
 
             plugin_name, plugin_version = step.plugin_reference
             plugin = self.plugins.get_version(plugin_name, plugin_version)
-            states[name] = TaskStatus.RUNNING
             attempts[name] = 1
             self._resolved_params_cache[(run_id, name)] = resolved_params
             self._dependency_results_cache[(run_id, name)] = dependency_results
+
+            is_ssh = (
+                tasks[name].machine_id is not None
+                and self.ssh_executor is not None
+                and self.ssh_executor.handles(tasks[name].machine_id)
+            )
+            if is_ssh:
+                # SSH push machine: execute directly on a task worker thread.
+                states[name] = TaskStatus.RUNNING
+                self.runs.set_task_state(
+                    tasks[name].id,
+                    TaskStatus.RUNNING,
+                    started_at=datetime.utcnow(),
+                    attempt=1,
+                )
+                self._publish(
+                    run_id, "task.status",
+                    task_id=tasks[name].id, step_name=name,
+                    data={"status": TaskStatus.RUNNING.value},
+                )
+                future = self.dispatcher.submit_task(
+                    self._execute_ssh_task,
+                    run_id=run_id,
+                    task=tasks[name],
+                    plugin=plugin,
+                    params=resolved_params,
+                    dependencies=dependency_results,
+                    uploads=uploads,
+                    run_params=step_local_params,
+                    cancel_event=run_cancel,
+                )
+                futures[future] = name
+                progressed = True
+                continue
+
+            if tasks[name].machine_id:
+                # Remote execution: park the task in QUEUED until a runner
+                # claims it; the coordinator future polls the persisted state.
+                states[name] = TaskStatus.QUEUED
+                self.runs.set_task_state(
+                    tasks[name].id,
+                    TaskStatus.QUEUED,
+                    started_at=datetime.utcnow(),
+                    attempt=1,
+                )
+                self.remote_inputs[tasks[name].id] = RemoteTaskInputs(
+                    run_id=run_id,
+                    task_id=tasks[name].id,
+                    step_name=name,
+                    plugin=plugin,
+                    params=resolved_params,
+                    run_params=step_local_params,
+                    dependencies=dependency_results,
+                    uploads=uploads,
+                    timeout_seconds=self.task_timeout_seconds,
+                    machine_id=tasks[name].machine_id,
+                )
+                self._publish(
+                    run_id, "task.status",
+                    task_id=tasks[name].id, step_name=name,
+                    data={"status": TaskStatus.QUEUED.value, "machine": plugin_name},
+                )
+                future = self.dispatcher.submit_task(
+                    self._await_remote_task,
+                    task=tasks[name],
+                    cancel_event=run_cancel,
+                )
+                futures[future] = name
+                progressed = True
+                continue
+
+            states[name] = TaskStatus.RUNNING
             self.runs.set_task_state(
                 tasks[name].id,
                 TaskStatus.RUNNING,
@@ -652,6 +843,63 @@ class PipelineEngine:
             futures[future] = name
             progressed = True
         return progressed
+
+    # ------------------------------------------------------------------
+    # Remote task wait loop
+    # ------------------------------------------------------------------
+
+    def _await_remote_task(self, *, task, cancel_event=None) -> TaskExecutionResult:
+        """Poll the persisted task state until the runner reports a terminal
+        status (or the lease reaper fails a lost runner)."""
+        from mini_pipeline.domain.states import TERMINAL_TASK_STATUSES
+
+        try:
+            while True:
+                fresh = self.runs.get_task_by_id(task.id)
+                status = TaskStatus(fresh.status)
+                if status in TERMINAL_TASK_STATUSES:
+                    return self._remote_result(fresh, status)
+                if self.shutdown_event.is_set():
+                    return TaskExecutionResult(
+                        False, "Service shutting down; remote task abandoned",
+                        cancelled=True,
+                    )
+                time.sleep(self.poll_interval_seconds)
+        finally:
+            self.remote_inputs.pop(task.id, None)
+
+    @staticmethod
+    def _remote_result(task, status: TaskStatus) -> TaskExecutionResult:
+        artifacts = [
+            {
+                "id": a.id,
+                "name": a.name,
+                "path": str(a.storage_path),
+                "size": a.size,
+                "sha256": a.sha256,
+            }
+            for a in (task.artifacts or [])
+        ]
+        if status == TaskStatus.SUCCESS:
+            return TaskExecutionResult(
+                True,
+                "Runner completed successfully",
+                outputs=dict(task.outputs or {}),
+                artifacts=artifacts,
+                log_path=Path(task.log_path) if task.log_path else None,
+            )
+        if status == TaskStatus.CANCELLED:
+            return TaskExecutionResult(
+                False,
+                task.message or "Cancelled",
+                log_path=Path(task.log_path) if task.log_path else None,
+                cancelled=True,
+            )
+        return TaskExecutionResult(
+            False,
+            task.message or f"Task finished with status {status.value}",
+            log_path=Path(task.log_path) if task.log_path else None,
+        )
 
     @staticmethod
     def _dependency_outputs(

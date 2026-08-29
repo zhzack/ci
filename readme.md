@@ -1,52 +1,108 @@
 # Mini Pipeline
 
-一个使用 FastAPI 实现的轻量级、模块化流水线执行平台。当前版本 `0.2.0` 在 MVP 之上补齐了平台化基线能力：
+**轻量级流水线执行平台** —— 插件只是普通进程，流水线只是一个 YAML DAG。
 
-- 插件注册：Git / HTTP ZIP / 上传 ZIP / 文件夹上传 / toolhub 制品仓；版本化 `plugin.yaml`（v1 自动升级 v2 契约）；
-- Pipeline YAML → DAG 并行调度，`${{ params.* }}` / `${{ steps.<dep>.outputs.* }}` / `${{ all.deps.outputs.* }}` 表达式接线；
-- 插件 = 普通进程：Shell / Python / Node / Executable Runtime，超时、取消（进程树终止）、step 级重试与指数退避；
-- **运行取消**、branch run（复用上游结果重跑下游）；
-- **SSE 实时推送**：run 事件流 + 任务日志流（替代轮询）；
-- **鉴权**：API token + admin/reader 角色；**限流**、CORS、GZip、RequestID 贯穿日志；
-- **可观测**：`/health`（liveness）、`/health/ready`（readiness）、`/metrics`（Prometheus）、text/JSON 结构化日志；
-- **API 工程化**：统一分页信封、OpenAPI tag 元数据、产物 sha256 ETag/304 缓存；
-- **可靠性运维**：Alembic 迁移、启动孤儿收割、保留策略 GC（`mini-pipeline-gc`）；
-- SQLite 本地运行、PostgreSQL Docker Compose 运行；React 19 管理后台（暗色主题、服务端分页、实时日志）。
+| | |
+| --- | --- |
+| 当前版本 | `0.3.0`（变更明细见 [CHANGELOG](CHANGELOG.md)） |
+| 后端 | Python 3.9+ · FastAPI · SQLAlchemy 2 · Pydantic v2 |
+| 前端 | React 19 · Vite · TypeScript strict · Ant Design 5 |
+| 存储 | SQLite（零配置开发）/ PostgreSQL（Docker Compose 生产） |
+| 多用户 | 注册/登录、资源归属与共享、管理员机/个人机（runner agent）、插件商店 |
 
-详细设计见 [架构文档](docs/architecture.md)，运维手册见 [operations](docs/operations.md)，演进计划见 [roadmap](docs/roadmap.md)，变更历史见 [CHANGELOG](CHANGELOG.md)，最初需求稿保存在 [原始设计](docs/original-design.md)。
+Mini Pipeline 把「跑一条流水线」拆成三个正交的部分：
 
-## 1. 快速开始
+- **插件（Plugin）**：任意可执行程序 + 一份 `plugin.yaml` 声明契约（输入/输出/产物）。平台按契约把输入放到位、把输出收回来，插件本身不需要任何 SDK；
+- **流水线（Pipeline）**：一个 YAML 文件描述 DAG。步骤间通过 `${{ }}` 表达式接线，无依赖的步骤自动并行；
+- **运行（Run）**：一次执行实例。平台负责调度、实时日志、取消、重试、产物收集与历史管理。
 
-需要 Python 3.9+，Git 来源注册还需要系统已安装 `git`。
+## 目录
+
+- [特性总览](#特性总览)
+- [快速开始](#快速开始)
+- [插件规范](#插件规范)
+- [Pipeline 规范](#pipeline-规范)
+- [运行管理](#运行管理)
+- [鉴权与安全](#鉴权与安全)
+- [REST API 摘要](#rest-api-摘要)
+- [配置参考](#配置参考)
+- [可观测性与运维](#可观测性与运维)
+- [前端管理后台](#前端管理后台)
+- [测试](#测试)
+- [项目结构](#项目结构)
+- [文档索引](#文档索引)
+
+## 特性总览
+
+**执行**
+
+- 四种 Runtime：`shell` / `python` / `node` / `executable`（`docker` 已在契约校验中预留，实现见 [roadmap](docs/roadmap.md)）；
+- 墙钟超时、进程树终止（POSIX `killpg` / Windows `taskkill /T`）、Windows 下自动解析 shebang 经 Git Bash 执行；
+- Step 级自动重试：`retries: n`，指数退避（基数 `retry_backoff_seconds`，单次上限 60s），`attempt` 持久化；
+- 运行取消：`POST /api/runs/{id}/cancel`，运行中插件进程整树终止，未开始步骤置 `CANCELLED`；
+- Branch run：从任意 step 分支重跑，复用上游已成功的输出。
+
+**实时**
+
+- `GET /api/runs/{id}/events`：run/task 状态 SSE 事件流（事件总线直推 + 周期性 DB 快照兜底，终态后服务端关流）；
+- `GET /api/runs/{id}/tasks/{step}/log/stream`：任务日志 SSE tail 流（`log` + `end` 事件）。
+
+**平台**
+
+- 插件注册五通道：Git / HTTP ZIP / 上传 ZIP / 文件夹上传 / toolhub 制品仓；
+- 鉴权：API token（Bearer / X-API-Key）+ `admin` / `reader` 角色，debug 端点仅 admin；
+- 可观测：`/health`（liveness）、`/health/ready`（readiness）、`/health/version`、`/metrics`（Prometheus）、text/JSON 结构化日志 + 全链路 RequestID；
+- API 工程化：统一分页信封、写方法滑动窗口限流、CORS、GZip、OpenAPI tag 元数据；
+- 可靠性：Alembic 迁移、启动孤儿收割（崩溃恢复）、保留策略 GC（`mini-pipeline-gc`）；
+- 产物：sha256 ETag / `If-None-Match` 304 条件下载，API 不暴露文件系统路径。
+
+## 快速开始
+
+### 后端
+
+需要 Python 3.9+；Git 来源注册需要系统安装 `git`；Windows 上执行 Shell 插件需要 Git Bash。
 
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
+python -m venv .venv
+# Linux/macOS:  . .venv/bin/activate
+# Windows Git Bash:  . .venv/Scripts/activate
 pip install -e '.[dev]'
+
 export MINI_PIPELINE_CONFIG=config/default.yaml
 uvicorn mini_pipeline.server.app:app --reload
 ```
 
-服务地址：
+| 地址 | 说明 |
+| --- | --- |
+| <http://127.0.0.1:8000/api> | REST API 前缀 |
+| <http://127.0.0.1:8000/docs> | Swagger UI（含 tag 分组与鉴权说明） |
+| <http://127.0.0.1:8000/health> | 健康检查 |
 
-- API：<http://127.0.0.1:8000/api>
-- Swagger UI：<http://127.0.0.1:8000/docs>
-- 健康检查：<http://127.0.0.1:8000/health>
+默认数据写入 `./data`（SQLite）。开发模式鉴权关闭（`auth.enabled: false`），所有请求视为匿名 admin。
 
-默认数据写入 `./data`，使用 SQLite 数据库。
-
-## 2. Docker Compose
+### 前端
 
 ```bash
+cd frontend
+npm install --legacy-peer-deps     # --legacy-peer-deps 是必须的，不能省略
+npm run dev                        # http://127.0.0.1:5173
+```
+
+Vite 将 `/api` 与 `/health` 代理到 `http://127.0.0.1:8000`（`VITE_API_TARGET` 可覆盖）。
+
+### Docker Compose
+
+```bash
+cp .env.example .env               # 填入鉴权 token 三件套（缺失拒绝启动）
 docker compose up --build
 curl http://127.0.0.1:8000/health
 ```
 
-Compose 启动 API 与 PostgreSQL，并用 named volume 保存数据库和平台文件。MVP 只提供 Shell Runtime，不挂载宿主 Docker socket。
+Compose 启动 API + PostgreSQL 16，`docker.yaml` 强制开启鉴权（JSON 日志、120 req/min 限流）；容器 entrypoint 自动执行 `alembic upgrade head`，API 容器带健康检查，数据落在 named volume。生产部署与运维操作见 [docs/operations.md](docs/operations.md)。
 
-## 3. 插件规范
+## 插件规范
 
-插件目录至少包含：
+插件目录至少包含 `plugin.yaml` 与入口文件：
 
 ```text
 hello/
@@ -54,342 +110,308 @@ hello/
 └── run.sh
 ```
 
-示例 [plugin.yaml](examples/plugins/hello/plugin.yaml)：
+### 契约（plugin.yaml v2）
 
 ```yaml
 name: hello
-version: 1.0.0
+version: 1.0.0            # 必须是语义化版本
 description: Generate a greeting
 runtime:
-  type: shell
-entry: run.sh
-inputs:
-  name:
-    type: string
-    required: true
-outputs:
-  greeting:
-    type: string
+  type: shell             # shell | python | node | executable
+  entry: run.sh           # 默认 run.sh；必须位于插件目录内
+contract:
+  inputs:
+    - {name: count, type: number, source: parameter, required: true, default: 10}
+    - {name: config, type: file, source: url, target: input/config.json}
+    - {name: image, type: file, source: upload, target: input/image.jpg}
+    - {name: data, type: file, source: artifact, from: gen.dataset, target: input/data.json}
+  outputs:
+    - {name: report, type: file, path: output/report.json}
+    - {name: stats, type: json, path: output/stats.json}
 ```
 
-平台在插件工作目录生成 `input.json`：
+要点：
 
-```json
-{
-  "task_id": "task-uuid",
-  "workspace": "/absolute/workspace",
-  "params": {"name": "world"},
-  "dependencies": {}
-}
+- **input 类型**：`string` / `number` / `boolean` / `json` / `file` / `directory` / `list`；
+- **input 来源**：`parameter`（运行参数解析）、`upload`（随 run 上传）、`url`（平台下载）、`artifact`（`from: <dep>.<output>` 从上游产物复制）、`generated`；
+- **v1 兼容**：旧的 flat `inputs:`/`outputs:` 写法加载时自动升级为 v2 契约（输出路径为 `output/<name>`），存量插件无需改造。
+
+### 执行协议
+
+每个 step 执行时，平台创建固定布局的工作目录并注入环境变量
+`PIPELINE_CONTEXT`、`PIPELINE_WORKSPACE`、`PIPELINE_TASK_ID`、`MINI_PIPELINE_WORKSPACE`：
+
+```text
+workspace/
+├── input/            # v2：按契约解析后的输入树
+├── output/           # 插件把输出文件写这里
+├── temp/  cache/  logs/
+├── context.json      # run/task/workspace 元信息
+├── params.json       # 解析后的参数
+└── input.json        # v1 兼容：{task_id, workspace, params, dependencies}
 ```
 
-插件必须生成 `output.json`：
+- **v2 插件**：读 `input/` 目录树 + `context.json`，把输出写到 `output/`；type=json 且内容是对象的输出，其顶层键会同时合并进 task outputs（资源名优先），下游 `${{ steps.x.outputs.<key> }}` 可直达；
+- **v1 插件**：读根目录 `input.json`（`params` = 运行级参数 ∪ 步骤解析参数），写 `output.json`（`{status, message, outputs, artifacts}`）。退出码 0 且 `status == success` 才算成功；
+- 插件也可写 `error.json`（`{code, message, suggestion}`）提供更友好的失败信息；
+- **每次重试前 workspace 会被清空重建**——跨重试的状态请放在 workspace 之外；
+- 产物路径必须落在 workspace 内（防路径穿越），ZIP 注册有路径穿越/符号链接/大小/文件数多重校验。
 
-```json
-{
-  "status": "success",
-  "message": "done",
-  "outputs": {"greeting": "Hello, world!"},
-  "artifacts": [{"name": "greeting.txt", "path": "greeting.txt"}]
-}
-```
+> ⚠️ Shell 插件属于**受信代码**：平台做了路径、归档、超时与工作区保护，但没有容器级强隔离。不要注册不可信来源；不可信代码需要 Docker Runtime（见 [roadmap](docs/roadmap.md)）。
 
-进程退出码必须为 0 且 `status` 必须为 `success`。产物必须是工作区内的普通文件。
+### 表达式
 
-> Shell 插件属于受信代码。MVP 有路径、归档、超时及工作区保护，但没有容器级强隔离；不要注册不可信代码。
-
-## 4. 注册插件
-
-### 4.1 上传 ZIP
-
-先打包示例插件：
-
-```bash
-(cd examples/plugins/hello && zip -r /tmp/hello.zip .)
-curl -X POST http://127.0.0.1:8000/api/plugins/upload \
-  -F 'file=@/tmp/hello.zip;type=application/zip'
-```
-
-### 4.2 上传文件夹
-
-后端 `POST /api/plugins/upload-folder` 接受 multipart 多个 `files` 字段，每个 part
-的 `filename` 是相对路径（前端用 `<input webkitdirectory>` 自动获得）。后端会把所有
-文件拼成一个 zip，再走与 ZIP 上传相同的安全解压路径。
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/plugins/upload-folder \
-  -F 'files=@examples/plugins/demo-greeter/plugin.yaml;filename=plugin.yaml' \
-  -F 'files=@examples/plugins/demo-greeter/run.sh;filename=run.sh'
-```
-
-前端 Register 页面有独立的 **Upload folder** Tab：点击“Click to pick a plugin
-folder”会弹出系统文件夹选择器，选中后表格列出所有文件及其相对路径，再点
-“Upload folder and register”提交。
-
-### 4.3 Git 来源
-
-Git 仓库根目录必须是插件根目录：
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/plugins/register \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "source": {
-      "type": "git",
-      "url": "https://example.com/team/hello-plugin.git",
-      "branch": "main"
-    }
-  }'
-```
-
-可用 `branch`、`tag`、`revision` 或 `commit` 选择修订版本。生产环境应限制允许访问的 Git/HTTP 地址，避免把平台用作任意网络访问代理。
-
-### 4.3 HTTP ZIP 来源
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/plugins/register \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "source": {
-      "type": "http",
-      "url": "https://example.com/plugins/hello-1.0.0.zip"
-    }
-  }'
-```
-
-### 4.4 查询插件
-
-```bash
-curl http://127.0.0.1:8000/api/plugins
-curl http://127.0.0.1:8000/api/plugins/hello/1.0.0
-```
-
-## 5. 定义与运行 Pipeline
-
-示例 [demo.yaml](examples/pipelines/demo.yaml)：
-
-```yaml
-name: hello-demo
-params:
-  who: Mini Pipeline
-steps:
-  - name: greet
-    plugin: hello@1.0.0
-    with:
-      name: "${{ params.who }}"
-```
-
-创建定义：
-
-```bash
-python - <<'PY' >/tmp/pipeline-request.json
-import json
-from pathlib import Path
-print(json.dumps({"definition": Path("examples/pipelines/demo.yaml").read_text()}))
-PY
-curl -X POST http://127.0.0.1:8000/api/pipelines \
-  -H 'Content-Type: application/json' \
-  --data-binary @/tmp/pipeline-request.json
-```
-
-提交运行：
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/runs \
-  -H 'Content-Type: application/json' \
-  -d '{"pipeline":"hello-demo","params":{"who":"Claude"}}'
-```
-
-响应状态是 `202`，其中的 `id` 是 run id。随后查询：
-
-```bash
-RUN_ID='<response-id>'
-curl "http://127.0.0.1:8000/api/runs/$RUN_ID"
-curl "http://127.0.0.1:8000/api/runs/$RUN_ID/tasks/greet/log"
-```
-
-运行响应内每个 artifact 带有不透明 `id`：
-
-```bash
-ARTIFACT_ID='<artifact-id>'
-curl -OJ "http://127.0.0.1:8000/api/runs/$RUN_ID/artifacts/$ARTIFACT_ID"
-```
-
-## 6. DAG 与参数表达式
-
-`depends` 可声明多个依赖。无依赖的步骤可并行执行；失败任务的传递下游为 `SKIPPED`，其他独立分支继续。支持四种显式表达式：
+`with` 中支持四种白名单表达式（不执行任何 Python/Shell 代码）：
 
 ```yaml
 with:
-  input: "${{ params.input }}"
-  result: "${{ steps.build.outputs.result }}"
-  binary: "${{ steps.build.artifacts.app.path }}"
-  messages: "${{ all.deps.outputs.message }}"   # 收集所有依赖的 outputs.<key> 为数组
+  name: "${{ params.who }}"                          # 运行参数
+  result: "${{ steps.build.outputs.result }}"        # 上游输出
+  values: "${{ all.deps.outputs.message }}"          # 所有依赖同名输出收集为数组（扇入）
+  binary: "${{ steps.build.artifacts.app.path }}"    # 上游产物路径
 ```
 
-整个值只有一个表达式时保留 JSON 类型；嵌在其他字符串中时转为文本。`all.deps.outputs.<key>` 适合“扇出 → 扇入”场景（例如三个并行 step 把结果汇总到一个汇总 step）。表达式不执行 Python 或 Shell 代码。
+整值只有一个表达式时保留 JSON 原类型；嵌入字符串时转为文本。
 
-### 6.1 演示：可视化编辑 + fan-out/fan-in
-
-后端已注册两个示例插件：
-
-- `fanout-echo@1.0.0`（[examples/plugins/fanout-echo](examples/plugins/fanout-echo)）：接收 `message` 与 `tag`，回显一行文本并产出 `echo.txt` 产物；
-- `fanout-aggregate@1.0.0`（[examples/plugins/fanout-aggregate](examples/plugins/fanout-aggregate)）：接收 `messages` 列表与 `title`，把多行汇总为 Markdown 摘要并产出 `summary.md`。
-
-[examples/pipelines/fanout-demo.yaml](examples/pipelines/fanout-demo.yaml) 演示了 3 个并行 echo step + 1 个 aggregate step：
+## Pipeline 规范
 
 ```yaml
-name: fanout-demo
-params:
-  greeting: Mini Pipeline
+name: demo-fan
+params:                # 运行级参数默认值，可在提交运行时覆盖
+  threshold: 0.5
 steps:
-  - {name: branch-a, plugin: fanout-echo@1.0.0, with: {message: "${{ params.greeting }} A", tag: alpha}}
-  - {name: branch-b, plugin: fanout-echo@1.0.0, with: {message: "${{ params.greeting }} B", tag: beta}}
-  - {name: branch-c, plugin: fanout-echo@1.0.0, with: {message: "${{ params.greeting }} C", tag: gamma}}
-  - {name: aggregate, plugin: fanout-aggregate@1.0.0, depends: [branch-a, branch-b, branch-c],
-     with: {title: "Fan-in summary", messages: "${{ all.deps.outputs.message }}"}}
+  - name: gen
+    plugin: num-gen@1.0.0          # 引用必须是 name@semver
+  - name: double
+    plugin: num-double@1.0.0
+    depends: [gen]
+    with:
+      value: "${{ steps.gen.outputs.value }}"
+  - name: triple
+    plugin: num-triple@1.0.0
+    depends: [gen]
+    with:
+      value: "${{ steps.gen.outputs.value }}"
+  - name: sum
+    plugin: num-sum@1.0.0
+    depends: [double, triple]      # 扇入：等所有依赖成功才执行
+    with:
+      values: "${{ all.deps.outputs.result }}"
+    retries: 2                     # 失败后按 2^n 秒退避自动重试（共执行 3 次）
 ```
 
-前端 `Pipeline / Visual editor` 页（`/pipeline/visual`）打开后点 **Use fan-out demo**
-即可一键填好这张表单；点 **Add step** 还能从已注册插件列表直接添加，每个 plugin 的 `inputs` 会自动渲染成对应类型的输入框（string/int/boolean 等），依赖用勾选方式选择，**Save pipeline** 之后即可到 `Task / History` 看到运行结果与下载 `summary.md` 产物。
+状态机：
 
-## 7. REST API 摘要
+```text
+Task:    PENDING → READY → RUNNING → SUCCESS
+                           ├→ FAILED   (重试耗尽)
+                           ├→ SKIPPED  (依赖失败/被跳过)
+                           └→ CANCELLED (运行取消或依赖被取消)
+Pipeline: PENDING → RUNNING → SUCCESS | FAILED | CANCELLED
+```
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET | `/health` | 健康检查 |
-| POST | `/api/plugins/register` | 从 Git/HTTP 注册 |
-| POST | `/api/plugins/upload` | 上传 ZIP 注册 |
-| GET | `/api/plugins` | 插件版本列表 |
-| GET | `/api/plugins/{name}/{version}` | 插件版本详情 |
-| POST | `/api/pipelines` | 创建 Pipeline |
-| GET | `/api/pipelines` | Pipeline 列表 |
-| GET | `/api/pipelines/{id-or-name}` | 获取原始 YAML |
-| PUT | `/api/pipelines/{id-or-name}` | 更新 Pipeline 定义 |
-| GET | `/api/pipelines/{id-or-name}/params-schema` | 解析后输入/输出 schema（前端可视化编辑器 + Run 表单用） |
-| GET | `/api/plugins/{name}/{version}/manifest` | 解析后的 manifest（用于前端可视化编辑器） |
-| POST | `/api/runs` | 异步提交运行（202） |
-| GET | `/api/runs` | 运行历史（分页，支持 `status` / `pipeline` 过滤） |
-| GET | `/api/runs/{id}` | 查询运行及任务 |
-| POST | `/api/runs/{id}/cancel` | 取消运行（终止插件进程树；终态 run 返回 409） |
-| POST | `/api/runs/{id}/branches` | 从指定 step 分支重跑（复用上游输出） |
-| GET | `/api/runs/{id}/tasks/{step}/log` | 获取任务日志 |
-| GET | `/api/runs/{id}/tasks/{step}/log/stream` | 任务日志 SSE 流（tail 到任务结束） |
-| GET | `/api/runs/{id}/events` | run/task 状态 SSE 事件流 |
-| GET | `/api/runs/{id}/aggregated-log` | 全步骤聚合日志 |
-| GET | `/api/runs/{id}/artifacts/{artifact}` | 下载产物（sha256 ETag，条件请求 304） |
-| GET | `/api/artifacts` | 产物目录（分页） |
-| GET | `/api/dashboard/summary` | Dashboard 统计（含最近 10 条 run 的摘要） |
-| GET | `/health` / `/health/ready` / `/health/version` | 存活 / 就绪 / 版本探针 |
-| GET | `/metrics` | Prometheus 指标（可关闭） |
+依赖失败只阻断传递下游，互不依赖的分支继续执行。完整示例见
+[examples/pipelines](examples/pipelines)（`demo-fan` 扇出扇入、`demo-chain` 链式）与
+[examples/plugins](examples/plugins)（17 个示例插件）。
+
+## 运行管理
+
+```bash
+# 提交运行（异步，返回 202 + run id）
+curl -X POST http://127.0.0.1:8000/api/runs \
+  -H 'Content-Type: application/json' \
+  -d '{"pipeline": "demo-fan", "params": {"threshold": 0.8}}'
+
+# 查询（含每个 step 的 outputs/artifacts/attempt）
+curl http://127.0.0.1:8000/api/runs/$RUN_ID
+
+# 实时状态流（SSE：snapshot + event，终态后服务端关流）
+curl -N http://127.0.0.1:8000/api/runs/$RUN_ID/events
+
+# 实时日志流（SSE：log + end）
+curl -N http://127.0.0.1:8000/api/runs/$RUN_ID/tasks/gen/log/stream
+
+# 取消（终止运行中的进程树；对终态 run 返回 409）
+curl -X POST http://127.0.0.1:8000/api/runs/$RUN_ID/cancel
+
+# 下载产物（响应带 sha256 ETag；If-None-Match 命中返回 304）
+curl -OJ http://127.0.0.1:8000/api/runs/$RUN_ID/artifacts/$ARTIFACT_ID
+```
+
+带文件上传的运行用 `POST /api/runs/upload`（multipart，字段名对应 `source: upload` 的输入）。需要「只重跑某一步的下游」时用 branch run：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/runs/$RUN_ID/branches \
+  -H 'Content-Type: application/json' \
+  -d '{"from_step": "sum", "params": {}}'
+```
+
+## 鉴权与安全
+
+`auth.enabled: false`（开发默认）：所有请求视为匿名 admin。
+
+`auth.enabled: true`：
+
+```yaml
+auth:
+  enabled: true
+  tokens:
+    - {token: ${MINI_PIPELINE_ADMIN_TOKEN}, name: admin, role: admin}
+    - {token: ${MINI_PIPELINE_READER_TOKEN}, name: ci, role: reader}
+```
+
+- 请求携带 `Authorization: Bearer <token>` 或 `X-API-Key: <token>`，token 常数时间比对；
+- `reader` 只能 GET/HEAD；`admin` 可执行全部操作；`/api/debug/**` 始终要求 admin；
+- 401/403 有明确区分，`WWW-Authenticate: Bearer` 符合标准语义；
+- `security.rate_limit_per_minute` 对 POST/PUT/PATCH/DELETE 按客户端 IP 滑动窗口限流（429 + `Retry-After`），GET 不限；
+- 每个请求注入 16 位 `X-Request-ID`（可由网关注入），响应头原样回传，贯穿访问日志与错误响应。
+
+## REST API 摘要
 
 所有列表接口返回统一分页信封：`{items, total, page, page_size, pages}`（`page_size` 上限 200）。
 
-## 8. 配置
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/health` · `/health/ready` · `/health/version` | 存活 / 就绪 / 版本探针 |
+| GET | `/metrics` | Prometheus 指标（`observability.metrics_enabled` 可关闭） |
+| POST | `/api/plugins/register` | 从 Git / HTTP / toolhub 注册 |
+| POST | `/api/plugins/upload` · `/api/plugins/upload-folder` | ZIP / 文件夹上传注册 |
+| GET | `/api/plugins` | 插件版本列表（分页，支持 `search`） |
+| GET | `/api/plugins/{name}/{version}` · `…/manifest` | 详情 / 解析后契约 |
+| DELETE | `/api/plugins/{name}/{version}` | 删除版本 |
+| POST | `/api/pipelines` · `/api/pipelines/yaml` | 创建 Pipeline（JSON / raw YAML） |
+| GET | `/api/pipelines` | 列表（分页） |
+| GET · PUT · DELETE | `/api/pipelines/{id-or-name}` | 原始 YAML 的读 / 更新 / 删除 |
+| GET | `/api/pipelines/{id-or-name}/params-schema` | Run 表单 / 可视化编辑器 schema |
+| POST | `/api/pipelines/validate` | 接线校验报告 |
+| POST | `/api/runs` | 异步提交运行（202） |
+| POST | `/api/runs/upload` | 带文件上传提交运行 |
+| GET | `/api/runs` | 运行历史（分页，`status` / `pipeline` 过滤） |
+| GET | `/api/runs/{id}` | 运行详情（含 tasks / outputs / attempt） |
+| POST | `/api/runs/{id}/cancel` | 取消运行 |
+| POST | `/api/runs/{id}/branches` | Branch run |
+| GET | `/api/runs/{id}/tasks/{step}/log` | 任务日志全文 |
+| GET | `/api/runs/{id}/tasks/{step}/log/stream` | 任务日志 SSE 流 |
+| GET | `/api/runs/{id}/events` | run/task 状态 SSE 流 |
+| GET | `/api/runs/{id}/aggregated-log` | 全步骤聚合日志 |
+| GET | `/api/runs/{id}/artifacts/{artifact}` | 产物下载（sha256 ETag / 304） |
+| GET | `/api/artifacts` | 产物目录（分页，可按 `run_id` 过滤） |
+| GET | `/api/dashboard/summary` | Dashboard 统计 |
+| GET | `/api/debug/**` | 原始状态巡检（仅 admin） |
 
-由 `MINI_PIPELINE_CONFIG` 指向 YAML 文件，默认是 `config/default.yaml`。主要配置：
+## 配置参考
 
-- `database.url`：SQLAlchemy URL；
-- `storage.*`：插件、工作区、日志、产物及临时目录；
-- `execution.*`：`coordinator_workers`（DAG coordinator 数）、`task_workers`（任务执行线程数）、`task_timeout_seconds`（单任务超时）、`reap_orphans_on_start`（启动收割孤儿 run）、`retry_backoff_seconds`（重试退避基数）；
-- `logging.{level,format}`：日志级别与输出格式（`text` / `json`）；
-- `observability.metrics_enabled`：是否暴露 `/metrics`；
-- `auth.{enabled,tokens}`：API 鉴权；token 条目形如 `{token, name, role: admin|reader}`；
-- `security.{cors_origins,rate_limit_per_minute}`：CORS 白名单与写方法限流（0 关闭）；
-- `retention.{workspaces_days,logs_days,artifacts_days,temp_hours}`：保留策略（GC 与 `mini-pipeline-gc` 使用）；
-- `sources.*`：HTTP 超时和归档大小、文件数量限制。
+`MINI_PIPELINE_CONFIG` 指向 YAML（默认 `config/default.yaml`）。YAML 内 `${ENV}` 严格展开，变量缺失服务拒绝启动（这是有意的防爆设计；所需变量见 `.env.example`）。
 
-YAML 内 `${ENV_NAME}` 会从环境变量严格展开；变量缺失时服务拒绝启动（`config/docker.yaml` 依赖 `.env` 注入，见 `.env.example`）。
+| 键 | 说明 |
+| --- | --- |
+| `app.{host,port,api_prefix}` | 服务监听与 API 前缀 |
+| `database.{url,echo}` | SQLAlchemy URL（SQLite / PostgreSQL） |
+| `storage.{root,plugins,workspaces,logs,artifacts,temp}` | 文件布局 |
+| `execution.coordinator_workers` | DAG coordinator 线程数（默认 2） |
+| `execution.task_workers` | 任务执行线程数（默认 4） |
+| `execution.task_timeout_seconds` | 单任务超时（默认 3600） |
+| `execution.reap_orphans_on_start` | 启动时收割 PENDING/RUNNING 遗留 run（默认 true） |
+| `execution.retry_backoff_seconds` | 重试退避基数（默认 2，指数增长上限 60s） |
+| `logging.{level,format}` | 日志级别；`format: text \| json` |
+| `observability.metrics_enabled` | 是否暴露 `/metrics` |
+| `auth.{enabled,tokens}` | 鉴权开关与 token 表 |
+| `security.{cors_origins,rate_limit_per_minute}` | CORS 白名单；写方法限流（0 关闭） |
+| `retention.{workspaces_days,logs_days,artifacts_days,temp_hours}` | 保留策略（0 = 永久） |
+| `sources.{http_timeout_seconds,max_archive_bytes,max_extracted_bytes,max_archive_files}` | 插件来源下载限制 |
 
-## 9. 鉴权、取消、重试与实时日志
+## 可观测性与运维
+
+**健康检查**：`/health`（liveness，不触碰依赖）与 `/health/ready`（readiness：DB 连通、存储可写、dispatcher 收单，失败 503）。K8s 探针按此二分；docker-compose 已内置 API 容器健康检查。
+
+**指标**（`/metrics`）：`mini_pipeline_http_requests_total`、`mini_pipeline_http_request_duration_seconds`（route 模板级 label，无基数爆炸）、`mini_pipeline_runs_total{status}`、`mini_pipeline_task_duration_seconds{plugin}`、`mini_pipeline_task_retries_total{plugin}`。
+
+**日志**：`format: text`（开发）或 `json`（生产）；每行含 `request_id`。任务日志按 `logs/<run-id>/<task-id>.log` 实时落盘。
+
+**数据库迁移**：开发 SQLite 由 `create_all` 引导；生产升级执行 `alembic upgrade head`（容器 entrypoint 自动）。生成新迁移：`alembic revision --autogenerate -m "..."`。
+
+**崩溃恢复**：进程内线程池不持久化，服务重启时遗留 PENDING/RUNNING 的 run 被标记 FAILED（message 注明重启中断）；需要「断点续跑」语义用 branch run 复用上游结果。
+
+**保留策略 GC**：
 
 ```bash
-# 提交运行
-RUN_ID=$(curl -s -X POST http://127.0.0.1:8000/api/runs   -H 'Content-Type: application/json'   -d '{"pipeline":"hello-demo","params":{}}' | python -c "import sys,json;print(json.load(sys.stdin)['id'])")
-
-# 取消运行（终止运行中的插件进程，未开始的 step 置 CANCELLED）
-curl -X POST "http://127.0.0.1:8000/api/runs/$RUN_ID/cancel"
-
-# 实时状态流（SSE）
-curl -N "http://127.0.0.1:8000/api/runs/$RUN_ID/events"
-
-# 实时日志流（SSE，tail 到任务结束）
-curl -N "http://127.0.0.1:8000/api/runs/$RUN_ID/tasks/greet/log/stream"
+mini-pipeline-gc --dry-run --verbose   # 预览
+mini-pipeline-gc                       # 按 retention.* 清理 workspace/日志/产物/DB 记录
 ```
 
-Step 级重试——在 pipeline YAML 中声明：
+排障速查与生产部署细节见 [docs/operations.md](docs/operations.md)。
 
-```yaml
-steps:
-  - name: flaky-step
-    plugin: fetcher@1.0.0
-    retries: 3          # 失败后按 2^n 秒指数退避自动重试，共执行 4 次
-    with: {url: "https://example.com"}
-```
+## 前端管理后台
 
-启用鉴权后（`auth.enabled: true`），请求需携带 `Authorization: Bearer <token>` 或
-`X-API-Key: <token>`：`reader` 角色只能 GET/HEAD，`admin` 可执行全部操作，
-`/api/debug/**` 始终要求 admin。
+`frontend/` 是独立的 React 19 + Vite + AntD 5 工程，页面覆盖：Dashboard、插件（列表/注册/详情）、Pipeline（列表/创建/可视化编辑/详情/历史）、运行（进行中/历史/详情）、产物、设置。
 
-## 10. 测试与检查
-
-本仓库没有 CI/CD 与 pre-commit，提交前请手动运行（一键脚本 `scripts/check.sh`）：
-
-```bash
-MINI_PIPELINE_CONFIG=config/default.yaml .venv/bin/pytest -q   # Windows: .venv/Scripts/python -m pytest
-ruff check .
-cd frontend && npm run typecheck && npm run lint && npm run build
-```
-
-测试覆盖配置/数据库、Manifest、ZIP 路径穿越、DAG 环、表达式、Runtime 超时、成功执行、日志/产物和失败传播。完整端到端测试还会创建本地 Git 仓库，通过公开 API 注册并运行。
-
-## 11. 项目结构
-
-```text
-ci/
-├── docs/                    # architecture.md、frontend.md、original-design.md
-├── examples/                # 示例插件和 Pipeline
-├── frontend/                # React 19 + AntD 管理后台
-├── mini_pipeline/           # FastAPI 后端
-│   ├── api/                 # HTTP router 与依赖
-│   ├── artifact/            # ArtifactStore 实现
-│   ├── core/                # 配置与服务装配
-│   ├── database/            # ORM、会话、仓储
-│   ├── domain/              # 跨模块模型、协议、异常、状态
-│   ├── executor/            # 插件 JSON 协议与任务执行
-│   ├── pipeline/            # YAML schema、DAG、表达式
-│   ├── plugin/              # Manifest 与注册服务
-│   ├── runtime/             # Shell Runtime 与注册表
-│   ├── scheduler/           # Coordinator、Dispatcher、RunService
-│   ├── server/              # FastAPI 生命周期与入口
-│   └── source/              # Git、HTTP、Upload provider
-├── tests/                   # 后端 pytest 套件
-├── config/                  # YAML 配置
-└── scripts/
-```
-
-## 12. 前端管理后台
-
-[`frontend/`](frontend) 是独立的 React 19 + Vite + Ant Design 5 工程，遵循
-[《前端设计文档》](docs/frontend.md) 的分层规范：
-
-- 业务代码按 `api/hooks/components/pages/store/types` 分类；页面只做编排；
-- 远端数据全部交给 TanStack Query；本地只保留 user/menu/theme；
-- 删除、注册、运行走 `Modal.confirm`/`Popconfirm` 二次确认；
-- `LogViewer` 支持关键字高亮、复制、下载、自动滚动；`useLogStream` 预留 WebSocket 接入；
-- `PipelineGraph` 是节点/边列表预览，未来 React Flow 渲染只替换实现。
+- 远端数据全部走 TanStack Query；列表页为服务端分页 + 过滤；
+- 运行详情页通过 SSE 实时刷新（live 标记），日志走 SSE tail 流；支持运行取消（二次确认）与 Branch run；
+- 暗色主题（AntD darkAlgorithm）在设置页一键切换；
+- 删除/注册/运行等危险操作统一走 `Modal.confirm` 二次确认；API 错误由 axios 拦截器统一抛 AntD message/notification。
 
 ```bash
 cd frontend
 npm install --legacy-peer-deps
-npm run dev          # http://127.0.0.1:5173 ，/api 自动代理到 8000
-npm run typecheck
-npm run lint
-npm run build        # 类型检查 + Vite 生产构建
+npm run typecheck    # tsc --noEmit（strict，noExplicitAny 是 error）
+npm run lint         # eslint --max-warnings=0
+npm run build        # typecheck + vite build（vendor 分包）
 ```
 
-Vite 默认把 `/api` 代理到 `http://127.0.0.1:8000`；可通过环境变量
-`VITE_API_TARGET` 覆盖。Docker 部署场景下推荐用 Nginx/Caddy 反向代理到
-`uvicorn mini_pipeline.server.app:app`，不要让前端容器直接连接后端容器名。
+生产部署时用 Nginx/Caddy 反代到 uvicorn（不要让前端容器直连后端容器名）；反代需关闭 SSE 缓冲（后端已发 `X-Accel-Buffering: no`）。
 
-0.2 已落地鉴权、迁移、可观测性、取消/重试与 SSE 实时推送；下一阶段（Docker Runtime、S3 产物库、持久队列与分布式 Runner、React Flow DAG 等）的计划与验收口径见 [docs/roadmap.md](docs/roadmap.md)。运维操作（探针、GC、恢复、排障）见 [docs/operations.md](docs/operations.md)。
+## 测试
+
+本仓库没有 CI/CD 与 pre-commit，提交前请手动运行（或一键 `scripts/check.sh`）：
+
+```bash
+export MINI_PIPELINE_CONFIG=config/default.yaml
+
+.venv/bin/pytest -q          # Windows: .venv/Scripts/python -m pytest -q
+.venv/bin/ruff check .
+
+cd frontend && npm run typecheck && npm run lint && npm run build
+```
+
+测试覆盖：配置/数据库、manifest（v1→v2 升级、entry 校验）、ZIP 路径穿越、DAG 环检测、表达式解析、Runtime 超时/取消/重试、v1/v2 协议执行、fan-out/fan-in、branch run、鉴权角色、分页、限流、SSE 流、ETag 304、孤儿收割、GC，以及本地 Git 端到端。
+
+## 项目结构
+
+```text
+ci/
+├── mini_pipeline/           # FastAPI 后端
+│   ├── api/                 # 路由、鉴权、分页信封
+│   ├── artifact/            # LocalArtifactStore（ETag/304）
+│   ├── core/                # 配置、Services 装配、EventBus/取消注册表、日志
+│   ├── database/            # ORM 模型、仓储（分页/收割）
+│   ├── domain/              # v2 资源契约、状态机、异常、Runtime 协议
+│   ├── executor/            # 任务执行、workspace 上下文、输出收集（含 v1 兼容）
+│   ├── maintenance/         # mini-pipeline-gc
+│   ├── pipeline/            # YAML schema、DAG、表达式、wiring 校验
+│   ├── plugin/              # manifest（v1 自动升级）与注册服务
+│   ├── runtime/             # ProcessRunner 底座 + shell/python/node/executable
+│   ├── scheduler/           # 引擎（取消/重试/事件）、双线程池、恢复
+│   ├── server/              # app 工厂、中间件、指标、可观测端点
+│   └── source/              # git/http/upload/toolhub 来源 + 安全解压
+├── frontend/                # React 19 管理后台
+├── examples/                # 17 个示例插件 + 4 个示例 Pipeline
+├── migrations/              # Alembic 迁移
+├── config/                  # default.yaml（开发）/ docker.yaml（生产）
+├── toolhub/                 # 独立的 shell 工具分发系统（后端对接其 index.json）
+├── tests/                   # unit/ + integration/
+├── docs/                    # architecture / operations / roadmap / frontend
+└── scripts/                 # start.sh、check.sh
+```
+
+## 文档索引
+
+| 文档 | 内容 |
+| --- | --- |
+| [docs/architecture.md](docs/architecture.md) | 分层架构、运行时底座、横切面设计 |
+| [docs/operations.md](docs/operations.md) | 运维手册：探针/指标/日志/GC/恢复/排障 |
+| [docs/roadmap.md](docs/roadmap.md) | 演进计划：Docker Runtime → S3 产物库 → 持久队列/分布式 Runner |
+| [docs/design-multi-runner.md](docs/design-multi-runner.md) | 多用户/机器注册/远程执行设计 |
+| [CHANGELOG.md](CHANGELOG.md) | 版本变更（含 BREAKING 与升级指南） |
+| [docs/frontend.md](docs/frontend.md) | 前端分层规范 |
+| [Pipeline Runtime Protocol v2（建议方案）.md](<Pipeline Runtime Protocol v2（建议方案）.md>) | v2 协议设计 |
+| [docs/original-design.md](docs/original-design.md) | 最初需求稿 |

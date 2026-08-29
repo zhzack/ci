@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目一句话
 
-`Mini Pipeline` 是一个 FastAPI + React 的轻量级流水线执行平台。当前实现的是 **Pipeline Runtime Protocol v2**（见 `Pipeline Runtime Protocol v2（建议方案）.md`）：插件只是普通进程（无 SDK），平台负责资源解析、运行时分发、产物收集；流水线用 YAML 描述 DAG，输出通过 `${{ params.* }}` / `${{ steps.<dep>.outputs.* }}` / `${{ all.deps.outputs.* }}` 三种表达式接线。0.2 起平台具备 token 鉴权（admin/reader）、运行取消、step 重试、SSE 实时推送、Prometheus 指标、Alembic 迁移与保留策略 GC（详见 CHANGELOG.md 与 docs/operations.md）。
+`Mini Pipeline` 是一个 FastAPI + React 的轻量级流水线执行平台。当前实现的是 **Pipeline Runtime Protocol v2**（见 `Pipeline Runtime Protocol v2（建议方案）.md`）：插件只是普通进程（无 SDK），平台负责资源解析、运行时分发、产物收集；流水线用 YAML 描述 DAG，输出通过 `${{ params.* }}` / `${{ steps.<dep>.outputs.* }}` / `${{ all.deps.outputs.* }}` 三种表达式接线。0.2 起平台具备 token 鉴权（admin/reader）、运行取消、step 重试、SSE 实时推送、Prometheus 指标、Alembic 迁移与保留策略 GC。0.3 起具备用户注册/登录、资源归属与共享授权、机器注册（admin 机/个人机）、runner agent 远程执行（`mini-pipeline-runner`，pull 模型 + 租约心跳）、插件商店（管理员审批），设计见 `docs/design-multi-runner.md`。
 
 ## 关键目录
 

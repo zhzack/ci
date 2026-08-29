@@ -200,6 +200,16 @@ data/
 
 Shell 插件本质上是受信代码，MVP 不提供强隔离，只应注册和运行可信来源。平台仍执行基础边界保护：命令不经过 shell 拼接、归档和产物路径校验、下载大小/超时限制、工作区隔离、入口必须位于插件目录。生产运行不应向容器挂载宿主 Docker socket；不可信插件需要后续 Docker/Kubernetes Runtime 的网络、权限和资源隔离。
 
-## 11. 0.2 平台化基线（变更摘要）
+## 11. 多用户与远程执行（0.3）
+
+在 0.2 的横切面之上叠加了三个子系统（设计决策与协议细节见 `docs/design-multi-runner.md`）：
+
+- **账号与授权层**：`users`/`auth_sessions`（会话令牌只存 SHA-256）+ `share_grants`（user/team × viewer/operator）。权限模型 = 平台角色（admin/user）× 资源归属 × 授权，聚合在 `account/service.py::PermissionService`；所有列表端点经它过滤，隐藏资源一律 404。`owner_id IS NULL` 的存量资源是「平台资源」，对所有人可见——升级零破坏。
+- **机器子系统**：`machines` 表区分 admin 机（凭证 Fernet 加密、分配制）与 personal 机（owner 全权、可转移/共享）。执行目标是 run/step 级字段（`machine`），引擎对远程任务走 `QUEUED → runner 原子认领（DB UPDATE 守卫）→ 心跳续租 → 终态回报` 的持久化状态机；`LeaseReaper` 兜底失联 runner。agent（`mini-pipeline-runner`）与服务器同包同构，pull 模型只发出站请求，执行时复用 ProcessRunner/collector。
+- **商店层**：插件 `visibility × review_status` 双状态 + 审批 API。公开插件会落到他人机器执行，审批是当前的准入闸门（Docker Runtime 是结构性解法，见 roadmap）。
+
+进程边界变化：执行不再必然发生在 API 进程内——调度仍在 API 进程（引擎/双线程池），插件执行可在任意注册机器上；两者通过 runner 协议（claim/bundle/logs/artifacts/status/heartbeat）与持久化任务状态解耦。
+
+## 12. 0.2 平台化基线（变更摘要）
 
 MVP 边界中列出的"账号权限、可观测性、迁移、限流"等缺口已在 0.2 补齐：token 鉴权与角色、结构化日志 + RequestID、Prometheus 指标与就绪探针、Alembic、分页/限流/CORS/GZip、运行取消、step 重试、SSE 实时推送、产物 ETag、孤儿收割与保留策略 GC。协议层（plugin.yaml、workspace 布局、表达式、REST 资源模型）保持向后兼容；明细见 `CHANGELOG.md`，运维见 `docs/operations.md`。

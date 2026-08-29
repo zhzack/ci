@@ -2,8 +2,9 @@
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
+from mini_pipeline.account.service import Principal
 from mini_pipeline.database.models import Artifact, PipelineRun, TaskRun
 from mini_pipeline.database.repositories import RunRepository
 from mini_pipeline.domain.exceptions import ConflictError, NotFoundError, ValidationError
@@ -24,17 +25,144 @@ class RunService:
         pipelines: PipelineService,
         repository: RunRepository,
         engine: PipelineEngine,
+        permissions=None,
+        machine_repository=None,
+        plugin_repository=None,
     ) -> None:
         self.pipelines = pipelines
         self.repository = repository
         self.engine = engine
+        self.permissions = permissions
+        self.machine_repository = machine_repository
+        self.plugin_repository = plugin_repository
 
-    def submit(self, pipeline_identifier: str, params: dict[str, Any]) -> PipelineRun:
+    # ------------------------------------------------------------------
+    # Submission
+    # ------------------------------------------------------------------
+
+    def _resolve_machine_id(
+        self, principal: Principal | None, machine_ref: str | None
+    ) -> Optional[str]:
+        """Resolve a run-level / step-level machine reference and enforce
+        submit permission. ``None`` = built-in local runner."""
+        if machine_ref is None:
+            return None
+        if self.machine_repository is None:
+            raise ValidationError("Machines are not configured on this deployment")
+        machine = self._lookup_machine(machine_ref)
+        if self.permissions is None or principal is None:
+            return machine.id
+        self.machine_require_use(principal, machine)
+        return machine.id
+
+    def _lookup_machine(self, machine_ref: str):
+        for machine in self.machine_repository.list():
+            if machine.id == machine_ref or machine.name == machine_ref:
+                return machine
+        raise NotFoundError(f"Machine {machine_ref!r} was not found")
+
+    def machine_require_use(self, principal: Principal, machine) -> None:
+        if self.permissions is None:
+            return
+        if not self.permissions.machines_can_use(principal, machine):
+            from mini_pipeline.domain.exceptions import PermissionDeniedError
+
+            raise PermissionDeniedError(
+                f"No permission to run tasks on machine {machine.name!r}"
+            )
+
+    def _ensure_can_run_pipeline(
+        self, principal: Principal | None, entity
+    ) -> None:
+        """Only the owner, admins, or operator grantees may run a pipeline."""
+        if principal is None or self.permissions is None:
+            return
+        from mini_pipeline.domain.exceptions import PermissionDeniedError
+
+        if self.permissions.can_manage_resource(
+            principal,
+            resource_type="pipeline",
+            resource_id=entity.id,
+            owner_id=entity.owner_id,
+        ):
+            return
+        if self.permissions.has_grant(
+            principal,
+            resource_type="pipeline",
+            resource_id=entity.id,
+            permission="operator",
+        ):
+            return
+        raise PermissionDeniedError(
+            f"No permission to run pipeline {entity.name!r}"
+        )
+
+    def _check_plugins_usable(
+        self, principal: Principal | None, definition, entity=None
+    ) -> None:
+        """Every referenced plugin must be usable by the submitter.
+
+        Running an authorized pipeline implicitly authorizes the plugins it
+        wires: otherwise sharing a pipeline would be pointless unless every
+        referenced plugin were shared separately.
+        """
+        if principal is None or self.plugin_repository is None:
+            return
+        if self.permissions is None:
+            return
+        if entity is not None and not self.permissions.can_manage_resource(
+            principal,
+            resource_type="pipeline",
+            resource_id=entity.id,
+            owner_id=entity.owner_id,
+        ):
+            # The pipeline is shared to this user; its plugin references are
+            # covered by that grant.
+            return
+        from mini_pipeline.domain.exceptions import PermissionDeniedError
+
+        seen = set()
+        for step in definition.steps:
+            ref = step.plugin_reference
+            if ref in seen:
+                continue
+            seen.add(ref)
+            version = self.plugin_repository.get_version(*ref)
+            if not self.permissions.plugins_can_use(principal, version):
+                raise PermissionDeniedError(
+                    f"No permission to use plugin {ref[0]}@{ref[1]}"
+                )
+
+    def _task_machines(
+        self, principal: Principal | None, definition, run_machine_id: Optional[str]
+    ) -> Optional[dict[str, str]]:
+        mapping: dict[str, str] = {}
+        for step in definition.steps:
+            ref = step.machine
+            if ref is None:
+                continue
+            mapping[step.name] = self._resolve_machine_id(principal, ref)
+        return mapping or None
+
+    def submit(
+        self,
+        pipeline_identifier: str,
+        params: dict[str, Any],
+        *,
+        principal: Principal | None = None,
+        machine: str | None = None,
+    ) -> PipelineRun:
         entity, definition = self.pipelines.get_parsed(pipeline_identifier)
+        self._ensure_can_run_pipeline(principal, entity)
+        self._check_plugins_usable(principal, definition, entity)
+        machine_id = self._resolve_machine_id(principal, machine)
         return self.engine.submit(
             pipeline_id=entity.id,
             definition=definition,
             params=params,
+            machine_id=machine_id,
+            task_machines=self._task_machines(principal, definition, machine_id),
+            owner_id=principal.user_id if principal else None,
         )
 
     def submit_with_uploads(
@@ -42,13 +170,22 @@ class RunService:
         pipeline_identifier: str,
         params: dict[str, Any],
         uploads: dict[str, Path],
+        *,
+        principal: Principal | None = None,
+        machine: str | None = None,
     ) -> PipelineRun:
         entity, definition = self.pipelines.get_parsed(pipeline_identifier)
+        self._ensure_can_run_pipeline(principal, entity)
+        self._check_plugins_usable(principal, definition, entity)
+        machine_id = self._resolve_machine_id(principal, machine)
         return self.engine.submit(
             pipeline_id=entity.id,
             definition=definition,
             params=params,
             uploads=uploads,
+            machine_id=machine_id,
+            task_machines=self._task_machines(principal, definition, machine_id),
+            owner_id=principal.user_id if principal else None,
         )
 
     def get(self, run_id: str) -> PipelineRun:
@@ -204,6 +341,7 @@ class RunService:
             tasks=ordered_task_specs,
             parent_run_id=parent.id,
             branched_from_step=from_step,
+            machine_id=parent.machine_id,
         )
 
         # Reuse parent's task outputs for the upstream portion
