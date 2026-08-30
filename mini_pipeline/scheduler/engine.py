@@ -98,6 +98,8 @@ class PipelineEngine:
         poll_interval_seconds: float = 0.5,
         task_timeout_seconds: int = 3600,
         ssh_executor: Any | None = None,
+        email_service: Any | None = None,
+        users: Any | None = None,
     ) -> None:
         self.plugins = plugins
         self.runs = runs
@@ -109,6 +111,8 @@ class PipelineEngine:
         self.poll_interval_seconds = poll_interval_seconds
         self.ssh_executor = ssh_executor
         self.task_timeout_seconds = task_timeout_seconds
+        self.email_service = email_service
+        self.users = users
         self.cancellations = CancellationRegistry()
         # Set on service shutdown so remote-task wait loops exit instead of
         # blocking dispatcher shutdown forever.
@@ -119,6 +123,37 @@ class PipelineEngine:
         self._dependency_results_cache: dict[tuple[str, str], dict[str, Any]] = {}
         # Remote tasks awaiting runner pickup, keyed by task id.
         self.remote_inputs: dict[str, RemoteTaskInputs] = {}
+
+    def _dispatch_email_notification(
+        self, run_id: str, status: PipelineStatus, message: str = ""
+    ) -> None:
+        """Trigger background email notification if the run owner has an email address."""
+        if not self.email_service or not self.users:
+            return
+        try:
+            run_record = self.runs.get(run_id)
+            if run_record and run_record.owner_id:
+                user = self.users.get(run_record.owner_id)
+                if user and user.email:
+                    duration = (
+                        (run_record.finished_at - run_record.started_at).total_seconds()
+                        if run_record.finished_at and run_record.started_at
+                        else 0.0
+                    )
+                    self.email_service.send_pipeline_notification(
+                        to_email=user.email,
+                        pipeline_name=run_record.pipeline_name,
+                        run_id=run_id,
+                        status=status.value,
+                        duration_s=duration,
+                        trigger_by=user.display_name or user.username,
+                        web_url=f"/runs/{run_id}",
+                        error_summary=message if status == PipelineStatus.FAILED else "",
+                    )
+        except Exception as e:
+            logger.warning(
+                "Failed to dispatch pipeline completion email for run %s: %s", run_id, e
+            )
 
     # ------------------------------------------------------------------
     # Submission
@@ -558,6 +593,7 @@ class PipelineEngine:
             )
             self._observe_run(status.value)
             self._publish(run_id, "run.status", data={"status": status.value})
+            self._dispatch_email_notification(run_id, status, message)
         except Exception as exc:
             logger.exception("Pipeline run %s failed in coordinator", run_id)
             self.runs.set_run_state(
@@ -571,6 +607,7 @@ class PipelineEngine:
                 run_id, "run.status",
                 data={"status": PipelineStatus.FAILED.value, "message": str(exc)},
             )
+            self._dispatch_email_notification(run_id, PipelineStatus.FAILED, str(exc))
 
     def execute_subgraph(
         self,

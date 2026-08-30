@@ -47,6 +47,7 @@ def _own_task(services: Services, identity: MachineIdentity, task_id: str) -> Ta
 class HeartbeatRequest(BaseModel):
     agent_version: str | None = None
     active_task_ids: list[str] = Field(default_factory=list)
+    metrics: dict[str, Any] | None = None
 
 
 @router.post("/heartbeat")
@@ -56,6 +57,8 @@ def heartbeat(
     services: Annotated[Services, Depends(get_services)],
 ) -> dict[str, Any]:
     """Renew leases for executing tasks; returns cancel directives."""
+    if payload.metrics:
+        services.diagnostics.update_agent_telemetry(identity.machine.id, payload.metrics)
     return services.machines.heartbeat(
         identity.machine, payload.agent_version, payload.active_task_ids
     )

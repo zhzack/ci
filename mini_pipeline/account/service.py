@@ -11,6 +11,7 @@ from mini_pipeline.account.passwords import hash_password, verify_password
 from mini_pipeline.core.config import Settings
 from mini_pipeline.database.account_repositories import (
     AuditRepository,
+    EmailVerificationRepository,
     GrantRepository,
     MachineRepository,
     SessionRepository,
@@ -20,7 +21,14 @@ from mini_pipeline.database.account_repositories import (
     hash_token,
 )
 from mini_pipeline.database.models import Machine, User
-from mini_pipeline.domain.exceptions import AuthFailedError, PermissionDeniedError, ValidationError
+from mini_pipeline.domain.exceptions import (
+    AuthFailedError,
+    ConflictError,
+    NotFoundError,
+    PermissionDeniedError,
+    ValidationError,
+)
+from mini_pipeline.email.service import EmailService
 
 MACHINE_TOKEN_PREFIX = "mrt"
 SESSION_TOKEN_PREFIX = "mpt"
@@ -65,10 +73,14 @@ class AccountService:
         users: UserRepository,
         sessions: SessionRepository,
         settings: Settings,
+        email_verifications: EmailVerificationRepository | None = None,
+        email_service: EmailService | None = None,
     ) -> None:
         self.users = users
         self.sessions = sessions
         self.settings = settings
+        self.email_verifications = email_verifications
+        self.email_service = email_service
 
     def registration_open(self) -> bool:
         return self.settings.auth.registration_enabled
@@ -124,6 +136,121 @@ class AccountService:
             role=role,
             must_change_password=must_change_password,
         )
+
+    def send_verification_code(self, email: str, purpose: str) -> None:
+        """Issue an OTP verification code and send it via email."""
+        if not self.email_verifications or not self.email_service:
+            raise ValidationError("邮件服务未启用")
+
+        email_clean = email.strip().lower()
+        if not email_clean or "@" not in email_clean:
+            raise ValidationError("请输入有效的邮箱地址")
+
+        valid_purposes = {"register", "login", "reset_password", "bind_email", "test"}
+        if purpose not in valid_purposes:
+            raise ValidationError(f"无效的验证码用途: {purpose}")
+
+        if purpose in {"login", "reset_password"}:
+            user = self.users.get_by_email(email_clean)
+            if user is None:
+                raise NotFoundError("未找到该邮箱关联的用户账号")
+            if user.status != "active":
+                raise PermissionDeniedError("该账号已被停用")
+
+        if purpose == "register":
+            existing = self.users.get_by_email(email_clean)
+            if existing is not None:
+                raise ConflictError("该邮箱已被注册，请直接登录")
+
+        # Cooldown check
+        self.email_verifications.check_rate_limit(email_clean, cooldown_seconds=60)
+        # Generate & save code
+        code = self.email_verifications.create_code(email_clean, purpose, expires_minutes=5)
+        # Send email
+        self.email_service.send_verification_code(email_clean, code, purpose=purpose)
+
+    def login_with_otp(self, *, email: str, code: str) -> tuple[User, str]:
+        """Verify OTP code and authenticate user."""
+        if not self.email_verifications:
+            raise ValidationError("邮件服务未启用")
+
+        email_clean = email.strip().lower()
+        self.email_verifications.verify_code(email_clean, code, purpose="login")
+
+        user = self.users.get_by_email(email_clean)
+        if user is None:
+            raise NotFoundError("未找到该邮箱关联的用户账号")
+        if user.status != "active":
+            raise PermissionDeniedError("该账号已被停用")
+
+        return user, self._new_session(user)
+
+    def register_with_otp(
+        self,
+        *,
+        username: str,
+        password: str,
+        email: str,
+        code: str,
+        display_name: str = "",
+    ) -> tuple[User, str]:
+        """Verify registration OTP code and register user."""
+        if not self.email_verifications:
+            raise ValidationError("邮件服务未启用")
+
+        email_clean = email.strip().lower()
+        self.email_verifications.verify_code(email_clean, code, purpose="register")
+
+        return self.register(
+            username=username,
+            password=password,
+            display_name=display_name,
+            email=email_clean,
+        )
+
+    def reset_password_with_otp(
+        self,
+        *,
+        email: str,
+        code: str,
+        new_password: str,
+    ) -> None:
+        """Verify OTP code and set new password without old password."""
+        if not self.email_verifications:
+            raise ValidationError("邮件服务未启用")
+
+        email_clean = email.strip().lower()
+        self.email_verifications.verify_code(email_clean, code, purpose="reset_password")
+
+        user = self.users.get_by_email(email_clean)
+        if user is None:
+            raise NotFoundError("未找到该邮箱关联的用户账号")
+
+        if len(new_password) < 8:
+            raise ValidationError("新密码长度不能少于 8 位")
+
+        new_hash = hash_password(new_password)
+        self.users.set_password(user.id, new_hash, must_change_password=False)
+
+    def bind_email_with_otp(
+        self,
+        *,
+        user_id: str,
+        email: str,
+        code: str,
+    ) -> User:
+        """Verify OTP code and update user email."""
+        if not self.email_verifications:
+            raise ValidationError("邮件服务未启用")
+
+        email_clean = email.strip().lower()
+        self.email_verifications.verify_code(email_clean, code, purpose="bind_email")
+
+        existing = self.users.get_by_email(email_clean)
+        if existing and existing.id != user_id:
+            raise ConflictError("该邮箱已被其他账号绑定")
+
+        return self.users.update_profile(user_id, email=email_clean)
 
     def login(self, *, username: str, password: str) -> tuple[User, str]:
         username = self._normalize_username(username)
@@ -209,10 +336,12 @@ class MachineService:
         machines: MachineRepository,
         permissions: PermissionService,
         settings: Settings,
+        grants: GrantRepository | None = None,
     ) -> None:
         self.machines = machines
         self.permissions = permissions
         self.settings = settings
+        self.grants = grants
 
     # -- registration -------------------------------------------------
 
@@ -350,6 +479,11 @@ class MachineService:
 
     def update(self, machine_id: str, **values: Any) -> None:
         self.machines.update(machine_id, **values)
+
+    def revoke(self, machine_id: str) -> None:
+        self.machines.update(machine_id, status="revoked")
+        if self.grants is not None:
+            self.grants.delete_for_resource("machine", machine_id)
 
     def transfer_ownership(
         self, machine: Machine, new_owner_id: str, *, actor: Principal

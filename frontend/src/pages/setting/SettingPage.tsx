@@ -6,16 +6,17 @@ import {
   Divider,
   Form,
   Input,
+  Modal,
   Switch,
   Tag,
   Typography,
   message as antdMessage,
 } from 'antd';
-import { LockOutlined, MailOutlined, UserOutlined } from '@ant-design/icons';
+import { LockOutlined, MailOutlined, UserOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import { PageHeader } from '@/components/PageHeader';
 import { useApiQuery, describeError } from '@/hooks/useApiQuery';
 import { getReadiness, getVersion } from '@/api/health';
-import { updateProfile, changePassword, me } from '@/api/auth';
+import { updateProfile, changePassword, me, sendEmailCode, bindEmailWithOtp } from '@/api/auth';
 import { useThemeStore } from '@/store/theme';
 import { useMenuStore } from '@/store/menu';
 import { useAuthStore } from '@/store/auth';
@@ -34,12 +35,61 @@ export default function SettingPage(): React.JSX.Element {
   const [pwdForm] = Form.useForm();
   const [pwdSaving, setPwdSaving] = useState(false);
 
+  // Bind/Change Email Modal
+  const [emailModalOpen, setEmailModalOpen] = useState(false);
+  const [bindEmailForm] = Form.useForm();
+  const [bindEmailValue, setBindEmailValue] = useState('');
+  const [bindCountdown, setBindCountdown] = useState(0);
+  const [bindSendingCode, setBindSendingCode] = useState(false);
+  const [bindSubmitting, setBindSubmitting] = useState(false);
+
+  React.useEffect(() => {
+    if (bindCountdown <= 0) return;
+    const timer = setTimeout(() => setBindCountdown((prev) => prev - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [bindCountdown]);
+
   const versionQuery = useApiQuery(['health', 'version'], getVersion, {
     staleTime: 60_000,
   });
   const readinessQuery = useApiQuery(['health', 'ready'], getReadiness, {
     refetchInterval: 30_000,
   });
+
+  const handleSendBindCode = async () => {
+    if (!bindEmailValue || !bindEmailValue.includes('@')) {
+      antdMessage.error('请输入有效的新邮箱地址');
+      return;
+    }
+    setBindSendingCode(true);
+    try {
+      await sendEmailCode(bindEmailValue, 'bind_email');
+      antdMessage.success('验证码已发送至新邮箱，请查收');
+      setBindCountdown(60);
+    } catch (err) {
+      antdMessage.error(describeError(err));
+    } finally {
+      setBindSendingCode(false);
+    }
+  };
+
+  const handleBindEmailSubmit = async (values: { email: string; code: string }) => {
+    setBindSubmitting(true);
+    try {
+      const updated = await bindEmailWithOtp({
+        email: values.email,
+        code: values.code,
+      });
+      setUser(updated);
+      antdMessage.success('邮箱绑定成功！');
+      setEmailModalOpen(false);
+      bindEmailForm.resetFields();
+    } catch (err) {
+      antdMessage.error(describeError(err));
+    } finally {
+      setBindSubmitting(false);
+    }
+  };
 
   const handleSaveProfile = async () => {
     try {
@@ -95,13 +145,18 @@ export default function SettingPage(): React.JSX.Element {
             </Tag>
           </Descriptions.Item>
           <Descriptions.Item label="绑定邮箱">
-            {authUser?.email ? (
-              <Tag color="cyan" icon={<MailOutlined />}>
-                {authUser.email}
-              </Tag>
-            ) : (
-              <Typography.Text type="secondary">未绑定邮箱</Typography.Text>
-            )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {authUser?.email ? (
+                <Tag color="cyan" icon={<MailOutlined />}>
+                  {authUser.email}
+                </Tag>
+              ) : (
+                <Typography.Text type="secondary">未绑定邮箱</Typography.Text>
+              )}
+              <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setEmailModalOpen(true)}>
+                {authUser?.email ? '换绑邮箱' : '绑定邮箱'}
+              </Button>
+            </div>
           </Descriptions.Item>
         </Descriptions>
 
@@ -122,15 +177,6 @@ export default function SettingPage(): React.JSX.Element {
         >
           <Form.Item name="display_name" label="显示名称">
             <Input prefix={<UserOutlined />} placeholder="请输入显示名称" />
-          </Form.Item>
-
-          <Form.Item
-            name="email"
-            label="电子邮箱"
-            rules={[{ type: 'email', message: '请输入合法的邮箱格式' }]}
-            extra="邮箱可用于接收流水线运行通知与后续找回密码"
-          >
-            <Input prefix={<MailOutlined />} placeholder="如：user@company.com" />
           </Form.Item>
 
           <Form.Item style={{ marginBottom: 0 }}>
@@ -235,7 +281,66 @@ export default function SettingPage(): React.JSX.Element {
             : null}
         </Descriptions>
       </Card>
+
+      {/* Bind / Change Email Modal */}
+      <Modal
+        title={authUser?.email ? '更换绑定邮箱' : '绑定安全邮箱'}
+        open={emailModalOpen}
+        onCancel={() => {
+          setEmailModalOpen(false);
+          bindEmailForm.resetFields();
+        }}
+        footer={null}
+        destroyOnClose
+      >
+        <Typography.Paragraph type="secondary" style={{ fontSize: 13, marginBottom: 16 }}>
+          请输入需要绑定的新邮箱，系统将发送 6 位数字验证码以核验该邮箱归属权。
+        </Typography.Paragraph>
+        <Form form={bindEmailForm} layout="vertical" onFinish={handleBindEmailSubmit} requiredMark={false}>
+          <Form.Item
+            name="email"
+            label="新邮箱地址"
+            rules={[
+              { required: true, message: '请输入邮箱' },
+              { type: 'email', message: '邮箱格式不正确' },
+            ]}
+          >
+            <Input
+              prefix={<MailOutlined />}
+              placeholder="new_email@example.com"
+              value={bindEmailValue}
+              onChange={(e) => setBindEmailValue(e.target.value)}
+            />
+          </Form.Item>
+          <Form.Item
+            name="code"
+            label="邮箱验证码"
+            rules={[
+              { required: true, message: '请输入 6 位验证码' },
+              { len: 6, message: '验证码为 6 位数字' },
+            ]}
+          >
+            <div style={{ display: 'flex', gap: 8 }}>
+              <Input
+                prefix={<SafetyCertificateOutlined />}
+                placeholder="6 位数字验证码"
+                maxLength={6}
+                style={{ flex: 1 }}
+              />
+              <Button
+                disabled={bindCountdown > 0 || !bindEmailValue}
+                loading={bindSendingCode}
+                onClick={handleSendBindCode}
+              >
+                {bindCountdown > 0 ? `${bindCountdown}s` : '获取验证码'}
+              </Button>
+            </div>
+          </Form.Item>
+          <Button type="primary" htmlType="submit" block loading={bindSubmitting} style={{ marginTop: 8 }}>
+            确认绑定
+          </Button>
+        </Form>
+      </Modal>
     </>
   );
 }
-

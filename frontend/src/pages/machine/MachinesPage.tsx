@@ -8,6 +8,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Popconfirm,
   Radio,
   Select,
   Space,
@@ -20,6 +21,8 @@ import {
 import type { TableColumnsType } from 'antd';
 import {
   ApiOutlined,
+  DeleteOutlined,
+  DesktopOutlined,
   KeyOutlined,
   LinkOutlined,
   PlusOutlined,
@@ -48,6 +51,8 @@ import {
   type Team,
 } from '@/api/machine';
 import { adminListUsers, type AdminUser } from '@/api/admin';
+import { EnvironmentTab } from './EnvironmentTab';
+import { MachineConsoleDrawer } from './MachineConsoleDrawer';
 
 type RegisterFormValues = {
   name: string;
@@ -427,14 +432,24 @@ function MachineDrawer({
 
             <Button
               danger
-              icon={<ReloadOutlined />}
-              onClick={async () => {
-                await revokeMachine(machine.id);
-                antdMessage.success('Machine revoked');
-                onClose();
+              icon={<DeleteOutlined />}
+              onClick={() => {
+                Modal.confirm({
+                  title: `确认删除机器节点 “${machine.name}”？`,
+                  content:
+                    '删除后该节点将从页面列表中移除，并注销其运行权限。数据库将保留历史标记以供既往流水线索引，新发起的流水线无法再使用该节点。',
+                  okText: '确认删除',
+                  okType: 'danger',
+                  cancelText: '取消',
+                  onOk: async () => {
+                    await revokeMachine(machine.id);
+                    antdMessage.success('机器节点已成功删除');
+                    onClose();
+                  },
+                });
               }}
             >
-              Revoke machine
+              删除该机器节点
             </Button>
           </>
         ) : null}
@@ -591,52 +606,103 @@ export function MachinesPage(): React.JSX.Element {
               New token
             </Button>
           ) : null}
-          <Button size="small" onClick={() => setDrawer(record)}>
-            Manage
+          <Button
+            type="primary"
+            ghost
+            size="small"
+            icon={<DesktopOutlined />}
+            onClick={() => setConsoleMachine(record)}
+          >
+            控制台与监控
           </Button>
+          <Button size="small" onClick={() => setDrawer(record)}>
+            管理
+          </Button>
+          {record.can_manage ? (
+            <Popconfirm
+              title={`确认删除机器 “${record.name}”？`}
+              description="删除后节点将从页面移除，数据库保留历史标记供流水线历史索引。"
+              okText="删除"
+              okType="danger"
+              cancelText="取消"
+              onConfirm={async () => {
+                try {
+                  await revokeMachine(record.id);
+                  antdMessage.success('机器节点已成功删除');
+                  void refetch();
+                } catch (err) {
+                  antdMessage.error(describeError(err));
+                }
+              }}
+            >
+              <Button danger size="small" icon={<DeleteOutlined />}>
+                删除
+              </Button>
+            </Popconfirm>
+          ) : null}
         </Space>
       ),
     },
   ];
 
+  const [consoleMachine, setConsoleMachine] = useState<Machine | null>(null);
+  const [activeTab, setActiveTab] = useState<'machines' | 'environments'>('machines');
+
   return (
     <>
       <PageHeader
-        title="Machines"
-        description="Register runner agents or SSH hosts and target them when submitting runs"
+        title="计算节点与运行环境 (Machines & Environments)"
+        description="管理分布式 Runner 节点、SSH 远端主机，以及多机一键下发装配 Python/Node 运行环境"
         extra={
           <Space>
             <Button icon={<ReloadOutlined />} onClick={() => refetch()}>
-              Refresh
+              刷新
             </Button>
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              onClick={() => {
-                form.resetFields();
-                setRegisterOpen(true);
-              }}
-            >
-              Register machine
-            </Button>
+            {activeTab === 'machines' && (
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                onClick={() => {
+                  form.resetFields();
+                  setRegisterOpen(true);
+                }}
+              >
+                注册新机器节点
+              </Button>
+            )}
           </Space>
         }
       />
       <div className="app-content-card">
-        {isLoading ? (
-          <Loading rows={5} />
-        ) : error ? (
-          <ErrorAlert error={error} onRetry={() => refetch()} />
-        ) : (data?.length ?? 0) === 0 ? (
-          <EmptyState description="No machines yet — register an agent or SSH host to run tasks" />
-        ) : (
-          <Table
-            rowKey="id"
-            columns={columns}
-            dataSource={data ?? []}
-            pagination={false}
-          />
-        )}
+        <Tabs
+          activeKey={activeTab}
+          onChange={(k) => setActiveTab(k as 'machines' | 'environments')}
+          items={[
+            {
+              key: 'machines',
+              label: '机器节点列表',
+              children: isLoading ? (
+                <Loading rows={5} />
+              ) : error ? (
+                <ErrorAlert error={error} onRetry={() => refetch()} />
+              ) : (data?.length ?? 0) === 0 ? (
+                <EmptyState description="暂无计算机器，请点击右上角注册 Runner 或 SSH 主机" />
+              ) : (
+                <Table
+                  rowKey="id"
+                  columns={columns}
+                  dataSource={data ?? []}
+                  pagination={false}
+                />
+              ),
+            },
+            {
+              key: 'environments',
+              label: '运行时环境管理与批量下发',
+              children: <EnvironmentTab machines={data ?? []} />,
+            },
+          ]}
+        />
       </div>
 
       <Modal
@@ -752,6 +818,13 @@ export function MachinesPage(): React.JSX.Element {
 
       <TokenOnceModal token={newToken} onClose={() => setNewToken(null)} />
       <MachineDrawer machine={drawer} onClose={() => setDrawer(null)} />
+      <MachineConsoleDrawer
+        open={Boolean(consoleMachine)}
+        machineId={consoleMachine?.id ?? null}
+        machineName={consoleMachine?.name ?? ''}
+        connectionType={consoleMachine?.connection_type ?? 'agent'}
+        onClose={() => setConsoleMachine(null)}
+      />
     </>
   );
 }

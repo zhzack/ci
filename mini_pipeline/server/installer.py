@@ -87,30 +87,79 @@ TOKEN="${MINI_PIPELINE_TOKEN:-__TOKEN__}"
 ROOT="${HOME}/.mini-pipeline-runner"
 
 echo "==> Mini Pipeline installer (server: ${SERVER})"
+mkdir -p "$ROOT"
+
 PYTHON=""
+# 1. Probe local python
 for c in python3 python; do
   command -v "$c" >/dev/null 2>&1 || continue
   "$c" -c 'import sys; assert sys.version_info >= (3,9)' >/dev/null 2>&1 || continue
   PYTHON="$c" && break
 done
-if [ -z "$PYTHON" ]; then
-  echo "ERROR: Python 3.9+ is required but was not found on PATH" >&2
-  exit 1
+
+# 2. If python not found or missing venv, auto-install via package manager or standalone runtime
+if [ -z "$PYTHON" ] || ! "$PYTHON" -m venv "$ROOT/.test_venv" >/dev/null 2>&1; then
+  rm -rf "$ROOT/.test_venv" >/dev/null 2>&1 || true
+  echo "==> 检测到系统缺少就绪的 Python 虚拟环境，正在尝试自适应自动装配..."
+  
+  if command -v apt-get >/dev/null 2>&1 && [ "$(id -u)" -eq 0 ]; then
+    echo "==> 使用 apt 自动安装 python3-venv 与 python3-pip..."
+    apt-get update -y >/dev/null 2>&1 || true
+    apt-get install -y python3-venv python3-pip >/dev/null 2>&1 || true
+    for c in python3 python; do
+      command -v "$c" >/dev/null 2>&1 || continue
+      "$c" -c 'import sys; assert sys.version_info >= (3,9)' >/dev/null 2>&1 || continue
+      PYTHON="$c" && break
+    done
+  elif command -v yum >/dev/null 2>&1 && [ "$(id -u)" -eq 0 ]; then
+    echo "==> 使用 yum 自动安装 python3-pip..."
+    yum install -y python3-pip python3 >/dev/null 2>&1 || true
+    for c in python3 python; do
+      command -v "$c" >/dev/null 2>&1 || continue
+      "$c" -c 'import sys; assert sys.version_info >= (3,9)' >/dev/null 2>&1 || continue
+      PYTHON="$c" && break
+    done
+  fi
 fi
 
-mkdir -p "$ROOT"
-if [ ! -x "$ROOT/venv/bin/python" ]; then
-  echo "==> Creating virtual environment"
-  "$PYTHON" -m venv "$ROOT/venv"
+# 3. Create or verify venv (ensure both python and pip are ready)
+if [ ! -x "$ROOT/venv/bin/python" ] || [ ! -x "$ROOT/venv/bin/pip" ]; then
+  echo "==> Initializing virtual environment in $ROOT/venv"
+  rm -rf "$ROOT/venv" >/dev/null 2>&1 || true
+  if [ -n "$PYTHON" ] && "$PYTHON" -m venv "$ROOT/venv" >/dev/null 2>&1; then
+    echo "==> 成功使用系统 Python 创建虚拟环境"
+  else
+    echo "==> 正在尝试装配独立 Python 运行时..."
+    ARCH="$(uname -m)"
+    RUNTIME_PKG="python-standalone-linux-${ARCH}.tar.gz"
+    DL_URL="${SERVER}/install/runtimes/${RUNTIME_PKG}"
+    if curl -fsSL "$DL_URL" -o "$ROOT/${RUNTIME_PKG}" 2>/dev/null; then
+      mkdir -p "$ROOT/python"
+      tar -xzf "$ROOT/${RUNTIME_PKG}" -C "$ROOT/python" --strip-components=1 2>/dev/null \
+        || tar -xzf "$ROOT/${RUNTIME_PKG}" -C "$ROOT/python"
+      rm -f "$ROOT/${RUNTIME_PKG}"
+      PYTHON="$ROOT/python/bin/python3"
+      "$PYTHON" -m venv "$ROOT/venv" || cp -r "$ROOT/python" "$ROOT/venv"
+    fi
+  fi
 fi
-PIP="$ROOT/venv/bin/pip"
+
+if [ -x "$ROOT/venv/bin/pip" ]; then
+  PIP_CMD="$ROOT/venv/bin/pip"
+elif [ -x "$ROOT/venv/bin/python" ]; then
+  PIP_CMD="$ROOT/venv/bin/python -m pip"
+else
+  echo "ERROR: 无法创建 Python 环境。" >&2
+  echo "请执行: apt update && apt install -y python3-venv python3-pip" >&2
+  exit 1
+fi
 
 echo "==> Downloading platform package"
 PKG=$(mktemp /tmp/mini-pipeline-XXXXXX.tar.gz)
 curl -fsSL "${SERVER}/install/package.tar.gz" -o "$PKG"
 
 echo "==> Installing mini-pipeline"
-"$PIP" install --quiet --upgrade "$PKG"
+$PIP_CMD install --quiet --upgrade "$PKG"
 rm -f "$PKG"
 
 RUNNER="$ROOT/venv/bin/mini-pipeline-runner"
@@ -164,6 +213,20 @@ def install_package() -> Response:
     )
 
 
+@installer_router.get("/install/runtimes/{filename}", include_in_schema=False)
+def get_runtime_package(filename: str) -> Response:
+    """Serve runtime packages from storage/environments/ or package hub."""
+    pkg_dir = _PACKAGE_ROOT / "data" / "storage" / "environments"
+    file_path = pkg_dir / filename
+    if file_path.is_file():
+        return Response(
+            content=file_path.read_bytes(),
+            media_type="application/gzip",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    return Response(content="Runtime package not found", status_code=404)
+
+
 @installer_router.get("/install.sh", include_in_schema=False)
 def install_sh(request: Request, token: str = "") -> Response:
     script = (
@@ -195,4 +258,65 @@ def install_universal(request: Request, token: str = "") -> Response:
     if "powershell" in user_agent or "pwsh" in user_agent:
         return install_ps1(request, token=token)
     return install_sh(request, token=token)
+
+
+UNINSTALL_SH_TEMPLATE = r"""#!/bin/sh
+# Mini Pipeline runner & environment uninstaller (Linux/macOS).
+set -eu
+ROOT="${HOME}/.mini-pipeline-runner"
+
+echo "==> Mini Pipeline uninstaller"
+echo "==> 正在终止运行中的 Mini Pipeline Runner 进程..."
+pkill -f "mini-pipeline-runner" 2>/dev/null || true
+
+if [ -d "$ROOT" ]; then
+  echo "==> 正在清理所有运行时环境与工作区目录: $ROOT..."
+  rm -rf "$ROOT"
+  echo "==> 清理完成！所有已安装环境、Runner 节点与工作区已彻底卸载。"
+else
+  echo "==> 未检测到安装目录 $ROOT，无需清理。"
+fi
+"""
+
+UNINSTALL_PS1_TEMPLATE = r"""#Requires -Version 5.1
+# Mini Pipeline runner & environment uninstaller (Windows).
+$ErrorActionPreference = 'SilentlyContinue'
+$Root = Join-Path $env:USERPROFILE '.mini-pipeline-runner'
+
+Write-Host "==> Mini Pipeline uninstaller"
+Write-Host "==> 正在终止运行中的 Mini Pipeline Runner 进程..."
+Get-Process | Where-Object { $_.ProcessName -like "*mini-pipeline-runner*" } | Stop-Process -Force
+
+if (Test-Path $Root) {
+    Write-Host "==> 正在清理所有运行时环境与工作区目录: $Root..."
+    Remove-Item -Recurse -Force $Root
+    Write-Host "==> 清理完成！所有已安装环境、Runner 节点与工作区已彻底卸载。"
+} else {
+    Write-Host "==> 未检测到安装目录 $Root，无需清理。"
+}
+"""
+
+
+@installer_router.get("/uninstall.sh", include_in_schema=False)
+def uninstall_sh() -> Response:
+    return Response(content=UNINSTALL_SH_TEMPLATE, media_type="text/x-shellscript")
+
+
+@installer_router.get("/uninstall.ps1", include_in_schema=False)
+def uninstall_ps1() -> Response:
+    return Response(
+        content=UNINSTALL_PS1_TEMPLATE,
+        media_type="text/plain",
+        headers={"Content-Disposition": 'inline; filename="uninstall.ps1"'},
+    )
+
+
+@installer_router.get("/uninstall", include_in_schema=False)
+def uninstall_universal(request: Request) -> Response:
+    """Auto-detect client platform/shell from User-Agent and serve the uninstall script."""
+    user_agent = request.headers.get("user-agent", "").lower()
+    if "powershell" in user_agent or "pwsh" in user_agent:
+        return uninstall_ps1()
+    return uninstall_sh()
+
 

@@ -1,0 +1,366 @@
+import type {
+  DropPosition,
+  LayoutNode,
+  SplitDirection,
+  SplitNode,
+  TabGroupNode,
+} from './types';
+
+let idCounter = 1;
+export function generateNodeId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${idCounter++}`;
+}
+
+/** Deep clones a layout node tree. */
+export function cloneTree(node: LayoutNode): LayoutNode {
+  if (node.type === 'tabGroup') {
+    return {
+      ...node,
+      tabs: [...node.tabs],
+    };
+  }
+  return {
+    ...node,
+    children: node.children.map(cloneTree),
+    sizes: [...node.sizes],
+  };
+}
+
+/** Finds a node by id in the layout tree. */
+export function findNode(root: LayoutNode, id: string): LayoutNode | null {
+  if (root.id === id) return root;
+  if (root.type === 'split') {
+    for (const child of root.children) {
+      const res = findNode(child, id);
+      if (res) return res;
+    }
+  }
+  return null;
+}
+
+export function findTabGroupWithTab(root: LayoutNode, tabId: string): TabGroupNode | null {
+  if (root.type === 'tabGroup') {
+    if (root.tabs.includes(tabId)) return root;
+    return null;
+  }
+  for (const child of root.children) {
+    const res = findTabGroupWithTab(child, tabId);
+    if (res) return res;
+  }
+  return null;
+}
+
+/** Finds parent split node containing the target node ID. */
+export function findParent(
+  root: LayoutNode,
+  childId: string
+): { parent: SplitNode; index: number } | null {
+  if (root.type === 'split') {
+    const idx = root.children.findIndex((c) => c.id === childId);
+    if (idx !== -1) {
+      return { parent: root, index: idx };
+    }
+    for (const child of root.children) {
+      const res = findParent(child, childId);
+      if (res) return res;
+    }
+  }
+  return null;
+}
+
+/** Recursively cleans up empty tab groups and collapses redundant single-child splits. */
+export function cleanTree(node: LayoutNode): LayoutNode | null {
+  if (node.type === 'tabGroup') {
+    if (node.tabs.length === 0) {
+      return null;
+    }
+    // Ensure activeTab is valid
+    if (!node.tabs.includes(node.activeTab)) {
+      node.activeTab = node.tabs[0] || '';
+    }
+    return node;
+  }
+
+  // Split node cleaning
+  const cleanedChildren: LayoutNode[] = [];
+  const cleanedSizes: number[] = [];
+
+  for (let i = 0; i < node.children.length; i++) {
+    const c = node.children[i];
+    if (!c) continue;
+    const cleanedChild = cleanTree(c);
+    if (cleanedChild) {
+      cleanedChildren.push(cleanedChild);
+      cleanedSizes.push(node.sizes[i] || 100 / node.children.length);
+    }
+  }
+
+  if (cleanedChildren.length === 0) {
+    return null;
+  }
+
+  if (cleanedChildren.length === 1) {
+    return cleanedChildren[0] || null;
+  }
+
+  // Normalize sizes to sum to 100
+  const total = cleanedSizes.reduce((a, b) => a + b, 0);
+  const normalizedSizes =
+    total > 0
+      ? cleanedSizes.map((s) => Math.round((s / total) * 100))
+      : cleanedChildren.map(() => Math.round(100 / cleanedChildren.length));
+
+  return {
+    ...node,
+    children: cleanedChildren,
+    sizes: normalizedSizes,
+  };
+}
+
+/** Selects an active tab in a given TabGroup. */
+export function selectTab(root: LayoutNode, groupId: string, tabId: string): LayoutNode {
+  const cloned = cloneTree(root);
+  const target = findNode(cloned, groupId);
+  if (target && target.type === 'tabGroup' && target.tabs.includes(tabId)) {
+    target.activeTab = tabId;
+  }
+  return cloned;
+}
+
+/** Closes a tab from a group. Cleans up empty groups. */
+export function closeTab(root: LayoutNode, groupId: string, tabId: string): LayoutNode | null {
+  const cloned = cloneTree(root);
+  const target = findNode(cloned, groupId);
+  if (target && target.type === 'tabGroup') {
+    const idx = target.tabs.indexOf(tabId);
+    if (idx !== -1) {
+      target.tabs.splice(idx, 1);
+      if (target.activeTab === tabId) {
+        target.activeTab = target.tabs[Math.max(0, idx - 1)] || '';
+      }
+    }
+  }
+  return cleanTree(cloned);
+}
+
+/** Closes all tabs except the specified one. */
+export function closeOtherTabs(
+  root: LayoutNode,
+  groupId: string,
+  tabId: string
+): LayoutNode | null {
+  const cloned = cloneTree(root);
+  const target = findNode(cloned, groupId);
+  if (target && target.type === 'tabGroup' && target.tabs.includes(tabId)) {
+    target.tabs = [tabId];
+    target.activeTab = tabId;
+  }
+  return cleanTree(cloned);
+}
+
+/** Closes all tabs to the right of the specified tab. */
+export function closeRightTabs(
+  root: LayoutNode,
+  groupId: string,
+  tabId: string
+): LayoutNode | null {
+  const cloned = cloneTree(root);
+  const target = findNode(cloned, groupId);
+  if (target && target.type === 'tabGroup') {
+    const idx = target.tabs.indexOf(tabId);
+    if (idx !== -1) {
+      target.tabs = target.tabs.slice(0, idx + 1);
+      if (!target.tabs.includes(target.activeTab)) {
+        target.activeTab = tabId;
+      }
+    }
+  }
+  return cleanTree(cloned);
+}
+
+/** Closes all tabs in a group. */
+export function closeAllTabs(root: LayoutNode, groupId: string): LayoutNode | null {
+  const cloned = cloneTree(root);
+  const target = findNode(cloned, groupId);
+  if (target && target.type === 'tabGroup') {
+    target.tabs = [];
+    target.activeTab = '';
+  }
+  return cleanTree(cloned);
+}
+
+/** Moves a tab from source group to target group (or reorders within group). */
+export function moveTab(
+  root: LayoutNode,
+  sourceGroupId: string,
+  targetGroupId: string,
+  tabId: string,
+  targetIndex?: number
+): LayoutNode {
+  const cloned = cloneTree(root);
+  const sourceNode = findNode(cloned, sourceGroupId);
+  const targetNode = findNode(cloned, targetGroupId);
+
+  if (!targetNode || targetNode.type !== 'tabGroup') {
+    return root;
+  }
+
+  // Remove from source if found
+  if (sourceNode && sourceNode.type === 'tabGroup') {
+    const sIdx = sourceNode.tabs.indexOf(tabId);
+    if (sIdx !== -1) {
+      sourceNode.tabs.splice(sIdx, 1);
+      if (sourceNode.activeTab === tabId) {
+        sourceNode.activeTab = sourceNode.tabs[Math.max(0, sIdx - 1)] || '';
+      }
+    }
+  }
+
+  // Insert into target
+  if (typeof targetIndex === 'number' && targetIndex >= 0) {
+    targetNode.tabs.splice(targetIndex, 0, tabId);
+  } else {
+    // avoid duplicates
+    if (!targetNode.tabs.includes(tabId)) {
+      targetNode.tabs.push(tabId);
+    }
+  }
+  targetNode.activeTab = tabId;
+
+  const cleaned = cleanTree(cloned);
+  return cleaned || targetNode;
+}
+
+/**
+ * Splits a TabGroup and docks the dragged Tab into the new direction
+ * (left, right, top, bottom, center).
+ */
+export function splitTab(
+  root: LayoutNode,
+  sourceGroupId: string,
+  targetGroupId: string,
+  tabId: string,
+  position: DropPosition
+): LayoutNode {
+  if (position === 'center') {
+    return moveTab(root, sourceGroupId, targetGroupId, tabId);
+  }
+
+  const cloned = cloneTree(root);
+  const sourceNode = findNode(cloned, sourceGroupId);
+  const targetNode = findNode(cloned, targetGroupId);
+
+  if (
+    !sourceNode ||
+    !targetNode ||
+    sourceNode.type !== 'tabGroup' ||
+    targetNode.type !== 'tabGroup'
+  ) {
+    return root;
+  }
+
+  // Remove tab from source
+  const sIdx = sourceNode.tabs.indexOf(tabId);
+  if (sIdx !== -1) {
+    sourceNode.tabs.splice(sIdx, 1);
+    if (sourceNode.activeTab === tabId) {
+      sourceNode.activeTab = sourceNode.tabs[Math.max(0, sIdx - 1)] || '';
+    }
+  }
+
+  // Create new TabGroup node for the dropped tab
+  const newGroupNode: TabGroupNode = {
+    id: generateNodeId('group'),
+    type: 'tabGroup',
+    tabs: [tabId],
+    activeTab: tabId,
+  };
+
+  const isHorizontal = position === 'left' || position === 'right';
+  const splitDirection: SplitDirection = isHorizontal ? 'horizontal' : 'vertical';
+  const isBefore = position === 'left' || position === 'top';
+
+  // Find parent of target node
+  const parentInfo = findParent(cloned, targetGroupId);
+
+  if (parentInfo && parentInfo.parent.direction === splitDirection) {
+    // Can insert into existing parent SplitNode directly!
+    const { parent, index } = parentInfo;
+    const insertIdx = isBefore ? index : index + 1;
+    parent.children.splice(insertIdx, 0, newGroupNode);
+
+    // Rebalance sizes
+    const count = parent.children.length;
+    parent.sizes = parent.children.map(() => Math.round(100 / count));
+  } else {
+    // Create new SplitNode replacing targetNode in place
+    const replacementSplit: SplitNode = {
+      id: generateNodeId('split'),
+      type: 'split',
+      direction: splitDirection,
+      children: isBefore ? [newGroupNode, targetNode] : [targetNode, newGroupNode],
+      sizes: [50, 50],
+    };
+
+    if (parentInfo) {
+      parentInfo.parent.children[parentInfo.index] = replacementSplit;
+    } else {
+      // Target was root node!
+      const cleaned = cleanTree(replacementSplit);
+      return cleaned || replacementSplit;
+    }
+  }
+
+  const cleaned = cleanTree(cloned);
+  return cleaned || root;
+}
+
+/** Resizes a split node's children sizes. */
+export function resizeSplitNode(
+  root: LayoutNode,
+  splitId: string,
+  newSizes: number[]
+): LayoutNode {
+  const cloned = cloneTree(root);
+  const target = findNode(cloned, splitId);
+  if (target && target.type === 'split') {
+    target.sizes = [...newSizes];
+  }
+  return cloned;
+}
+
+/** Collects all tab IDs present across the entire tree. */
+export function getAllOpenTabIds(root: LayoutNode): string[] {
+  if (root.type === 'tabGroup') {
+    return [...root.tabs];
+  }
+  return root.children.flatMap(getAllOpenTabIds);
+}
+
+/** Serializes a layout tree to JSON. */
+export function serializeLayout(root: LayoutNode): string {
+  return JSON.stringify(root);
+}
+
+/** Deserializes and validates a layout tree from JSON. */
+export function deserializeLayout(
+  json: string,
+  validTabIds: string[],
+  fallback: LayoutNode
+): LayoutNode {
+  try {
+    const parsed = JSON.parse(json);
+    if (parsed && (parsed.type === 'split' || parsed.type === 'tabGroup')) {
+      const cleaned = cleanTree(parsed);
+      if (cleaned) {
+        // Ensure at least some valid tabs are present
+        const openTabs = getAllOpenTabIds(cleaned);
+        const hasValid = openTabs.some((t) => validTabIds.includes(t));
+        if (hasValid) {
+          return cleaned;
+        }
+      }
+    }
+  } catch {}
+  return fallback;
+}

@@ -11,6 +11,7 @@ from mini_pipeline.account.service import Principal
 from mini_pipeline.api.auth import require_admin
 from mini_pipeline.api.dependencies import get_services
 from mini_pipeline.core.container import Services
+from mini_pipeline.email.models import UpdateSmtpSettingsRequest
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -242,3 +243,76 @@ def list_audit(
         }
         for entry in services.audit.audit.list(limit=min(limit, 500))
     ]
+
+
+class TestEmailRequest(BaseModel):
+    to_email: str = Field(min_length=3)
+
+
+@router.get("/email-config")
+def get_email_config(
+    principal: AdminPrincipal,
+    services: Annotated[Services, Depends(get_services)],
+) -> dict[str, Any]:
+    _ = principal
+    cfg = services.email_service.settings
+    return {
+        "enabled": cfg.enabled,
+        "host": cfg.host,
+        "port": cfg.port,
+        "username": cfg.username,
+        "sender_email": cfg.sender_email,
+        "sender_name": cfg.sender_name,
+        "use_ssl": cfg.use_ssl,
+        "use_tls": cfg.use_tls,
+        "has_password": bool(cfg.password),
+    }
+
+
+@router.put("/email-config")
+def update_email_config(
+    payload: UpdateSmtpSettingsRequest,
+    principal: AdminPrincipal,
+    services: Annotated[Services, Depends(get_services)],
+) -> dict[str, Any]:
+    from mini_pipeline.email.models import SmtpSettings
+
+    current_pwd = services.email_service.settings.password
+    password_to_use = payload.password if payload.password else current_pwd
+
+    new_cfg = SmtpSettings(
+        enabled=payload.enabled,
+        host=payload.host,
+        port=payload.port,
+        username=payload.username,
+        password=password_to_use,
+        sender_email=payload.sender_email,
+        sender_name=payload.sender_name,
+        use_ssl=payload.use_ssl,
+        use_tls=payload.use_tls,
+    )
+    services.email_service.update_settings(new_cfg)
+    # Persist in DB
+    services.system_settings.set("smtp_config", new_cfg.model_dump())
+    services.audit.record(
+        principal,
+        "system.update_email_config",
+        detail={
+            "host": new_cfg.host,
+            "port": new_cfg.port,
+            "sender_email": new_cfg.sender_email,
+        },
+    )
+    return {"message": "SMTP 配置已保存并生效"}
+
+
+@router.post("/test-email")
+def send_test_email(
+    payload: TestEmailRequest,
+    principal: AdminPrincipal,
+    services: Annotated[Services, Depends(get_services)],
+) -> dict[str, Any]:
+    _ = principal
+    services.email_service.send_test_email(payload.to_email)
+    return {"message": f"测试邮件已成功发送至 {payload.to_email}"}
+

@@ -13,16 +13,26 @@ from mini_pipeline.core.config import Settings
 from mini_pipeline.core.events import EventBus
 from mini_pipeline.database.account_repositories import (
     AuditRepository,
+    EmailVerificationRepository,
     GrantRepository,
     MachineRepository,
     PackageShareRepository,
     SessionRepository,
+    SystemSettingRepository,
     TeamRepository,
     UserRepository,
 )
+from mini_pipeline.database.environment_repositories import (
+    EnvironmentDeployTaskRepository,
+    EnvironmentRepository,
+)
 from mini_pipeline.database.repositories import PipelineRepository, PluginRepository, RunRepository
 from mini_pipeline.database.session import Database
+from mini_pipeline.email.models import SmtpSettings
+from mini_pipeline.email.service import EmailService
+from mini_pipeline.environment.service import EnvironmentService
 from mini_pipeline.executor.task_executor import TaskExecutor
+from mini_pipeline.machine.diagnostics import MachineDiagnosticsService
 from mini_pipeline.pipeline.service import PipelineService
 from mini_pipeline.plugin.service import PluginService
 from mini_pipeline.runner.ssh_executor import SshExecutor
@@ -72,6 +82,13 @@ class Services:
     ssh_executor: SshExecutor
     package_storage: PackageStorageService
     package_shares: PackageShareRepository
+    email_service: EmailService
+    email_verifications: EmailVerificationRepository
+    system_settings: SystemSettingRepository
+    environment_repo: EnvironmentRepository
+    environment_tasks: EnvironmentDeployTaskRepository
+    environments: EnvironmentService
+    diagnostics: MachineDiagnosticsService
 
     @classmethod
     def build(cls, settings: Settings) -> "Services":
@@ -89,6 +106,26 @@ class Services:
         machine_repository = MachineRepository(database)
         audit_repository = AuditRepository(database)
         package_shares = PackageShareRepository(database)
+        email_verifications = EmailVerificationRepository(database)
+        system_settings = SystemSettingRepository(database)
+        environment_repo = EnvironmentRepository(database)
+        environment_tasks = EnvironmentDeployTaskRepository(database)
+        environment_repo.seed_defaults()
+
+        environment_service = EnvironmentService(
+            environment_repo=environment_repo,
+            deploy_task_repo=environment_tasks,
+            machine_repo=machine_repository,
+        )
+
+        # Initialize EmailService from config, applying dynamic DB override if present
+        smtp_cfg = SmtpSettings(**settings.email.model_dump())
+        saved_smtp = system_settings.get("smtp_config")
+        if saved_smtp:
+            if not saved_smtp.get("password") and smtp_cfg.password:
+                saved_smtp["password"] = smtp_cfg.password
+            smtp_cfg = SmtpSettings(**saved_smtp)
+        email_service = EmailService(default_settings=smtp_cfg)
 
         # Crash recovery: runs left pending/running by a previous process
         # can never finish — mark them failed before accepting new work.
@@ -120,7 +157,11 @@ class Services:
             grants=grants, teams=teams, settings=settings
         )
         account = AccountService(
-            users=users, sessions=sessions, settings=settings
+            users=users,
+            sessions=sessions,
+            settings=settings,
+            email_verifications=email_verifications,
+            email_service=email_service,
         )
         package_storage = PackageStorageService(
             settings=settings,
@@ -157,6 +198,7 @@ class Services:
             machines=machine_repository,
             permissions=permissions,
             settings=settings,
+            grants=grants,
         )
         audit = AuditService(audit_repository)
         engine = PipelineEngine(
@@ -168,6 +210,8 @@ class Services:
             retry_backoff_seconds=settings.execution.retry_backoff_seconds,
             storage=settings.storage,
             ssh_executor=ssh_executor,
+            email_service=email_service,
+            users=users,
         )
         runs = RunService(
             pipelines=pipelines,
@@ -182,6 +226,10 @@ class Services:
             interval_seconds=max(5.0, settings.runner.lease_seconds / 8),
         )
         lease_reaper.start()
+        diagnostics_service = MachineDiagnosticsService(
+            machine_repository=machine_repository,
+            settings=settings,
+        )
         return cls(
             settings=settings,
             database=database,
@@ -208,6 +256,13 @@ class Services:
             ssh_executor=ssh_executor,
             package_storage=package_storage,
             package_shares=package_shares,
+            email_service=email_service,
+            email_verifications=email_verifications,
+            system_settings=system_settings,
+            environment_repo=environment_repo,
+            environment_tasks=environment_tasks,
+            environments=environment_service,
+            diagnostics=diagnostics_service,
         )
 
     def close(self) -> None:

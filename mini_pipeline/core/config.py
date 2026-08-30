@@ -138,6 +138,18 @@ class PackageStorageConfig(BaseModel):
     s3: S3PackageStorageConfig = Field(default_factory=S3PackageStorageConfig)
 
 
+class EmailConfig(BaseModel):
+    enabled: bool = True
+    host: str = "smtp.qq.com"
+    port: int = 465
+    username: str = "1018784543@qq.com"
+    password: str = "jnkepakmmszlbeij"
+    sender_email: str = "1018784543@qq.com"
+    sender_name: str = "Mini Pipeline CI/CD"
+    use_ssl: bool = True
+    use_tls: bool = False
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -153,6 +165,7 @@ class Settings(BaseModel):
     retention: RetentionConfig = Field(default_factory=RetentionConfig)
     runner: RunnerConfig = Field(default_factory=RunnerConfig)
     packages: PackageStorageConfig = Field(default_factory=PackageStorageConfig)
+    email: EmailConfig = Field(default_factory=EmailConfig)
 
     def prepare_directories(self) -> None:
         for directory in self.storage.directories():

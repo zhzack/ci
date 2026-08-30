@@ -58,8 +58,14 @@ class RunService:
     def _lookup_machine(self, machine_ref: str):
         for machine in self.machine_repository.list():
             if machine.id == machine_ref or machine.name == machine_ref:
+                if machine.status == "revoked":
+                    raise ValidationError(
+                        f"指定的计算节点 '{machine.name}' 已被删除或不可用，请重新选择执行节点。"
+                    )
                 return machine
-        raise NotFoundError(f"Machine {machine_ref!r} was not found")
+        raise ValidationError(
+            f"指定的计算节点 '{machine_ref}' 不存在或已被删除，请重新选择执行节点。"
+        )
 
     def machine_require_use(self, principal: Principal, machine) -> None:
         if self.permissions is None:
@@ -332,6 +338,14 @@ class RunService:
                 continue
             merged_params[key] = value
         merged_params.update(params)
+
+        if parent.machine_id:
+            try:
+                self._lookup_machine(parent.machine_id)
+            except ValidationError as exc:
+                raise ValidationError(
+                    f"原流水线使用的计算节点已被删除（{exc}），请重新选择可用节点发起新运行。"
+                ) from exc
 
         ordered_task_specs = [(name, *steps[name].plugin_reference) for name in ordered]
         new_run = self.repository.create(

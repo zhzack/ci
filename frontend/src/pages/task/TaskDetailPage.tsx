@@ -137,8 +137,8 @@ export default function TaskDetailPage(): React.JSX.Element {
       setBranchDrawer(false);
       antdMessage.success('Branch run submitted');
       navigate(`/task/${result.id}`);
-    } catch {
-      // already surfaced
+    } catch (err) {
+      antdMessage.error(describeError(err));
     }
   };
 
@@ -231,7 +231,9 @@ export default function TaskDetailPage(): React.JSX.Element {
                     }).then((run) => {
                       antdMessage.success('Re-run submitted');
                       navigate(`/task/${(run as PipelineRun).id}`);
-                    }).catch(() => {});
+                    }).catch((err) => {
+                      antdMessage.error(describeError(err));
+                    });
                   }}
                   loading={submitRunMutation.isPending}
                 >

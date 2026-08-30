@@ -13,15 +13,17 @@ from sqlalchemy.exc import IntegrityError
 from mini_pipeline.database.models import (
     AuditLog,
     AuthSession,
+    EmailVerificationCode,
     Machine,
     PackageShareLink,
     ShareGrant,
+    SystemSetting,
     Team,
     TeamMember,
     User,
 )
 from mini_pipeline.database.session import Database
-from mini_pipeline.domain.exceptions import ConflictError, NotFoundError
+from mini_pipeline.domain.exceptions import ConflictError, NotFoundError, ValidationError
 
 
 def hash_token(raw: str) -> str:
@@ -363,6 +365,15 @@ class GrantRepository:
         with self.database.session() as session:
             session.execute(delete(ShareGrant).where(ShareGrant.id == grant_id))
 
+    def delete_for_resource(self, resource_type: str, resource_id: str) -> None:
+        with self.database.session() as session:
+            session.execute(
+                delete(ShareGrant).where(
+                    ShareGrant.resource_type == resource_type,
+                    ShareGrant.resource_id == resource_id,
+                )
+            )
+
 
 class MachineRepository:
     def __init__(self, database: Database) -> None:
@@ -645,4 +656,117 @@ class PackageShareRepository:
                 query = query.where(PackageShareLink.owner_id == owner_id)
             res = session.execute(query)
             return (res.rowcount or 0) > 0
+
+
+class EmailVerificationRepository:
+    """Repository for email verification codes."""
+
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def check_rate_limit(self, email: str, cooldown_seconds: int = 60) -> None:
+        """Ensure no new code was issued for this email in the last `cooldown_seconds`."""
+        email_clean = email.strip().lower()
+        cutoff = datetime.utcnow() - timedelta(seconds=cooldown_seconds)
+        with self.database.session() as session:
+            recent = session.scalar(
+                select(EmailVerificationCode)
+                .where(
+                    EmailVerificationCode.email == email_clean,
+                    EmailVerificationCode.created_at > cutoff,
+                )
+                .order_by(EmailVerificationCode.created_at.desc())
+            )
+            if recent is not None:
+                raise ValidationError("验证码发送过于频繁，请稍候再试 (60秒冷却)")
+
+    def create_code(
+        self,
+        email: str,
+        purpose: str,
+        expires_minutes: int = 5,
+    ) -> str:
+        email_clean = email.strip().lower()
+        code = f"{secrets.randbelow(900000) + 100000:06d}"
+        expires_at = datetime.utcnow() + timedelta(minutes=expires_minutes)
+
+        with self.database.session() as session:
+            # Invalidate older unused codes for same email & purpose
+            session.execute(
+                update(EmailVerificationCode)
+                .where(
+                    EmailVerificationCode.email == email_clean,
+                    EmailVerificationCode.purpose == purpose,
+                    EmailVerificationCode.is_used.is_(False),
+                )
+                .values(is_used=True)
+            )
+
+            record = EmailVerificationCode(
+                email=email_clean,
+                code=code,
+                purpose=purpose,
+                expires_at=expires_at,
+                attempts_left=5,
+                is_used=False,
+            )
+            session.add(record)
+
+        return code
+
+    def verify_code(self, email: str, code: str, purpose: str) -> bool:
+        email_clean = email.strip().lower()
+        now = datetime.utcnow()
+        with self.database.session() as session:
+            record = session.scalar(
+                select(EmailVerificationCode)
+                .where(
+                    EmailVerificationCode.email == email_clean,
+                    EmailVerificationCode.purpose == purpose,
+                    EmailVerificationCode.is_used.is_(False),
+                    EmailVerificationCode.expires_at > now,
+                )
+                .order_by(EmailVerificationCode.created_at.desc())
+            )
+            if record is None:
+                raise ValidationError("验证码已过期或不存在，请重新获取")
+
+            if record.attempts_left <= 0:
+                record.is_used = True
+                raise ValidationError("验证码尝试次数过多，请重新获取")
+
+            if record.code != code.strip():
+                record.attempts_left -= 1
+                if record.attempts_left <= 0:
+                    record.is_used = True
+                raise ValidationError(f"验证码错误，还剩 {record.attempts_left} 次尝试机会")
+
+            # Correct code
+            record.is_used = True
+            return True
+
+
+class SystemSettingRepository:
+    """Repository for persisting dynamic system settings (e.g. SMTP config)."""
+
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def get(self, key: str) -> dict[str, Any] | None:
+        with self.database.session() as session:
+            record = session.get(SystemSetting, key)
+            if record is None:
+                return None
+            return dict(record.value)
+
+    def set(self, key: str, value: dict[str, Any]) -> None:
+        with self.database.session() as session:
+            record = session.get(SystemSetting, key)
+            if record is None:
+                record = SystemSetting(key=key, value=value, updated_at=datetime.utcnow())
+                session.add(record)
+            else:
+                record.value = value
+                record.updated_at = datetime.utcnow()
+
 

@@ -86,3 +86,15 @@ packages:
     secret_key: null
     region: us-east-1
 
+email:
+  enabled: true
+  host: smtp.qq.com
+  port: 465
+  username: "1018784543@qq.com"
+  password: "jnkepakmmszlbeij"
+  sender_email: "1018784543@qq.com"
+  sender_name: "Mini Pipeline CI/CD"
+  use_ssl: true
+  use_tls: false
+
+

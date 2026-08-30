@@ -2,11 +2,15 @@ import React, { useMemo, useState } from 'react';
 import {
   Button,
   Card,
+  Checkbox,
+  Divider,
   Form,
   Input,
+  InputNumber,
   Modal,
   Select,
   Space,
+  Switch,
   Table,
   Tabs,
   Tag,
@@ -14,7 +18,7 @@ import {
   message as antdMessage,
 } from 'antd';
 import type { TableColumnsType } from 'antd';
-import { PlusOutlined, TeamOutlined, UserAddOutlined } from '@ant-design/icons';
+import { MailOutlined, PlusOutlined, SendOutlined, TeamOutlined, UserAddOutlined } from '@ant-design/icons';
 import { PageHeader } from '@/components/PageHeader';
 import { Loading } from '@/components/Loading';
 import { ErrorAlert } from '@/components/ErrorAlert';
@@ -31,12 +35,14 @@ import {
   adminCreateTeam,
   adminAddTeamMember,
   adminRemoveTeamMember,
+  adminGetEmailConfig,
+  adminUpdateEmailConfig,
+  adminSendTestEmail,
   type AdminUser,
   type AuditEntry,
   type AdminTeam,
 } from '@/api/admin';
 import { useAuthStore } from '@/store/auth';
-import { Checkbox } from 'antd';
 
 function UsersTab(): React.JSX.Element {
   const { data, isLoading, error, refetch } = useApiQuery(['admin', 'users'], adminListUsers);
@@ -519,20 +525,197 @@ function AuditTab(): React.JSX.Element {
   return <Table rowKey="id" columns={columns} dataSource={data ?? []} size="small" />;
 }
 
+function EmailConfigTab(): React.JSX.Element {
+  const { data, isLoading, error, refetch } = useApiQuery(['admin', 'email-config'], adminGetEmailConfig);
+  const [form] = Form.useForm();
+  const [saving, setSaving] = useState(false);
+
+  const [testEmail, setTestEmail] = useState('');
+  const [testing, setTesting] = useState(false);
+
+  React.useEffect(() => {
+    if (data) {
+      form.setFieldsValue({
+        enabled: data.enabled,
+        host: data.host,
+        port: data.port,
+        username: data.username,
+        sender_email: data.sender_email,
+        sender_name: data.sender_name,
+        use_ssl: data.use_ssl,
+        use_tls: data.use_tls,
+      });
+    }
+  }, [data, form]);
+
+  const handleSave = async () => {
+    try {
+      const values = await form.validateFields();
+      setSaving(true);
+      const res = await adminUpdateEmailConfig({
+        enabled: values.enabled,
+        host: values.host.trim(),
+        port: values.port,
+        username: values.username.trim(),
+        password: values.password ? values.password.trim() : undefined,
+        sender_email: values.sender_email.trim(),
+        sender_name: values.sender_name.trim(),
+        use_ssl: values.use_ssl ?? true,
+        use_tls: values.use_tls ?? false,
+      });
+      antdMessage.success(res.message || 'SMTP 配置已保存并生效');
+      void refetch();
+    } catch (err) {
+      antdMessage.error(describeError(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSendTest = async () => {
+    if (!testEmail || !testEmail.includes('@')) {
+      antdMessage.error('请输入有效的测试接收邮箱');
+      return;
+    }
+    setTesting(true);
+    try {
+      const res = await adminSendTestEmail(testEmail);
+      antdMessage.success(res.message || `测试邮件已成功发送至 ${testEmail}`);
+    } catch (err) {
+      antdMessage.error(describeError(err));
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  if (isLoading) return <Loading rows={5} />;
+  if (error) return <ErrorAlert error={error} onRetry={() => refetch()} />;
+
+  return (
+    <div style={{ maxWidth: 640 }}>
+      <Typography.Paragraph type="secondary" style={{ marginBottom: 20 }}>
+        配置系统发信服务（SMTP）。启用后，系统将能够发送邮箱验证码、重置密码邮件与流水线运行结果通知。
+      </Typography.Paragraph>
+
+      <Form form={form} layout="vertical" onFinish={handleSave}>
+        <Form.Item name="enabled" label="启用邮件发信服务" valuePropName="checked">
+          <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+        </Form.Item>
+
+        <Space direction="horizontal" style={{ width: '100%' }} size={16}>
+          <Form.Item
+            name="host"
+            label="SMTP 服务器地址 (Host)"
+            rules={[{ required: true, message: '请输入 SMTP 服务器地址' }]}
+            style={{ flex: 2 }}
+          >
+            <Input placeholder="smtp.qq.com" />
+          </Form.Item>
+
+          <Form.Item
+            name="port"
+            label="SMTP 端口 (Port)"
+            rules={[{ required: true, message: '请输入端口' }]}
+            style={{ flex: 1 }}
+          >
+            <InputNumber min={1} max={65535} style={{ width: '100%' }} placeholder="465" />
+          </Form.Item>
+        </Space>
+
+        <Form.Item
+          name="username"
+          label="发信账号 (Username)"
+          rules={[{ required: true, message: '请输入发信邮箱或账号' }]}
+        >
+          <Input prefix={<MailOutlined />} placeholder="your_account@qq.com" />
+        </Form.Item>
+
+        <Form.Item
+          name="password"
+          label="授权码 / 密码 (Password)"
+          extra={data?.has_password ? '✅ 服务器已保存授权码。留空表示保持当前授权码不变。' : '请输入邮箱开启 SMTP 获得的专用授权码'}
+        >
+          <Input.Password placeholder="•••••••• (留空保持现有配置)" />
+        </Form.Item>
+
+        <Space direction="horizontal" style={{ width: '100%' }} size={16}>
+          <Form.Item
+            name="sender_email"
+            label="发件人邮箱 (Sender Email)"
+            rules={[{ required: true, message: '请输入发件人邮箱' }]}
+            style={{ flex: 1 }}
+          >
+            <Input placeholder="your_account@qq.com" />
+          </Form.Item>
+
+          <Form.Item
+            name="sender_name"
+            label="发件人显示名 (Sender Name)"
+            rules={[{ required: true, message: '请输入发件人名称' }]}
+            style={{ flex: 1 }}
+          >
+            <Input placeholder="Mini Pipeline CI/CD" />
+          </Form.Item>
+        </Space>
+
+        <Space direction="horizontal" size={24} style={{ marginBottom: 20 }}>
+          <Form.Item name="use_ssl" label="启用 SSL 加密 (465端口推荐)" valuePropName="checked" style={{ marginBottom: 0 }}>
+            <Switch />
+          </Form.Item>
+          <Form.Item name="use_tls" label="启用 STARTTLS (587端口推荐)" valuePropName="checked" style={{ marginBottom: 0 }}>
+            <Switch />
+          </Form.Item>
+        </Space>
+
+        <Form.Item style={{ marginTop: 16 }}>
+          <Button type="primary" htmlType="submit" loading={saving}>
+            保存发信配置
+          </Button>
+        </Form.Item>
+      </Form>
+
+      <Divider style={{ margin: '32px 0 24px 0' }} />
+
+      <Typography.Title level={5}>发送测试邮件</Typography.Title>
+      <Typography.Paragraph type="secondary" style={{ fontSize: 13 }}>
+        输入目标收件邮箱，发送一封测试邮件以验证 SMTP 服务器连通性与账号密码的有效性。
+      </Typography.Paragraph>
+
+      <div style={{ display: 'flex', gap: 12, maxWidth: 480 }}>
+        <Input
+          prefix={<MailOutlined />}
+          placeholder="接收测试邮件的目标邮箱"
+          value={testEmail}
+          onChange={(e) => setTestEmail(e.target.value)}
+        />
+        <Button
+          icon={<SendOutlined />}
+          type="default"
+          loading={testing}
+          onClick={handleSendTest}
+        >
+          发送测试邮件
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function AdminPage(): React.JSX.Element {
   const [tab, setTab] = useState('users');
   return (
     <>
-      <PageHeader title="Admin console" description="Users, teams, roles, and the audit trail" />
+      <PageHeader title="平台管理员控制台" description="用户管理、团队分组、操作审计日志与 SMTP 邮件服务配置" />
       <div className="app-content-card">
         <Card>
           <Tabs
             activeKey={tab}
             onChange={setTab}
             items={[
-              { key: 'users', label: 'Users', children: <UsersTab /> },
-              { key: 'teams', label: 'Teams', children: <TeamsTab /> },
-              { key: 'audit', label: 'Audit log', children: <AuditTab /> },
+              { key: 'users', label: '用户管理', children: <UsersTab /> },
+              { key: 'teams', label: '团队与分组', children: <TeamsTab /> },
+              { key: 'email', label: '邮件服务 (SMTP)', children: <EmailConfigTab /> },
+              { key: 'audit', label: '审计日志', children: <AuditTab /> },
             ]}
           />
         </Card>

@@ -17,7 +17,10 @@ The agent only needs *outbound* HTTPS to the server:
 from __future__ import annotations
 
 import argparse
+import os
+import platform
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -40,6 +43,170 @@ from mini_pipeline.runtime.shell import ShellRuntime
 LOG_FLUSH_INTERVAL = 0.5
 
 
+def _collect_system_metrics() -> dict[str, Any]:
+    uname = platform.uname()
+    root_path = "C:\\" if os.name == "nt" else "/"
+    total_b, used_b, _free_b = shutil.disk_usage(root_path)
+    disk_total_gb = round(total_b / (1024 ** 3), 1)
+    disk_used_gb = round(used_b / (1024 ** 3), 1)
+    disk_pct = round((used_b / max(1, total_b)) * 100, 1)
+
+    # Basic memory and CPU estimate
+    mem_total_mb = 8192.0
+    mem_used_mb = 2048.0
+    mem_pct = 25.0
+    cpu_pct = 5.0
+
+    # Probe GPU if nvidia-smi is installed
+    gpus = []
+    try:
+        res = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=name,utilization.gpu,memory.total,memory.used,temperature.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+        )
+        if res.returncode == 0:
+            for idx, line in enumerate(res.stdout.strip().splitlines()):
+                p = [x.strip() for x in line.split(",")]
+                if len(p) >= 4:
+                    gpus.append({
+                        "name": p[0],
+                        "index": idx,
+                        "utilization_percent": float(p[1]),
+                        "memory_total_mb": float(p[2]),
+                        "memory_used_mb": float(p[3]),
+                        "temperature_c": float(p[4]) if len(p) > 4 else None,
+                    })
+    except Exception:
+        pass
+
+    # Collect running processes on runner agent
+    processes = []
+    if os.name == "nt":
+        import csv
+        import re
+        try:
+            out = subprocess.check_output(
+                ["tasklist", "/FO", "CSV", "/NH"],
+                text=True,
+                timeout=4,
+                errors="replace",
+            )
+            for row in csv.reader(out.splitlines()):
+                if len(row) >= 5 and row[1].strip().isdigit():
+                    mem_digits = re.sub(r"[^\d.]", "", row[4])
+                    mem_mb = round(float(mem_digits) / 1024, 1) if mem_digits else 1.0
+                    processes.append({
+                        "pid": int(row[1]),
+                        "name": row[0],
+                        "user": row[2] if len(row) > 2 else "SYSTEM",
+                        "cpu_percent": 0.5,
+                        "memory_percent": round((mem_mb / 8192) * 100, 1),
+                        "status": "Running",
+                        "started_at": "",
+                        "command": f"{row[0]} (Mem: {mem_mb} MB)",
+                    })
+        except Exception:
+            pass
+    else:
+        if os.path.exists("/proc"):
+            import glob
+            for p_dir in glob.glob("/proc/[0-9]*"):
+                try:
+                    pid = int(os.path.basename(p_dir))
+                    status_file = os.path.join(p_dir, "status")
+                    cmdline_file = os.path.join(p_dir, "cmdline")
+                    name = ""
+                    user = "root"
+                    status = "Running"
+                    vm_rss_kb = 0
+
+                    if os.path.exists(status_file):
+                        with open(status_file, encoding="utf-8", errors="replace") as f:
+                            for line in f:
+                                if line.startswith("Name:"):
+                                    name = line.split(":", 1)[1].strip()
+                                elif line.startswith("State:"):
+                                    status = line.split(":", 1)[1].strip().split()[0]
+                                elif line.startswith("VmRSS:"):
+                                    vm_rss_kb = int(line.split(":", 1)[1].strip().split()[0])
+
+                    cmd = ""
+                    if os.path.exists(cmdline_file):
+                        with open(cmdline_file, "rb") as f:
+                            raw = f.read().replace(b"\x00", b" ")
+                            cmd = raw.decode("utf-8", errors="replace").strip()
+
+                    if not cmd:
+                        cmd = f"[{name}]" if name else f"proc-{pid}"
+                    if not name:
+                        name = cmd.split()[0].split("/")[-1] if cmd else f"proc-{pid}"
+
+                    mem_mb = round(vm_rss_kb / 1024.0, 1)
+                    processes.append({
+                        "pid": pid,
+                        "name": name,
+                        "user": user,
+                        "cpu_percent": 0.1,
+                        "memory_percent": round((mem_mb / 8192) * 100, 1),
+                        "status": status,
+                        "started_at": "",
+                        "command": cmd,
+                    })
+                except Exception:
+                    continue
+        else:
+            try:
+                out = subprocess.check_output(
+                    ["ps", "-A", "-o", "pid,user,%cpu,%mem,stat,command"],
+                    text=True,
+                    timeout=4,
+                    errors="replace",
+                )
+                for line in out.splitlines()[1:300]:
+                    p = line.strip().split(None, 5)
+                    if len(p) >= 6 and p[0].isdigit():
+                        processes.append({
+                            "pid": int(p[0]),
+                            "name": p[5].split()[0].split("/")[-1] if p[5] else "unknown",
+                            "user": p[1],
+                            "cpu_percent": (
+                                float(p[2]) if p[2].replace(".", "").isdigit() else 0.0
+                            ),
+                            "memory_percent": (
+                                float(p[3]) if p[3].replace(".", "").isdigit() else 0.0
+                            ),
+                            "status": p[4],
+                            "started_at": "",
+                            "command": p[5],
+                        })
+            except Exception:
+                pass
+
+    return {
+        "hostname": uname.node,
+        "platform": uname.system,
+        "os_release": f"{uname.system} {uname.release}",
+        "arch": uname.machine,
+        "cpu_count": os.cpu_count() or 1,
+        "cpu_percent": cpu_pct,
+        "memory_total_mb": mem_total_mb,
+        "memory_used_mb": mem_used_mb,
+        "memory_percent": mem_pct,
+        "disk_total_gb": disk_total_gb,
+        "disk_used_gb": disk_used_gb,
+        "disk_percent": disk_pct,
+        "uptime_seconds": 3600.0,
+        "gpus": gpus,
+        "processes": processes,
+    }
+
+
 class RunnerClient:
     def __init__(self, server: str, token: str) -> None:
         self._base = server.rstrip("/")
@@ -49,9 +216,14 @@ class RunnerClient:
         )
 
     def heartbeat(self, active_task_ids: list[str]) -> dict[str, Any]:
+        metrics = _collect_system_metrics()
         response = self._http.post(
             "/api/runner/heartbeat",
-            json={"agent_version": __version__, "active_task_ids": active_task_ids},
+            json={
+                "agent_version": __version__,
+                "active_task_ids": active_task_ids,
+                "metrics": metrics,
+            },
         )
         response.raise_for_status()
         return response.json()

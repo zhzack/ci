@@ -40,6 +40,37 @@ class ChangePasswordRequest(BaseModel):
     new_password: str = Field(min_length=8, description="New password at least 8 characters")
 
 
+class SendCodeRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+    purpose: str = Field(
+        default="register", description="register | login | reset_password | bind_email | test"
+    )
+
+
+class LoginOtpRequest(BaseModel):
+    email: str
+    code: str = Field(min_length=6, max_length=6)
+
+
+class RegisterOtpRequest(BaseModel):
+    username: str
+    password: str
+    email: str
+    code: str = Field(min_length=6, max_length=6)
+    display_name: str = ""
+
+
+class ResetPasswordOtpRequest(BaseModel):
+    email: str
+    code: str = Field(min_length=6, max_length=6)
+    new_password: str = Field(min_length=8)
+
+
+class BindEmailOtpRequest(BaseModel):
+    email: str
+    code: str = Field(min_length=6, max_length=6)
+
+
 class UpdateProfileRequest(BaseModel):
     display_name: str | None = None
     email: str | None = None
@@ -112,6 +143,56 @@ def login(
     return AuthResponse(token=token, user=UserOut.of(user))
 
 
+@public_router.post("/auth/send-code")
+def send_verification_code(
+    payload: SendCodeRequest,
+    services: Annotated[Services, Depends(get_services)],
+) -> dict[str, Any]:
+    """Send an OTP verification code to the specified email."""
+    services.account.send_verification_code(email=payload.email, purpose=payload.purpose)
+    return {"message": "验证码已发送，请查收邮箱", "email": payload.email, "expires_in": 300}
+
+
+@public_router.post("/auth/login-otp", response_model=AuthResponse)
+def login_with_otp(
+    payload: LoginOtpRequest,
+    services: Annotated[Services, Depends(get_services)],
+) -> AuthResponse:
+    """Login directly using email and 6-digit OTP code."""
+    user, token = services.account.login_with_otp(email=payload.email, code=payload.code)
+    return AuthResponse(token=token, user=UserOut.of(user))
+
+
+@public_router.post("/auth/register-otp", response_model=AuthResponse, status_code=201)
+def register_with_otp(
+    payload: RegisterOtpRequest,
+    services: Annotated[Services, Depends(get_services)],
+) -> AuthResponse:
+    """Register account with email verification code."""
+    user, token = services.account.register_with_otp(
+        username=payload.username,
+        password=payload.password,
+        email=payload.email,
+        code=payload.code,
+        display_name=payload.display_name,
+    )
+    return AuthResponse(token=token, user=UserOut.of(user))
+
+
+@public_router.post("/auth/reset-password-otp")
+def reset_password_with_otp(
+    payload: ResetPasswordOtpRequest,
+    services: Annotated[Services, Depends(get_services)],
+) -> dict[str, str]:
+    """Reset forgotten password using email and 6-digit OTP code."""
+    services.account.reset_password_with_otp(
+        email=payload.email,
+        code=payload.code,
+        new_password=payload.new_password,
+    )
+    return {"message": "密码重置成功，请使用新密码登录"}
+
+
 @router.post("/auth/logout", status_code=204)
 def logout(
     request: Request,
@@ -179,6 +260,23 @@ def change_my_password(
         must_change_password=False,
     )
     return {"message": "Password changed successfully"}
+
+
+@router.post("/auth/bind-email-otp", response_model=UserOut)
+def bind_email_with_otp(
+    payload: BindEmailOtpRequest,
+    principal: PrincipalDep,
+    services: Annotated[Services, Depends(get_services)],
+) -> UserOut:
+    """Bind or update email address for the currently logged-in user using OTP."""
+    if principal.user_id is None:
+        raise PermissionDeniedError("Cannot bind email for anonymous account")
+    user = services.account.bind_email_with_otp(
+        user_id=principal.user_id,
+        email=payload.email,
+        code=payload.code,
+    )
+    return UserOut.of(user)
 
 
 
@@ -263,11 +361,14 @@ def _validate_ssh_connection(connection: dict[str, Any] | None) -> dict[str, Any
 def list_machines(
     principal: PrincipalDep,
     services: Annotated[Services, Depends(get_services)],
+    include_revoked: bool = False,
 ) -> list[MachineOut]:
     """Machines visible to the caller: own personal machines, admin machines
     assigned to them, machines shared with them — everything for admins."""
     visible = []
     for machine in services.machine_repository.list():
+        if not include_revoked and machine.status == "revoked":
+            continue
         if principal.is_admin or services.machines.can_use(principal, machine):
             visible.append(MachineOut.of(machine, principal, services.machines))
     return visible
@@ -447,7 +548,7 @@ def revoke_machine(
     machine = services.machine_repository.get(machine_id)
     if not services.machines.can_manage(principal, machine):
         raise PermissionDeniedError("Only the owner or an admin can remove this machine")
-    services.machines.update(machine.id, status="revoked")
+    services.machines.revoke(machine.id)
     services.audit.record(
         principal, "machine.revoke", resource_type="machine", resource_id=machine.id,
     )

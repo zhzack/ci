@@ -165,8 +165,8 @@ export default function PipelineDetailPage(): React.JSX.Element {
       });
       setRunModalOpen(false);
       navigate(`/task/${(run as PipelineRun).id}`);
-    } catch {
-      // already surfaced
+    } catch (err) {
+      antdMessage.error(describeError(err));
     }
   };
 

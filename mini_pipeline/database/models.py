@@ -373,3 +373,77 @@ class PackageShareLink(Base):
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
+
+class EmailVerificationCode(Base):
+    __tablename__ = "email_verifications"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    code: Mapped[str] = mapped_column(String(6), nullable=False)
+    # purpose: register | login | reset_password | bind_email
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    attempts_left: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
+    is_used: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class SystemSetting(Base):
+    __tablename__ = "system_settings"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class RuntimeEnvironment(Base):
+    __tablename__ = "runtime_environments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    env_type: Mapped[str] = mapped_column(String(32), default="python", nullable=False)
+    version: Mapped[str] = mapped_column(String(32), nullable=False)
+    os_arch: Mapped[str] = mapped_column(String(32), default="linux-x86_64", nullable=False)
+    # Storage path in package hub or direct download URL
+    package_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    download_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    deploy_tasks: Mapped[list["EnvironmentDeployTask"]] = relationship(
+        back_populates="environment", cascade="all, delete-orphan"
+    )
+
+
+class EnvironmentDeployTask(Base):
+    __tablename__ = "environment_deploy_tasks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    environment_id: Mapped[str] = mapped_column(
+        ForeignKey("runtime_environments.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    machine_id: Mapped[str] = mapped_column(
+        ForeignKey("machines.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # pending | transferring | extracting | configuring | validating | success | failed
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
+    progress: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    message: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    logs: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    triggered_by: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    environment: Mapped[RuntimeEnvironment] = relationship(back_populates="deploy_tasks")
+    machine: Mapped[Machine] = relationship()
+
+
+

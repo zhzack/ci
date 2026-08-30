@@ -80,3 +80,30 @@ export async function adminAudit(limit = 100): Promise<AuditEntry[]> {
   const { data } = await http.get<AuditEntry[]>('/admin/audit', { params: { limit } });
   return data;
 }
+
+export type SmtpConfig = {
+  enabled: boolean;
+  host: string;
+  port: number;
+  username: string;
+  sender_email: string;
+  sender_name: string;
+  use_ssl: boolean;
+  use_tls: boolean;
+  has_password?: boolean;
+};
+
+export async function adminGetEmailConfig(): Promise<SmtpConfig> {
+  const { data } = await http.get<SmtpConfig>('/admin/email-config');
+  return data;
+}
+
+export async function adminUpdateEmailConfig(payload: SmtpConfig & { password?: string }): Promise<{ message: string }> {
+  const { data } = await http.put<{ message: string }>('/admin/email-config', payload);
+  return data;
+}
+
+export async function adminSendTestEmail(to_email: string): Promise<{ message: string }> {
+  const { data } = await http.post<{ message: string }>('/admin/test-email', { to_email });
+  return data;
+}

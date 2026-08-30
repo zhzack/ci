@@ -9,6 +9,8 @@ from mini_pipeline.api.routers.admin import router as admin_router
 from mini_pipeline.api.routers.artifacts import router as artifacts_router
 from mini_pipeline.api.routers.dashboard import router as dashboard_router
 from mini_pipeline.api.routers.debug import router as debug_router
+from mini_pipeline.api.routers.environment import router as environment_router
+from mini_pipeline.api.routers.machine_diagnostics import router as machine_diagnostics_router
 from mini_pipeline.api.routers.packages import public_router as packages_public_router
 from mini_pipeline.api.routers.packages import router as packages_router
 from mini_pipeline.api.routers.pipelines import router as pipelines_router
@@ -31,6 +33,8 @@ api_router.include_router(pipelines_router)
 api_router.include_router(runs_router)
 api_router.include_router(artifacts_router)
 api_router.include_router(packages_router)
+api_router.include_router(environment_router)
+api_router.include_router(machine_diagnostics_router)
 api_router.include_router(dashboard_router)
 api_router.include_router(debug_router)
 api_router.include_router(admin_router)
