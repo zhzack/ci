@@ -74,12 +74,17 @@ import {
   splitTab,
 } from '@/components/dock/dockEngine';
 
-interface Props {
-  open: boolean;
+export interface MachineConsoleProps {
   machineId: string | null;
   machineName: string;
   connectionType: string;
+}
+
+interface Props extends MachineConsoleProps {
+  open: boolean;
   onClose: () => void;
+  /** When true, renders inline (for workbench tab); when false renders as a Drawer */
+  tabMode?: boolean;
 }
 
 function formatBytes(bytes: number): string {
@@ -156,12 +161,27 @@ const DEFAULT_IDE_LAYOUT: LayoutNode = {
   ],
 };
 
+/** Thin wrapper for workbench tab usage — renders the console inline, no Drawer. */
+export function MachineConsoleTab({ machineId, machineName, connectionType }: MachineConsoleProps): React.JSX.Element {
+  return (
+    <MachineConsoleDrawer
+      open={true}
+      tabMode={true}
+      machineId={machineId}
+      machineName={machineName}
+      connectionType={connectionType}
+      onClose={() => undefined}
+    />
+  );
+}
+
 export function MachineConsoleDrawer({
   open,
   machineId,
   machineName,
   connectionType,
   onClose,
+  tabMode = false,
 }: Props): React.JSX.Element {
   const storageKey = machineId
     ? `mini_pipeline_dock_layout_${machineId}`
@@ -175,7 +195,7 @@ export function MachineConsoleDrawer({
     try {
       const saved = localStorage.getItem(storageKey);
       if (saved) {
-        return deserializeLayout(saved, ALL_CORE_TABS, DEFAULT_IDE_LAYOUT);
+        return deserializeLayout(saved, ALL_CORE_TABS, DEFAULT_IDE_LAYOUT) ?? DEFAULT_IDE_LAYOUT;
       }
     } catch {}
     return DEFAULT_IDE_LAYOUT;
@@ -843,85 +863,99 @@ export function MachineConsoleDrawer({
     openFiles,
   ]);
 
+  const toolbar = (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+      <Space size={10}>
+        <DesktopOutlined style={{ fontSize: 18, color: '#1677ff' }} />
+        <div>
+          <Typography.Text strong style={{ fontSize: tabMode ? 14 : 16 }}>
+            {machineName} — 计算节点全功能 IDE 工作台
+          </Typography.Text>
+          <Tag color="cyan" style={{ marginLeft: 8 }}>
+            {connectionType.toUpperCase()} 协议
+          </Tag>
+        </div>
+      </Space>
+
+      <Space size={12}>
+        <Segmented
+          size="small"
+          options={[
+            { label: '📁 文件模式', value: 'file-mode' },
+            { label: '📊 监控模式', value: 'monitor-mode' },
+            { label: '📑 同级全标签', value: 'peer-tabs' },
+            { label: '🎛️ 经典 IDE', value: 'ide' },
+          ]}
+          onChange={(val) => {
+            const p = LAYOUT_PRESETS[val as PresetKey];
+            if (p) handleLayoutChange(p.layout);
+          }}
+        />
+
+        <Dropdown menu={{ items: presetMenuItems }} placement="bottomRight">
+          <Button size="small" icon={<LayoutOutlined />}>
+            更多预设
+          </Button>
+        </Dropdown>
+
+        <Dropdown
+          menu={{
+            items: ALL_CORE_TABS.map((tabId) => ({
+              key: tabId,
+              label: `打开 ${tabRegistry[tabId]?.title}`,
+              icon: tabRegistry[tabId]?.icon,
+              disabled: openTabIds.includes(tabId),
+              onClick: () => handleOpenTab(tabId),
+            })),
+          }}
+          placement="bottomRight"
+        >
+          <Button size="small" icon={<PlusOutlined />}>
+            打开面板
+          </Button>
+        </Dropdown>
+
+        <Divider type="vertical" />
+
+        <Space size={6}>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            实时轮询
+          </Typography.Text>
+          <Switch size="small" checked={autoRefresh} onChange={setAutoRefresh} />
+        </Space>
+
+        <Button
+          size="small"
+          icon={<ReloadOutlined />}
+          onClick={() => {
+            void fetchOverview();
+            void fetchDirectory(currentPath);
+            void fetchProcesses();
+            void fetchNetwork();
+          }}
+        >
+          全部刷新
+        </Button>
+      </Space>
+    </div>
+  );
+
+  if (tabMode) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%', overflow: 'hidden' }}>
+        <div style={{ padding: '6px 12px', borderBottom: '1px solid rgba(0,0,0,0.06)', flexShrink: 0 }}>
+          {toolbar}
+        </div>
+        <div style={{ flex: 1, overflow: 'hidden', minHeight: 0 }}>
+          <DockLayout layout={layout} tabRegistry={tabRegistry} onChange={handleLayoutChange} />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <Drawer
-      title={
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', paddingRight: 24 }}>
-          <Space size={10}>
-            <DesktopOutlined style={{ fontSize: 20, color: '#1677ff' }} />
-            <div>
-              <Typography.Text strong style={{ fontSize: 16 }}>
-                {machineName} — 计算节点全功能 IDE 工作台
-              </Typography.Text>
-              <Tag color="cyan" style={{ marginLeft: 8 }}>
-                {connectionType.toUpperCase()} 协议
-              </Tag>
-            </div>
-          </Space>
-
-          {/* Work Mode Switcher, Preset Layouts, Add Panels & Refresh */}
-          <Space size={12}>
-            <Segmented
-              size="small"
-              options={[
-                { label: '📁 文件模式', value: 'file-mode' },
-                { label: '📊 监控模式', value: 'monitor-mode' },
-                { label: '📑 同级全标签', value: 'peer-tabs' },
-                { label: '🎛️ 经典 IDE', value: 'ide' },
-              ]}
-              onChange={(val) => {
-                const p = LAYOUT_PRESETS[val as PresetKey];
-                if (p) handleLayoutChange(p.layout);
-              }}
-            />
-
-            <Dropdown menu={{ items: presetMenuItems }} placement="bottomRight">
-              <Button size="small" icon={<LayoutOutlined />}>
-                更多预设
-              </Button>
-            </Dropdown>
-
-            <Dropdown
-              menu={{
-                items: ALL_CORE_TABS.map((tabId) => ({
-                  key: tabId,
-                  label: `打开 ${tabRegistry[tabId]?.title}`,
-                  icon: tabRegistry[tabId]?.icon,
-                  disabled: openTabIds.includes(tabId),
-                  onClick: () => handleOpenTab(tabId),
-                })),
-              }}
-              placement="bottomRight"
-            >
-              <Button size="small" icon={<PlusOutlined />}>
-                打开面板
-              </Button>
-            </Dropdown>
-
-            <Divider type="vertical" />
-
-            <Space size={6}>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                实时轮询
-              </Typography.Text>
-              <Switch size="small" checked={autoRefresh} onChange={setAutoRefresh} />
-            </Space>
-
-            <Button
-              size="small"
-              icon={<ReloadOutlined />}
-              onClick={() => {
-                void fetchOverview();
-                void fetchDirectory(currentPath);
-                void fetchProcesses();
-                void fetchNetwork();
-              }}
-            >
-              全部刷新
-            </Button>
-          </Space>
-        </div>
-      }
+      title={<div style={{ paddingRight: 24 }}>{toolbar}</div>}
       open={open}
       onClose={onClose}
       width="96vw"
@@ -934,11 +968,7 @@ export function MachineConsoleDrawer({
       }}
       destroyOnClose
     >
-      <DockLayout
-        layout={layout}
-        tabRegistry={tabRegistry}
-        onChange={handleLayoutChange}
-      />
+      <DockLayout layout={layout} tabRegistry={tabRegistry} onChange={handleLayoutChange} />
     </Drawer>
   );
 }

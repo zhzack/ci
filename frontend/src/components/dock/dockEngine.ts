@@ -342,25 +342,157 @@ export function serializeLayout(root: LayoutNode): string {
   return JSON.stringify(root);
 }
 
+/** Creates a single tab group layout. */
+export function createSingleGroupLayout(
+  tabs: string[],
+  activeTab?: string
+): LayoutNode {
+  return {
+    id: generateNodeId('group-main'),
+    type: 'tabGroup',
+    tabs: [...tabs],
+    activeTab: activeTab ?? tabs[0] ?? '',
+  };
+}
+
+/** Creates a 2-column horizontal split layout. */
+export function createDualHorizontalLayout(
+  leftTabs: string[],
+  rightTabs: string[],
+  sizes: number[] = [50, 50]
+): LayoutNode {
+  return {
+    id: generateNodeId('split-h'),
+    type: 'split',
+    direction: 'horizontal',
+    sizes,
+    children: [
+      {
+        id: generateNodeId('group-left'),
+        type: 'tabGroup',
+        tabs: [...leftTabs],
+        activeTab: leftTabs[0] ?? '',
+      },
+      {
+        id: generateNodeId('group-right'),
+        type: 'tabGroup',
+        tabs: [...rightTabs],
+        activeTab: rightTabs[0] ?? '',
+      },
+    ],
+  };
+}
+
+/** Creates a 2-row vertical split layout. */
+export function createDualVerticalLayout(
+  topTabs: string[],
+  bottomTabs: string[],
+  sizes: number[] = [50, 50]
+): LayoutNode {
+  return {
+    id: generateNodeId('split-v'),
+    type: 'split',
+    direction: 'vertical',
+    sizes,
+    children: [
+      {
+        id: generateNodeId('group-top'),
+        type: 'tabGroup',
+        tabs: [...topTabs],
+        activeTab: topTabs[0] ?? '',
+      },
+      {
+        id: generateNodeId('group-bottom'),
+        type: 'tabGroup',
+        tabs: [...bottomTabs],
+        activeTab: bottomTabs[0] ?? '',
+      },
+    ],
+  };
+}
+
+/** Creates a classic 4-pane IDE Quad layout (Top-Left, Bottom-Left, Top-Right, Bottom-Right). */
+export function createQuadLayout(
+  topLeft: string[],
+  bottomLeft: string[],
+  topRight: string[],
+  bottomRight: string[],
+  horizontalSizes: number[] = [45, 55],
+  leftVerticalSizes: number[] = [40, 60],
+  rightVerticalSizes: number[] = [45, 55]
+): LayoutNode {
+  return {
+    id: generateNodeId('split-root'),
+    type: 'split',
+    direction: 'horizontal',
+    sizes: horizontalSizes,
+    children: [
+      {
+        id: generateNodeId('split-left'),
+        type: 'split',
+        direction: 'vertical',
+        sizes: leftVerticalSizes,
+        children: [
+          {
+            id: generateNodeId('group-top-left'),
+            type: 'tabGroup',
+            tabs: [...topLeft],
+            activeTab: topLeft[0] ?? '',
+          },
+          {
+            id: generateNodeId('group-bottom-left'),
+            type: 'tabGroup',
+            tabs: [...bottomLeft],
+            activeTab: bottomLeft[0] ?? '',
+          },
+        ],
+      },
+      {
+        id: generateNodeId('split-right'),
+        type: 'split',
+        direction: 'vertical',
+        sizes: rightVerticalSizes,
+        children: [
+          {
+            id: generateNodeId('group-top-right'),
+            type: 'tabGroup',
+            tabs: [...topRight],
+            activeTab: topRight[0] ?? '',
+          },
+          {
+            id: generateNodeId('group-bottom-right'),
+            type: 'tabGroup',
+            tabs: [...bottomRight],
+            activeTab: bottomRight[0] ?? '',
+          },
+        ],
+      },
+    ],
+  };
+}
+
 /** Deserializes and validates a layout tree from JSON. */
 export function deserializeLayout(
   json: string,
-  validTabIds: string[],
-  fallback: LayoutNode
-): LayoutNode {
+  validTabIds?: string[],
+  fallback?: LayoutNode
+): LayoutNode | null {
   try {
     const parsed = JSON.parse(json);
     if (parsed && (parsed.type === 'split' || parsed.type === 'tabGroup')) {
       const cleaned = cleanTree(parsed);
       if (cleaned) {
-        // Ensure at least some valid tabs are present
-        const openTabs = getAllOpenTabIds(cleaned);
-        const hasValid = openTabs.some((t) => validTabIds.includes(t));
-        if (hasValid) {
+        if (validTabIds && validTabIds.length > 0) {
+          const openTabs = getAllOpenTabIds(cleaned);
+          const hasValid = openTabs.some((t) => validTabIds.includes(t));
+          if (hasValid) {
+            return cleaned;
+          }
+        } else {
           return cleaned;
         }
       }
     }
   } catch {}
-  return fallback;
+  return fallback ?? null;
 }

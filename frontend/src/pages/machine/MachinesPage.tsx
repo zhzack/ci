@@ -52,7 +52,7 @@ import {
 } from '@/api/machine';
 import { adminListUsers, type AdminUser } from '@/api/admin';
 import { EnvironmentTab } from './EnvironmentTab';
-import { MachineConsoleDrawer } from './MachineConsoleDrawer';
+import { useWorkbenchStore } from '@/workbench/workbenchStore';
 
 type RegisterFormValues = {
   name: string;
@@ -611,7 +611,18 @@ export function MachinesPage(): React.JSX.Element {
             ghost
             size="small"
             icon={<DesktopOutlined />}
-            onClick={() => setConsoleMachine(record)}
+            onClick={() => {
+              const tabId = `machine-console:${record.id}`;
+              openTab(tabId, {
+                id: tabId,
+                type: 'machine-console',
+                title: `控制台: ${record.name}`,
+                props: {
+                  machineName: record.name,
+                  connectionType: record.connection_type,
+                },
+              });
+            }}
           >
             控制台与监控
           </Button>
@@ -645,7 +656,7 @@ export function MachinesPage(): React.JSX.Element {
     },
   ];
 
-  const [consoleMachine, setConsoleMachine] = useState<Machine | null>(null);
+  const { openTab } = useWorkbenchStore();
   const [activeTab, setActiveTab] = useState<'machines' | 'environments'>('machines');
 
   return (
@@ -818,13 +829,6 @@ export function MachinesPage(): React.JSX.Element {
 
       <TokenOnceModal token={newToken} onClose={() => setNewToken(null)} />
       <MachineDrawer machine={drawer} onClose={() => setDrawer(null)} />
-      <MachineConsoleDrawer
-        open={Boolean(consoleMachine)}
-        machineId={consoleMachine?.id ?? null}
-        machineName={consoleMachine?.name ?? ''}
-        connectionType={consoleMachine?.connection_type ?? 'agent'}
-        onClose={() => setConsoleMachine(null)}
-      />
     </>
   );
 }

@@ -1,7 +1,7 @@
 import React from "react";
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { Layout, Menu, Avatar, Dropdown, theme as antdTheme } from 'antd';
-import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
@@ -15,8 +15,11 @@ import { logout } from '@/api/auth';
 
 import { ForcePasswordChangeModal } from '@/components/ForcePasswordChangeModal';
 import { FloatingUploadManager } from '@/components/FloatingUploadManager';
+import { GlobalWorkbench } from '@/workbench/GlobalWorkbench';
+import { useWorkbenchStore } from '@/workbench/workbenchStore';
+import { pathToTabId } from '@/workbench/workbenchUtils';
 
-const { Header, Sider, Content, Footer } = Layout;
+const { Header, Sider, Content } = Layout;
 
 export function MainLayout(): React.JSX.Element {
   const location = useLocation();
@@ -25,6 +28,7 @@ export function MainLayout(): React.JSX.Element {
   const toggle = useMenuStore((state) => state.toggle);
   const user = useAuthStore((state) => state.user);
   const clear = useAuthStore((state) => state.clear);
+  const openTab = useWorkbenchStore((state) => state.openTab);
   const { token } = antdTheme.useToken();
 
   const items = useMemo(
@@ -39,6 +43,13 @@ export function MainLayout(): React.JSX.Element {
     const sorted = [...candidates].sort((a, b) => b.length - a.length);
     return sorted.find((path) => location.pathname.startsWith(path)) ?? '/dashboard';
   }, [location.pathname]);
+
+  useEffect(() => {
+    const tabId = pathToTabId(location.pathname);
+    if (tabId) {
+      openTab(tabId);
+    }
+  }, [location.pathname, openTab]);
 
   const displayName = user?.display_name || user?.username || 'Anonymous';
 
@@ -73,10 +84,17 @@ export function MainLayout(): React.JSX.Element {
           mode="inline"
           items={items}
           selectedKeys={[selectedKey]}
-          onClick={({ key }) => navigate(String(key))}
+          onClick={({ key }) => {
+            const path = String(key);
+            const tabId = pathToTabId(path);
+            if (tabId) {
+              openTab(tabId);
+            }
+            navigate(path);
+          }}
         />
       </Sider>
-      <Layout>
+      <Layout style={{ height: '100vh', overflow: 'hidden' }}>
         <Header
           style={{
             display: 'flex',
@@ -85,8 +103,7 @@ export function MainLayout(): React.JSX.Element {
             padding: '0 20px',
             background: token.colorBgContainer,
             borderBottom: `1px solid ${token.colorBorderSecondary}`,
-            position: 'sticky',
-            top: 0,
+            flexShrink: 0,
             zIndex: 10,
           }}
         >
@@ -97,14 +114,21 @@ export function MainLayout(): React.JSX.Element {
             style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: 8 }}
           >
             {collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
-            <span style={{ color: token.colorText }}>Mini Pipeline</span>
+            <span style={{ color: token.colorText, fontWeight: 600 }}>Mini Pipeline IDE</span>
           </div>
           <Dropdown
             menu={{
               items: [
                 { key: 'profile', disabled: true, label: `${displayName}${user?.role === 'admin' ? ' · admin' : ''}` },
                 { type: 'divider' as const },
-                { key: 'settings', label: <Link to="/setting">Settings</Link> },
+                {
+                  key: 'settings',
+                  label: 'Settings',
+                  onClick: () => {
+                    openTab('settings');
+                    navigate('/setting');
+                  },
+                },
                 {
                   key: 'signout',
                   icon: <LogoutOutlined />,
@@ -124,12 +148,9 @@ export function MainLayout(): React.JSX.Element {
             </span>
           </Dropdown>
         </Header>
-        <Content className="app-content">
-          <Outlet />
+        <Content style={{ height: 'calc(100vh - 64px)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+          <GlobalWorkbench />
         </Content>
-        <Footer className="app-footer">
-          Mini Pipeline · v0.3.0
-        </Footer>
       </Layout>
     </Layout>
   );
