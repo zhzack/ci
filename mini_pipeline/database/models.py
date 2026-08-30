@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -176,7 +177,7 @@ class PipelineRun(Base):
     )
     branched_from_step: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
-    pipeline: Mapped[PipelineDefinition] = relationship(back_populates="runs")
+    pipeline: Mapped[Optional[PipelineDefinition]] = relationship(back_populates="runs")
     tasks: Mapped[list["TaskRun"]] = relationship(
         back_populates="run", cascade="all, delete-orphan", order_by="TaskRun.position"
     )
@@ -237,6 +238,7 @@ class Artifact(Base):
     task: Mapped[TaskRun] = relationship(back_populates="artifacts")
 
 
+
 class User(Base):
     __tablename__ = "users"
 
@@ -244,10 +246,12 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     display_name: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+    email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
     # admin | user
     role: Mapped[str] = mapped_column(String(16), default="user", nullable=False)
     # active | disabled
     status: Mapped[str] = mapped_column(String(16), default="active", nullable=False)
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
     sessions: Mapped[list["AuthSession"]] = relationship(
@@ -344,3 +348,28 @@ class AuditLog(Base):
     detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     request_id: Mapped[Optional[str]] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class PackageShareLink(Base):
+    """A share link granting external or cross-user access to a package path.
+
+    share_type: 'live' (always points to source, updates in real-time)
+              | 'snapshot' (import creates an independent physical copy)
+    """
+
+    __tablename__ = "package_share_links"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    token: Mapped[str] = mapped_column(
+        String(48), unique=True, nullable=False, index=True
+    )
+    owner_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_path: Mapped[str] = mapped_column(Text, nullable=False)
+    # live | snapshot
+    share_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+

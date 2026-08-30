@@ -2,10 +2,13 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { loadStoredAuth, type StoredAuth } from '@/api/http';
 
+import type { CurrentUser } from '@/api/auth';
+
 type AuthStore = {
   token: string | null;
-  user: StoredAuth['user'] | null;
+  user: CurrentUser | null;
   setAuth: (auth: StoredAuth) => void;
+  setUser: (user: CurrentUser) => void;
   clear: () => void;
 };
 
@@ -19,8 +22,10 @@ export const useAuthStore = create<AuthStore>()(
       token: loadStoredAuth()?.token ?? null,
       user: loadStoredAuth()?.user ?? null,
       setAuth: (auth) => set({ token: auth.token, user: auth.user }),
+      setUser: (user) => set({ user }),
       clear: () => set({ token: null, user: null }),
     }),
     { name: 'mini-pipeline-auth' },
   ),
 );
+

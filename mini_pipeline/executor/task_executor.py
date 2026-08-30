@@ -101,12 +101,14 @@ class TaskExecutor:
         )
 
         # Resolve inputs
+        packages_dir = getattr(self.storage, "packages", None) or (self.storage.root / "packages")
         resolve_inputs(
             workspace,
             manifest.contract,
             params=params,
             dependencies=dependencies,
             uploads=uploads,
+            packages_dir=packages_dir,
         )
         # v1 back-compat: single input.json payload alongside the v2 tree.
         # Legacy plugins see run-level params merged with the resolved step

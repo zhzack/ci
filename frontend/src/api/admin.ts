@@ -1,10 +1,36 @@
 import { http } from './http';
 import type { CurrentUser } from './auth';
 
-export type AdminUser = CurrentUser;
+export type AdminUser = CurrentUser & {
+  email?: string | null;
+  must_change_password?: boolean;
+};
 
 export async function adminListUsers(): Promise<AdminUser[]> {
   const { data } = await http.get<AdminUser[]>('/admin/users');
+  return data;
+}
+
+export async function adminCreateUser(payload: {
+  username: string;
+  password: string;
+  display_name?: string;
+  email?: string;
+  role?: 'admin' | 'user';
+  must_change_password?: boolean;
+}): Promise<AdminUser> {
+  const { data } = await http.post<AdminUser>('/admin/users', payload);
+  return data;
+}
+
+export async function adminResetPassword(
+  userId: string,
+  payload: { new_password: string; must_change_password?: boolean },
+): Promise<{ message: string }> {
+  const { data } = await http.post<{ message: string }>(
+    `/admin/users/${encodeURIComponent(userId)}/reset-password`,
+    payload,
+  );
   return data;
 }
 

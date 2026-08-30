@@ -38,6 +38,8 @@ services:
       - ./config:/app/config
       - ./scripts:/app/scripts
       - pipeline-dev-data:/app/data
+      # Map host data/packages so files are visible directly on developer's local machine
+      - ./data/packages:/app/data/packages
     # Launch uvicorn with --reload for auto-reloading upon Python code change
     command: ["uvicorn", "mini_pipeline.server.app:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app/mini_pipeline"]
     healthcheck:

@@ -14,6 +14,7 @@ from mini_pipeline.database.models import (
     AuditLog,
     AuthSession,
     Machine,
+    PackageShareLink,
     ShareGrant,
     Team,
     TeamMember,
@@ -41,7 +42,9 @@ class UserRepository:
         username: str,
         password_hash: str,
         display_name: str = "",
+        email: str | None = None,
         role: str = "user",
+        must_change_password: bool = False,
     ) -> User:
         try:
             with self.database.session() as session:
@@ -49,7 +52,9 @@ class UserRepository:
                     username=username,
                     password_hash=password_hash,
                     display_name=display_name or username,
+                    email=email.strip().lower() if email else None,
                     role=role,
+                    must_change_password=must_change_password,
                 )
                 session.add(user)
                 session.flush()
@@ -80,6 +85,14 @@ class UserRepository:
             session.expunge(user)
             return user
 
+    def get_by_email(self, email: str) -> User | None:
+        with self.database.session() as session:
+            user = session.scalar(select(User).where(User.email == email.strip().lower()))
+            if user is None:
+                return None
+            session.expunge(user)
+            return user
+
     def list(self) -> list[User]:
         with self.database.session() as session:
             rows = list(session.scalars(select(User).order_by(User.created_at)))
@@ -98,6 +111,47 @@ class UserRepository:
             session.execute(
                 update(User).where(User.id == user_id).values(role=role)
             )
+
+    def update_profile(
+        self,
+        user_id: str,
+        *,
+        display_name: str | None = None,
+        email: str | None = None,
+    ) -> User:
+        values: dict[str, Any] = {}
+        if display_name is not None:
+            values["display_name"] = display_name
+        if email is not None:
+            values["email"] = email.strip().lower() if email else None
+        with self.database.session() as session:
+            if values:
+                session.execute(
+                    update(User).where(User.id == user_id).values(**values)
+                )
+            user = session.get(User, user_id)
+            if user is None:
+                raise NotFoundError(f"User {user_id!r} not found")
+            session.expunge(user)
+            return user
+
+    def set_password(
+        self,
+        user_id: str,
+        password_hash: str,
+        *,
+        must_change_password: bool = False,
+    ) -> None:
+        with self.database.session() as session:
+            session.execute(
+                update(User)
+                .where(User.id == user_id)
+                .values(
+                    password_hash=password_hash,
+                    must_change_password=must_change_password,
+                )
+            )
+
 
 
 class SessionRepository:
@@ -529,3 +583,66 @@ def set_plugin_review(
         values["visibility"] = visibility
     with database.session() as session:
         session.execute(update(Plugin).where(Plugin.id == plugin_id).values(**values))
+
+
+class PackageShareRepository:
+    """Repository for managing package share links."""
+
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def create(
+        self,
+        *,
+        owner_id: str,
+        source_path: str,
+        share_type: str,
+        description: str = "",
+        expires_at: datetime | None = None,
+    ) -> PackageShareLink:
+        token = generate_token("psl")
+        with self.database.session() as session:
+            link = PackageShareLink(
+                token=token,
+                owner_id=owner_id,
+                source_path=source_path.strip().replace("\\", "/").strip("/"),
+                share_type=share_type,
+                description=description,
+                expires_at=expires_at,
+            )
+            session.add(link)
+            session.flush()
+            session.expunge(link)
+            return link
+
+    def get_by_token(self, token: str) -> PackageShareLink | None:
+        with self.database.session() as session:
+            link = session.scalar(
+                select(PackageShareLink).where(PackageShareLink.token == token)
+            )
+            if link is None:
+                return None
+            session.expunge(link)
+            return link
+
+    def list_by_owner(self, owner_id: str) -> list[PackageShareLink]:
+        with self.database.session() as session:
+            rows = list(
+                session.scalars(
+                    select(PackageShareLink)
+                    .where(PackageShareLink.owner_id == owner_id)
+                    .order_by(PackageShareLink.created_at.desc())
+                )
+            )
+            for row in rows:
+                session.expunge(row)
+            return rows
+
+    def delete_by_token(self, token: str, owner_id: str | None = None) -> bool:
+        with self.database.session() as session:
+            query = delete(PackageShareLink).where(PackageShareLink.token == token)
+            if owner_id is not None:
+                query = query.where(PackageShareLink.owner_id == owner_id)
+            res = session.execute(query)
+            return (res.rowcount or 0) > 0
+

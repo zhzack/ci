@@ -13,6 +13,9 @@ import { useMenuStore } from '@/store/menu';
 import { useAuthStore } from '@/store/auth';
 import { logout } from '@/api/auth';
 
+import { ForcePasswordChangeModal } from '@/components/ForcePasswordChangeModal';
+import { FloatingUploadManager } from '@/components/FloatingUploadManager';
+
 const { Header, Sider, Content, Footer } = Layout;
 
 export function MainLayout(): React.JSX.Element {
@@ -41,6 +44,8 @@ export function MainLayout(): React.JSX.Element {
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
+      <ForcePasswordChangeModal />
+      <FloatingUploadManager />
       <Sider
         theme="dark"
         collapsible
@@ -129,3 +134,4 @@ export function MainLayout(): React.JSX.Element {
     </Layout>
   );
 }
+

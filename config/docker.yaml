@@ -59,3 +59,16 @@ sources:
   max_archive_bytes: 104857600
   max_extracted_bytes: 524288000
   max_archive_files: 10000
+
+packages:
+  driver: ${PACKAGE_STORAGE_DRIVER:-local}
+  local:
+    root: /app/data/packages
+  s3:
+    endpoint_url: null
+    bucket_name: mini-pipeline
+    access_key: null
+    secret_key: null
+    region: us-east-1
+
+

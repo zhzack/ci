@@ -15,6 +15,7 @@ from mini_pipeline.database.account_repositories import (
     AuditRepository,
     GrantRepository,
     MachineRepository,
+    PackageShareRepository,
     SessionRepository,
     TeamRepository,
     UserRepository,
@@ -40,6 +41,7 @@ from mini_pipeline.source.http import HttpSource
 from mini_pipeline.source.registry import SourceRegistry
 from mini_pipeline.source.toolhub import ToolhubSource
 from mini_pipeline.source.upload import UploadSource
+from mini_pipeline.storage.service import PackageStorageService
 
 
 @dataclass
@@ -68,6 +70,8 @@ class Services:
     grants: GrantRepository
     machine_repository: MachineRepository
     ssh_executor: SshExecutor
+    package_storage: PackageStorageService
+    package_shares: PackageShareRepository
 
     @classmethod
     def build(cls, settings: Settings) -> "Services":
@@ -84,6 +88,7 @@ class Services:
         grants = GrantRepository(database)
         machine_repository = MachineRepository(database)
         audit_repository = AuditRepository(database)
+        package_shares = PackageShareRepository(database)
 
         # Crash recovery: runs left pending/running by a previous process
         # can never finish — mark them failed before accepting new work.
@@ -111,6 +116,20 @@ class Services:
         pipelines = PipelineService(
             pipeline_repository, plugin_repository=plugin_repository
         )
+        permissions = PermissionService(
+            grants=grants, teams=teams, settings=settings
+        )
+        account = AccountService(
+            users=users, sessions=sessions, settings=settings
+        )
+        package_storage = PackageStorageService(
+            settings=settings,
+            plugin_service=plugins,
+            shares=package_shares,
+            permissions=permissions,
+            grants=grants,
+            teams=teams,
+        )
 
         artifacts = LocalArtifactStore(settings.storage, run_repository)
         runtimes = RuntimeRegistry()
@@ -134,12 +153,6 @@ class Services:
             artifact_store=artifacts,
         )
         events = EventBus()
-        permissions = PermissionService(
-            grants=grants, teams=teams, settings=settings
-        )
-        account = AccountService(
-            users=users, sessions=sessions, settings=settings
-        )
         machines = MachineService(
             machines=machine_repository,
             permissions=permissions,
@@ -193,6 +206,8 @@ class Services:
             grants=grants,
             machine_repository=machine_repository,
             ssh_executor=ssh_executor,
+            package_storage=package_storage,
+            package_shares=package_shares,
         )
 
     def close(self) -> None:

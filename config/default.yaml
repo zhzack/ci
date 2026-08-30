@@ -72,3 +72,17 @@ sources:
   max_archive_bytes: 104857600
   max_extracted_bytes: 524288000
   max_archive_files: 10000
+
+packages:
+  # Storage driver for user uploaded packages, plugins, scripts, and assets.
+  # Options: local | s3
+  driver: local
+  local:
+    root: ./data/packages
+  s3:
+    endpoint_url: null
+    bucket_name: mini-pipeline
+    access_key: null
+    secret_key: null
+    region: us-east-1
+

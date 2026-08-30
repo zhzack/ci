@@ -34,6 +34,9 @@ def _extract_token(request: Request) -> str | None:
         scheme, _, value = header.partition(" ")
         if scheme.lower() == "bearer" and value.strip():
             return value.strip()
+    token_param = request.query_params.get("token")
+    if token_param and token_param.strip():
+        return token_param.strip()
     return request.headers.get("x-api-key")
 
 

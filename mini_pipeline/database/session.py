@@ -35,13 +35,45 @@ class Database:
         cursor.close()
 
     def create_schema(self) -> None:
-        """Create any missing tables.
+        """Create any missing tables and ensure backward-compatible column migrations.
 
-        Schema *evolution* is owned by Alembic (``alembic upgrade head``);
-        this only bootstraps fresh databases so `pip install` + run works
-        with zero setup. It never mutates or drops existing tables.
+        This bootstraps fresh databases and safely patches new columns on existing
+        databases so zero manual migrations are needed across upgrades.
         """
         Base.metadata.create_all(self.engine)
+        self._ensure_compatible_columns()
+
+    def _ensure_compatible_columns(self) -> None:
+        """Ensure newly added model columns exist in already initialized databases."""
+        try:
+            with self.engine.begin() as conn:
+                is_pg = self.engine.dialect.name == "postgresql"
+                is_sqlite = self.engine.dialect.name == "sqlite"
+
+                if is_pg:
+                    conn.exec_driver_sql(
+                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255);"
+                    )
+                    conn.exec_driver_sql(
+                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+                        "must_change_password BOOLEAN NOT NULL DEFAULT FALSE;"
+                    )
+                elif is_sqlite:
+                    cursor = conn.connection.cursor()
+                    try:
+                        cursor.execute("SELECT email FROM users LIMIT 1")
+                    except Exception:
+                        cursor.execute("ALTER TABLE users ADD COLUMN email VARCHAR(255)")
+                    try:
+                        cursor.execute("SELECT must_change_password FROM users LIMIT 1")
+                    except Exception:
+                        cursor.execute(
+                            "ALTER TABLE users ADD COLUMN must_change_password "
+                            "BOOLEAN NOT NULL DEFAULT 0"
+                        )
+                    cursor.close()
+        except Exception:
+            pass
 
     @contextmanager
     def session(self) -> Iterator[Session]:

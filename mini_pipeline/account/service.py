@@ -34,6 +34,9 @@ class Principal:
     name: str
     role: str  # admin | user | machine
     user_id: str | None = None
+    username: str | None = None
+    email: str | None = None
+    must_change_password: bool = False
     machine_id: str | None = None
     is_anonymous: bool = False
 
@@ -71,7 +74,12 @@ class AccountService:
         return self.settings.auth.registration_enabled
 
     def register(
-        self, *, username: str, password: str, display_name: str = ""
+        self,
+        *,
+        username: str,
+        password: str,
+        display_name: str = "",
+        email: str | None = None,
     ) -> tuple[User, str]:
         """Create a user and return (user, raw session token).
 
@@ -88,9 +96,34 @@ class AccountService:
             username=username,
             password_hash=hash_password(password),
             display_name=display_name,
+            email=email,
             role=role,
+            must_change_password=False,
         )
         return user, self._new_session(user)
+
+    def admin_create_user(
+        self,
+        *,
+        username: str,
+        password: str,
+        display_name: str = "",
+        email: str | None = None,
+        role: str = "user",
+        must_change_password: bool = True,
+    ) -> User:
+        """Create a user by admin with optional initial forced password change."""
+        username = self._normalize_username(username)
+        if len(password) < 8:
+            raise ValidationError("Password must be at least 8 characters")
+        return self.users.create(
+            username=username,
+            password_hash=hash_password(password),
+            display_name=display_name,
+            email=email,
+            role=role,
+            must_change_password=must_change_password,
+        )
 
     def login(self, *, username: str, password: str) -> tuple[User, str]:
         username = self._normalize_username(username)
@@ -110,6 +143,42 @@ class AccountService:
             name=user.display_name or user.username,
             role=user.role,
             user_id=user.id,
+            username=user.username,
+            email=user.email,
+            must_change_password=user.must_change_password,
+        )
+
+    def change_password(
+        self,
+        *,
+        user_id: str,
+        old_password: str | None = None,
+        new_password: str,
+        is_admin_override: bool = False,
+        must_change_password: bool = False,
+    ) -> None:
+        """Change user password. If user is changing own password, verify old password."""
+        user = self.users.get(user_id)
+        if not is_admin_override:
+            if not old_password or not verify_password(old_password, user.password_hash):
+                raise AuthFailedError("Current password verification failed")
+        if len(new_password) < 8:
+            raise ValidationError("New password must be at least 8 characters")
+
+        new_hash = hash_password(new_password)
+        self.users.set_password(
+            user_id, new_hash, must_change_password=must_change_password
+        )
+
+    def update_profile(
+        self,
+        *,
+        user_id: str,
+        display_name: str | None = None,
+        email: str | None = None,
+    ) -> User:
+        return self.users.update_profile(
+            user_id, display_name=display_name, email=email
         )
 
     def logout(self, raw_token: str) -> None:
@@ -351,6 +420,44 @@ class PermissionService:
             if permission == "viewer" and grant.permission == "viewer":
                 return True
         return False
+
+    def package_can_access(
+        self, user: Principal, path: str, write: bool = False
+    ) -> bool:
+        """Check if user has access to package path via zone or grant."""
+        if user.is_admin:
+            return True
+        clean = path.strip().replace("\\", "/").strip("/")
+        if not clean:
+            return not write
+        parts = clean.split("/")
+        top_zone = parts[0]
+        if top_zone in {"shared", "plugins"}:
+            return True
+        if top_zone == "artifacts":
+            return not write
+
+        user_name = user.username or user.name
+        if top_zone == "personal":
+            if len(parts) >= 2 and parts[1] == user_name:
+                return True
+
+        # Check directory grants: exact match or parent directory grant
+        required_perm = "operator" if write else "viewer"
+        if user.user_id is None:
+            return False
+        team_ids = {t.id for t in self.teams.teams_of_user(user.user_id)}
+        for grant in self.grants.list_for_grantee(
+            user_id=user.user_id, team_ids=team_ids, resource_type="package"
+        ):
+            grant_path = grant.resource_id.strip().replace("\\", "/").strip("/")
+            if clean == grant_path or clean.startswith(f"{grant_path}/"):
+                if grant.permission == "operator":
+                    return True
+                if required_perm == "viewer" and grant.permission == "viewer":
+                    return True
+        return False
+
 
     def grants_for(
         self, user: Principal, resource_type: str, resource_id: str

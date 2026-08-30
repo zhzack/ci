@@ -29,6 +29,8 @@ def build_settings(tmp_path, **overrides) -> Settings:
     from mini_pipeline.core.config import (
         AppConfig,
         DatabaseConfig,
+        LocalPackageStorageConfig,
+        PackageStorageConfig,
         SourceConfig,
         StorageConfig,
     )
@@ -52,6 +54,9 @@ def build_settings(tmp_path, **overrides) -> Settings:
             max_archive_bytes=1024 * 1024,
             max_extracted_bytes=2 * 1024 * 1024,
             max_archive_files=100,
+        ),
+        packages=PackageStorageConfig(
+            local=LocalPackageStorageConfig(root=tmp_path / "packages")
         ),
     )
     kwargs.update(overrides)

@@ -33,6 +33,20 @@ class StatusRequest(BaseModel):
     status: str = Field(pattern="^(active|disabled)$")
 
 
+class AdminCreateUserRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=64)
+    password: str = Field(min_length=8)
+    display_name: str = ""
+    email: str | None = None
+    role: str = Field(default="user", pattern="^(admin|user)$")
+    must_change_password: bool = True
+
+
+class AdminResetPasswordRequest(BaseModel):
+    new_password: str = Field(min_length=8)
+    must_change_password: bool = True
+
+
 @router.get("/users")
 def list_users(
     principal: AdminPrincipal,
@@ -44,12 +58,80 @@ def list_users(
             "id": u.id,
             "username": u.username,
             "display_name": u.display_name,
+            "email": u.email,
             "role": u.role,
             "status": u.status,
+            "must_change_password": getattr(u, "must_change_password", False),
             "created_at": u.created_at,
         }
         for u in services.users.list()
     ]
+
+
+@router.post("/users", status_code=201)
+def admin_create_user(
+    payload: AdminCreateUserRequest,
+    principal: AdminPrincipal,
+    services: Annotated[Services, Depends(get_services)],
+) -> dict[str, Any]:
+    user = services.account.admin_create_user(
+        username=payload.username,
+        password=payload.password,
+        display_name=payload.display_name,
+        email=payload.email,
+        role=payload.role,
+        must_change_password=payload.must_change_password,
+    )
+    # Ensure personal storage zone for newly created user
+    services.package_storage.ensure_user_zone(user.username)
+    services.audit.record(
+        principal,
+        "user.create",
+        resource_type="user",
+        resource_id=user.id,
+        detail={
+            "username": user.username,
+            "role": user.role,
+            "email": user.email,
+            "must_change_password": user.must_change_password,
+        },
+    )
+    return {
+        "id": user.id,
+        "username": user.username,
+        "display_name": user.display_name,
+        "email": user.email,
+        "role": user.role,
+        "status": user.status,
+        "must_change_password": user.must_change_password,
+        "created_at": user.created_at,
+    }
+
+
+@router.post("/users/{user_id}/reset-password")
+def admin_reset_password(
+    user_id: str,
+    payload: AdminResetPasswordRequest,
+    principal: AdminPrincipal,
+    services: Annotated[Services, Depends(get_services)],
+) -> dict[str, str]:
+    user = services.users.get(user_id)
+    services.account.change_password(
+        user_id=user_id,
+        new_password=payload.new_password,
+        is_admin_override=True,
+        must_change_password=payload.must_change_password,
+    )
+    services.sessions.revoke_user_sessions(user_id)
+    services.audit.record(
+        principal,
+        "user.reset_password",
+        resource_type="user",
+        resource_id=user_id,
+        detail={"must_change_password": payload.must_change_password},
+    )
+    return {"message": f"Password for user {user.username} reset successfully"}
+
 
 
 @router.patch("/users/{user_id}/role")

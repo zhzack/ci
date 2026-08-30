@@ -27,6 +27,7 @@ class RegisterRequest(BaseModel):
     username: str
     password: str
     display_name: str = ""
+    email: str | None = None
 
 
 class LoginRequest(BaseModel):
@@ -34,12 +35,24 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class ChangePasswordRequest(BaseModel):
+    old_password: str | None = None
+    new_password: str = Field(min_length=8, description="New password at least 8 characters")
+
+
+class UpdateProfileRequest(BaseModel):
+    display_name: str | None = None
+    email: str | None = None
+
+
 class UserOut(BaseModel):
     id: str
     username: str
     display_name: str
+    email: str | None = None
     role: str
     status: str
+    must_change_password: bool = False
     created_at: datetime
 
     @classmethod
@@ -48,8 +61,10 @@ class UserOut(BaseModel):
             id=user.id,
             username=user.username,
             display_name=user.display_name,
+            email=user.email,
             role=user.role,
             status=user.status,
+            must_change_password=getattr(user, "must_change_password", False),
             created_at=user.created_at,
         )
 
@@ -81,6 +96,7 @@ def register(
         username=payload.username,
         password=payload.password,
         display_name=payload.display_name,
+        email=payload.email,
     )
     return AuthResponse(token=token, user=UserOut.of(user))
 
@@ -119,11 +135,51 @@ def me(
 ) -> UserOut:
     if principal.user_id is None:
         return UserOut(
-            id="anonymous", username="anonymous", display_name="Anonymous (auth disabled)",
-            role="admin", status="active",
+            id="anonymous",
+            username="anonymous",
+            display_name="Anonymous (auth disabled)",
+            email=None,
+            role="admin",
+            status="active",
+            must_change_password=False,
             created_at=datetime.utcnow(),
         )
     return UserOut.of(services.users.get(principal.user_id))
+
+
+@router.patch("/auth/me", response_model=UserOut)
+def update_my_profile(
+    payload: UpdateProfileRequest,
+    principal: PrincipalDep,
+    services: Annotated[Services, Depends(get_services)],
+) -> UserOut:
+    if principal.user_id is None:
+        raise PermissionDeniedError("Cannot update anonymous profile")
+    user = services.account.update_profile(
+        user_id=principal.user_id,
+        display_name=payload.display_name,
+        email=payload.email,
+    )
+    return UserOut.of(user)
+
+
+@router.post("/auth/change-password")
+def change_my_password(
+    payload: ChangePasswordRequest,
+    principal: PrincipalDep,
+    services: Annotated[Services, Depends(get_services)],
+) -> dict[str, str]:
+    if principal.user_id is None:
+        raise PermissionDeniedError("Cannot change password for anonymous account")
+    services.account.change_password(
+        user_id=principal.user_id,
+        old_password=payload.old_password,
+        new_password=payload.new_password,
+        is_admin_override=False,
+        must_change_password=False,
+    )
+    return {"message": "Password changed successfully"}
+
 
 
 # ---------------------------------------------------------------------------

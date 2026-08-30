@@ -26,6 +26,9 @@ const MachinePage = lazy(() => import('@/pages/machine/MachinesPage'));
 const StorePage = lazy(() => import('@/pages/store/StorePage'));
 const AdminPage = lazy(() => import('@/pages/admin/AdminPage'));
 const ArtifactPage = lazy(() => import('@/pages/artifact/ArtifactPage'));
+const ShareImportPage = lazy(() =>
+  import('@/pages/artifact/ShareImportPage').then((m) => ({ default: m.ShareImportPage })),
+);
 const SettingPage = lazy(() => import('@/pages/setting/SettingPage'));
 
 const withSuspense = (element: React.JSX.Element): React.JSX.Element => (
@@ -37,6 +40,7 @@ const breadcrumb = (label: string) => ({ breadcrumb: label });
 const routes: RouteObject[] = [
   { path: '/login', element: withSuspense(<LoginPage />) },
   { path: '/register', element: withSuspense(<RegisterPage />) },
+  { path: '/share/:token', element: withSuspense(<ShareImportPage />) },
   {
     path: '/',
     element: (

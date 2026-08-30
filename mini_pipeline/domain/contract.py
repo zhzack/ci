@@ -36,6 +36,8 @@ class ResourceSource(str):
     URL = "url"  # downloaded by Executor
     ARTIFACT = "artifact"  # copied from upstream step's output
     GENERATED = "generated"  # platform-provided (task_id, workspace, etc.)
+    PACKAGE = "package"  # resolved from package storage (Package Hub)
+
 
 
 # ---------------------------------------------------------------------------

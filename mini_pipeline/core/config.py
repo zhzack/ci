@@ -11,7 +11,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from mini_pipeline.domain.exceptions import ConfigurationError
 
-_ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 
 class AppConfig(BaseModel):
@@ -120,6 +120,24 @@ class SourceConfig(BaseModel):
     max_archive_files: int = Field(default=10_000, ge=1)
 
 
+class LocalPackageStorageConfig(BaseModel):
+    root: Path = Path("./data/packages")
+
+
+class S3PackageStorageConfig(BaseModel):
+    endpoint_url: Optional[str] = None
+    bucket_name: str = "mini-pipeline"
+    access_key: Optional[str] = None
+    secret_key: Optional[str] = None
+    region: str = "us-east-1"
+
+
+class PackageStorageConfig(BaseModel):
+    driver: str = Field(default="local", pattern="^(local|s3)$")
+    local: LocalPackageStorageConfig = Field(default_factory=LocalPackageStorageConfig)
+    s3: S3PackageStorageConfig = Field(default_factory=S3PackageStorageConfig)
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -134,10 +152,13 @@ class Settings(BaseModel):
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     retention: RetentionConfig = Field(default_factory=RetentionConfig)
     runner: RunnerConfig = Field(default_factory=RunnerConfig)
+    packages: PackageStorageConfig = Field(default_factory=PackageStorageConfig)
 
     def prepare_directories(self) -> None:
         for directory in self.storage.directories():
             directory.mkdir(parents=True, exist_ok=True)
+        if self.packages.driver == "local":
+            self.packages.local.root.mkdir(parents=True, exist_ok=True)
 
 
 def _expand_environment(value: Any) -> Any:
@@ -150,25 +171,35 @@ def _expand_environment(value: Any) -> Any:
 
     def replace(match: re.Match) -> str:
         variable = match.group(1)
-        try:
+        default = match.group(2)
+        if variable in os.environ:
             return os.environ[variable]
-        except KeyError as exc:
-            raise ConfigurationError(
-                f"Required environment variable {variable!r} is not set"
-            ) from exc
+        if default is not None:
+            return default
+        raise ConfigurationError(
+            f"Required environment variable {variable!r} is not set"
+        )
 
     return _ENV_PATTERN.sub(replace, value)
 
 
 def _resolve_storage_paths(data: dict[str, Any], working_directory: Path) -> None:
     storage = data.get("storage")
-    if not isinstance(storage, dict):
-        return
-    for key, value in storage.items():
-        path = Path(value).expanduser()
-        if not path.is_absolute():
-            path = working_directory / path
-        storage[key] = str(path.resolve())
+    if isinstance(storage, dict):
+        for key, value in storage.items():
+            path = Path(value).expanduser()
+            if not path.is_absolute():
+                path = working_directory / path
+            storage[key] = str(path.resolve())
+
+    packages = data.get("packages")
+    if isinstance(packages, dict):
+        local = packages.get("local")
+        if isinstance(local, dict) and "root" in local:
+            path = Path(local["root"]).expanduser()
+            if not path.is_absolute():
+                path = working_directory / path
+            local["root"] = str(path.resolve())
 
 
 def load_settings(

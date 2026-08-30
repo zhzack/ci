@@ -7,8 +7,10 @@
 | 当前版本 | `0.3.0`（变更明细见 [CHANGELOG](CHANGELOG.md)） |
 | 后端 | Python 3.9+ · FastAPI · SQLAlchemy 2 · Pydantic v2 |
 | 前端 | React 19 · Vite · TypeScript strict · Ant Design 5 |
-| 存储 | SQLite（零配置开发）/ PostgreSQL（Docker Compose 生产） |
-| 多用户 | 注册/登录、资源归属与共享、管理员机/个人机（runner agent）、插件商店 |
+| 存储 | SQLite（零配置开发）/ PostgreSQL 16（Docker Compose 生产） |
+| 用户与团队 | 账户注册/登录（首位用户自动为 Admin）、团队（Teams）管理、资源团队级共享 |
+| 远程执行 | 多机网络：Pull 模式 Runner Agent（一键安装）+ SSH 直连免 Agent 模式 |
+| 部署体系 | 本地运行 / Docker 双环境（开发热重载 + 生产 Nginx）/ 非源码离线发布 |
 
 Mini Pipeline 把「跑一条流水线」拆成三个正交的部分：
 
@@ -47,10 +49,24 @@ Mini Pipeline 把「跑一条流水线」拆成三个正交的部分：
 - `GET /api/runs/{id}/events`：run/task 状态 SSE 事件流（事件总线直推 + 周期性 DB 快照兜底，终态后服务端关流）；
 - `GET /api/runs/{id}/tasks/{step}/log/stream`：任务日志 SSE tail 流（`log` + `end` 事件）。
 
-**平台**
+**分布式远程执行**
+
+- **双模式调度**：
+  - **Pull 模式 Runner Agent**：基于出站 HTTP 长轮询原子认领任务，支持 15 秒心跳续租与孤儿租约收割（`LeaseReaper`）；
+  - **Push 模式 SSH 直连**：免装 Agent，通过 Paramiko SFTP 打包下发与远程命令执行，支持机器实时连通性探测；
+- **单指令自适应部署（`/install`）**：针对 Linux Shell 与 Windows PowerShell 自动下发单行安装脚本，带 Token 自动后台拉起；
+- **机器分类管理**：个人机（个人接入/共享）与管理员机池（平台持有分配，机密凭证 Fernet 对称加密）。
+
+**多用户与团队协同**
+
+- **动态用户与认证体系**：密码 `scrypt` 加盐哈希安全存储，**系统首位注册用户自动成为超级管理员**；
+- **团队（Teams）全功能管理**：团队创建、成员管理，支持将流水线与机器批量共享给指定团队或个人（viewer / operator 权限细分）；
+- **操作审计**：关键变更与管理操作统一沉淀 `audit_logs` 审计追踪。
+
+**平台底座**
 
 - 插件注册五通道：Git / HTTP ZIP / 上传 ZIP / 文件夹上传 / toolhub 制品仓；
-- 鉴权：API token（Bearer / X-API-Key）+ `admin` / `reader` 角色，debug 端点仅 admin；
+- 鉴权：动态 Session Token（`mpt_...`）+ 静态 API Token（Bearer / X-API-Key）+ `admin` / `reader` 角色；
 - 可观测：`/health`（liveness）、`/health/ready`（readiness）、`/health/version`、`/metrics`（Prometheus）、text/JSON 结构化日志 + 全链路 RequestID；
 - API 工程化：统一分页信封、写方法滑动窗口限流、CORS、GZip、OpenAPI tag 元数据；
 - 可靠性：Alembic 迁移、启动孤儿收割（崩溃恢复）、保留策略 GC（`mini-pipeline-gc`）；
@@ -110,6 +126,14 @@ docker compose -f docker-compose.dev.yml up -d --build
 # 后端 API 地址：  http://localhost:8000
 # 数据库直连调试：localhost:5432
 ```
+
+#### 3. 非源码生产交付（面向运维与无源码部署）
+交付给运维人员时无需提供业务源码，可直接交付预构建镜像包或私有镜像仓库拉取：
+- **研发一键打包产物包**：
+  ```bash
+  python scripts/package_release.py --version 0.3.0 --include-images
+  ```
+- **运维一键单机/多机部署**：使用 `deploy/` 下的纯镜像编排与脚本，详见 [非源码部署与运维指南](docs/deploy/非源码部署指南.md)。
 
 生产部署与运维操作见 [docs/operations.md](docs/operations.md)。
 
@@ -261,10 +285,16 @@ curl -X POST http://127.0.0.1:8000/api/runs/$RUN_ID/branches \
 
 ## 鉴权与安全
 
-`auth.enabled: false`（开发默认）：所有请求视为匿名 admin。
+平台采用 **动态用户会话（Session Token）** 与 **静态密钥（API Token）** 双轨安全认证：
 
-`auth.enabled: true`：
+### 1. 动态用户体系
+- **首位用户 Bootstrap**：全新安装的系统中，**首个注册的用户自动成为超级管理员（Admin）**，拥有平台所有管理特权；
+- **密码安全哈希**：基于 `scrypt` 算法（N=16384, r=8, p=1）+ 随机盐哈希，数据库绝不落地明文；
+- **会话机制**：登录成功下发 `mpt_...` 会话令牌（数据库仅存储 SHA-256 哈希），有效期由 `auth.session_ttl_hours`（默认 72h）控制；
+- **注册保护**：生产环境下管理员完成初始化后，可在配置中将 `auth.registration_enabled` 设为 `false` 关闭前台自由注册。
 
+### 2. 静态 API Token（供自动化脚本调用）
+配置在 YAML 中的静态密钥（从环境变量读取）：
 ```yaml
 auth:
   enabled: true
@@ -272,12 +302,17 @@ auth:
     - {token: ${MINI_PIPELINE_ADMIN_TOKEN}, name: admin, role: admin}
     - {token: ${MINI_PIPELINE_READER_TOKEN}, name: ci, role: reader}
 ```
+- 请求头携带 `Authorization: Bearer <token>` 或 `X-API-Key: <token>`，常数时间比对；
+- `reader` 只能调用只读接口；`admin` 拥有完全控制权（`/api/debug/**`、`/api/admin/**` 仅 admin 可达）。
 
-- 请求携带 `Authorization: Bearer <token>` 或 `X-API-Key: <token>`，token 常数时间比对；
-- `reader` 只能 GET/HEAD；`admin` 可执行全部操作；`/api/debug/**` 始终要求 admin；
-- 401/403 有明确区分，`WWW-Authenticate: Bearer` 符合标准语义；
-- `security.rate_limit_per_minute` 对 POST/PUT/PATCH/DELETE 按客户端 IP 滑动窗口限流（429 + `Retry-After`），GET 不限；
-- 每个请求注入 16 位 `X-Request-ID`（可由网关注入），响应头原样回传，贯穿访问日志与错误响应。
+### 3. 团队与资源共享（Grants）
+- 流水线、插件与机器均具备属主（`owner_id`），他人资源默认对未授权者返回 404 防止存在性探测；
+- 属主与管理员可通过授权接口（`POST /api/grants`）将资源授权给特定用户（`grantee_type: "user"`）或团队（`grantee_type: "team"`），支持 `viewer` 与 `operator` 权限粒度。
+
+### 4. 机密保护与接口限流
+- **凭证静态加密**：管理员机器的 SSH/Agent 密码通过 Fernet（`security.secret_key`）对称加密存储，普通用户跑任务无法解密明文；
+- **滑动窗口限流**：`security.rate_limit_per_minute` 对写操作按 IP 限流（429 + `Retry-After`）；
+- **追踪审计**：每个请求注入 16 位 `X-Request-ID`，关键 mutating 操作写入 `audit_logs` 审计表。
 
 ## REST API 摘要
 
@@ -393,27 +428,30 @@ cd frontend && npm run typecheck && npm run lint && npm run build
 ```text
 ci/
 ├── mini_pipeline/           # FastAPI 后端
-│   ├── api/                 # 路由、鉴权、分页信封
+│   ├── account/             # 账户与权限核心（密码哈希、Session、Grants、Teams、机器凭证加密）
+│   ├── api/                 # 路由、鉴权、分页信封（流水线/机器/团队/插件）
 │   ├── artifact/            # LocalArtifactStore（ETag/304）
 │   ├── core/                # 配置、Services 装配、EventBus/取消注册表、日志
-│   ├── database/            # ORM 模型、仓储（分页/收割）
+│   ├── database/            # ORM 模型、仓储（分页/收割/团队/机器/审计）
 │   ├── domain/              # v2 资源契约、状态机、异常、Runtime 协议
 │   ├── executor/            # 任务执行、workspace 上下文、输出收集（含 v1 兼容）
 │   ├── maintenance/         # mini-pipeline-gc
 │   ├── pipeline/            # YAML schema、DAG、表达式、wiring 校验
 │   ├── plugin/              # manifest（v1 自动升级）与注册服务
+│   ├── runner/              # Pull 模式 Agent（长轮询、租约心跳、取消信号处理）
 │   ├── runtime/             # ProcessRunner 底座 + shell/python/node/executable
 │   ├── scheduler/           # 引擎（取消/重试/事件）、双线程池、恢复
-│   ├── server/              # app 工厂、中间件、指标、可观测端点
+│   ├── server/              # app 工厂、中间件、指标、单指令安装器（/install）
 │   └── source/              # git/http/upload/toolhub 来源 + 安全解压
-├── frontend/                # React 19 管理后台
+├── frontend/                # React 19 管理后台（Vite + AntD 5）
+├── deploy/                  # 生产环境非源码交付套件（纯镜像 Compose + 一键部署脚本）
 ├── examples/                # 17 个示例插件 + 4 个示例 Pipeline
 ├── migrations/              # Alembic 迁移
 ├── config/                  # default.yaml（开发）/ docker.yaml（生产）
 ├── toolhub/                 # 独立的 shell 工具分发系统（后端对接其 index.json）
 ├── tests/                   # unit/ + integration/
-├── docs/                    # architecture / operations / roadmap / frontend
-└── scripts/                 # start.sh、check.sh
+├── docs/                    # 架构、运维、路线图、非源码部署指南
+└── scripts/                 # start.sh、check.sh、package_release.py（发布打包脚本）
 ```
 
 ## 文档索引
@@ -422,7 +460,8 @@ ci/
 | --- | --- |
 | [docs/architecture.md](docs/architecture.md) | 分层架构、运行时底座、横切面设计 |
 | [docs/operations.md](docs/operations.md) | 运维手册：探针/指标/日志/GC/恢复/排障 |
-| [docs/roadmap.md](docs/roadmap.md) | 演进计划：Docker Runtime → S3 产物库 → 持久队列/分布式 Runner |
+| [docs/deploy/非源码部署指南.md](docs/deploy/非源码部署指南.md) | **非源码生产发布、单机一键安装与多机分布式部署指南** |
+| [docs/roadmap.md](docs/roadmap.md) | 演进计划：Docker Runtime → S3 产物库 → 内容寻址缓存 |
 | [docs/design-multi-runner.md](docs/design-multi-runner.md) | 多用户/机器注册/远程执行设计 |
 | [CHANGELOG.md](CHANGELOG.md) | 版本变更（含 BREAKING 与升级指南） |
 | [docs/frontend.md](docs/frontend.md) | 前端分层规范 |

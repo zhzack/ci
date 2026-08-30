@@ -57,6 +57,8 @@ def resolve_inputs(
     params: dict[str, Any],
     dependencies: dict[str, Any],
     uploads: dict[str, Path] | None = None,
+    packages_dir: Path | None = None,
+    package_storage: Any | None = None,
 ) -> dict[str, Any]:
     """Copy / write every declared input to its target location.
 
@@ -155,6 +157,27 @@ def resolve_inputs(
                     )
                     if src_path and Path(str(src_path)).exists():
                         shutil.copy2(str(src_path), target)
+            resolved[resource.name] = str(target)
+        elif source == ResourceSource.PACKAGE:
+            pkg_path = params.get(resource.name) or resource.from_ or resource.default
+            if pkg_path:
+                clean_pkg = str(pkg_path).strip().replace("\\", "/").strip("/")
+                if package_storage is not None:
+                    try:
+                        stream, _, _, _ = package_storage.get_file(clean_pkg)
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        with target.open("wb") as out:
+                            shutil.copyfileobj(stream, out)
+                    except Exception:
+                        pass
+                elif packages_dir is not None:
+                    src = (packages_dir / clean_pkg).resolve()
+                    if src.exists() and src.is_relative_to(packages_dir.resolve()):
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        if src.is_dir():
+                            shutil.copytree(src, target, dirs_exist_ok=True)
+                        else:
+                            shutil.copy2(src, target)
             resolved[resource.name] = str(target)
         elif source == ResourceSource.GENERATED:
             generated = {

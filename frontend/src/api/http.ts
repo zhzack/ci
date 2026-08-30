@@ -17,11 +17,13 @@ export function getModalApi(): Omit<ModalStaticFunctions, 'warn'> | null {
   return modalApi;
 }
 
+import type { CurrentUser } from './auth';
+
 export const AUTH_STORAGE_KEY = 'mini-pipeline-auth';
 
 export type StoredAuth = {
   token: string;
-  user: { id: string; username: string; display_name: string; role: string };
+  user: CurrentUser;
 };
 
 export function loadStoredAuth(): StoredAuth | null {
