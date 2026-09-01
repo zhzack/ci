@@ -46,14 +46,18 @@ function loadInitialLayout(): LayoutNode {
       const parsed = deserializeLayout(saved);
       if (parsed) return parsed;
     }
-  } catch {}
+  } catch {
+    // Ignore localStorage read errors
+  }
   return DEFAULT_WORKBENCH_LAYOUT;
 }
 
 function persistLayout(layout: LayoutNode) {
   try {
     localStorage.setItem(STORAGE_KEY, serializeLayout(layout));
-  } catch {}
+  } catch {
+    // Ignore localStorage write errors
+  }
 }
 
 export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
   Button,
@@ -51,7 +51,7 @@ export function FileEditorPane({
   const [content, setContent] = useState('');
   const [initialContent, setInitialContent] = useState('');
 
-  const loadContent = () => {
+  const loadContent = useCallback(() => {
     if (!machineId || !filePath) return;
     setLoading(true);
     readMachineFile(machineId, filePath)
@@ -60,22 +60,23 @@ export function FileEditorPane({
         setContent(res.content);
         setInitialContent(res.content);
       })
-      .catch((err) => {
+      .catch((err: unknown) => {
+        const errorMsg = err instanceof Error ? err.message : '读取文件失败';
         setFileData({
           path: filePath,
           content: '',
           size_bytes: 0,
           is_text: false,
           encoding: '',
-          error: err?.message || '读取文件失败',
+          error: errorMsg,
         });
       })
       .finally(() => setLoading(false));
-  };
+  }, [machineId, filePath]);
 
   useEffect(() => {
     loadContent();
-  }, [machineId, filePath]);
+  }, [loadContent]);
 
   const isDirty = content !== initialContent;
 
@@ -87,8 +88,9 @@ export function FileEditorPane({
       setInitialContent(content);
       antdMessage.success(`文件 "${filePath.split('/').pop()}" 保存成功`);
       onSaved?.();
-    } catch (err: any) {
-      antdMessage.error(`保存失败: ${err?.message || '未知错误'}`);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : '未知错误';
+      antdMessage.error(`保存失败: ${message}`);
     } finally {
       setSaving(false);
     }

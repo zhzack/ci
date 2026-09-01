@@ -10,7 +10,6 @@ works unchanged regardless of the configured backend.
 from __future__ import annotations
 
 import hashlib
-import io
 import uuid
 from pathlib import Path
 from typing import BinaryIO

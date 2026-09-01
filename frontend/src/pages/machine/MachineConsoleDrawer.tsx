@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Button,
   Card,
@@ -197,7 +197,9 @@ export function MachineConsoleDrawer({
       if (saved) {
         return deserializeLayout(saved, ALL_CORE_TABS, DEFAULT_IDE_LAYOUT) ?? DEFAULT_IDE_LAYOUT;
       }
-    } catch {}
+    } catch {
+      // Ignore localStorage read errors
+    }
     return DEFAULT_IDE_LAYOUT;
   });
 
@@ -225,19 +227,19 @@ export function MachineConsoleDrawer({
   const [networkLoading, setNetworkLoading] = useState(false);
 
   // Persist layout to localStorage
-  const handleLayoutChange = (newLayout: LayoutNode) => {
+  const handleLayoutChange = useCallback((newLayout: LayoutNode) => {
     setLayout(newLayout);
     try {
       localStorage.setItem(storageKey, serializeLayout(newLayout));
-    } catch {}
-  };
+    } catch {
+      // Ignore localStorage write errors
+    }
+  }, [storageKey]);
 
   // Open file in Docking Editor Tab (in the same TabGroup as files by default)
-  const handleOpenFileEditor = (filePath: string) => {
+  const handleOpenFileEditor = useCallback((filePath: string) => {
     const tabId = `file:${filePath}`;
-    if (!openFiles.includes(filePath)) {
-      setOpenFiles((prev) => [...prev, filePath]);
-    }
+    setOpenFiles((prev) => (prev.includes(filePath) ? prev : [...prev, filePath]));
 
     const allTabs = getAllOpenTabIds(layout);
     if (allTabs.includes(tabId)) {
@@ -258,25 +260,26 @@ export function MachineConsoleDrawer({
       }
       antdMessage.info(`已打开文件标签: ${filePath.split('/').pop()}`);
     }
-  };
+  }, [layout, handleLayoutChange]);
 
   // Fetch Overview
-  const fetchOverview = async (silent = false) => {
+  const fetchOverview = useCallback(async (silent = false) => {
     if (!machineId) return;
     if (!silent) setOverviewLoading(true);
     setOverviewError(null);
     try {
       const data = await getMachineOverview(machineId);
       setOverview(data);
-    } catch (err: any) {
-      setOverviewError(err?.message || '获取机器监控信息失败');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '获取机器监控信息失败';
+      setOverviewError(msg);
     } finally {
       if (!silent) setOverviewLoading(false);
     }
-  };
+  }, [machineId]);
 
   // Fetch Directory
-  const fetchDirectory = async (targetPath: string) => {
+  const fetchDirectory = useCallback(async (targetPath: string) => {
     if (!machineId) return;
     setFilesLoading(true);
     try {
@@ -285,65 +288,70 @@ export function MachineConsoleDrawer({
       setCurrentPath(targetPath);
       setInputPath(targetPath);
       setSelectedFilePaths([]);
-    } catch (err: any) {
-      antdMessage.error(`读取目录 "${targetPath}" 失败: ${err?.message || '未知错误'}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '未知错误';
+      antdMessage.error(`读取目录 "${targetPath}" 失败: ${msg}`);
     } finally {
       setFilesLoading(false);
     }
-  };
+  }, [machineId]);
 
   // Fetch Processes
-  const fetchProcesses = async (silent = false) => {
+  const fetchProcesses = useCallback(async (silent = false) => {
     if (!machineId) return;
     if (!silent) setProcLoading(true);
     try {
       const data = await getMachineProcesses(machineId);
       setProcesses(data);
-    } catch (err: any) {
-      if (!silent) antdMessage.error(`获取进程列表失败: ${err?.message || '未知错误'}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '未知错误';
+      if (!silent) antdMessage.error(`获取进程列表失败: ${msg}`);
     } finally {
       if (!silent) setProcLoading(false);
     }
-  };
+  }, [machineId]);
 
   // Fetch Network
-  const fetchNetwork = async (silent = false) => {
+  const fetchNetwork = useCallback(async (silent = false) => {
     if (!machineId) return;
     if (!silent) setNetworkLoading(true);
     try {
       const data = await getMachineNetwork(machineId);
       setNetwork(data);
-    } catch (err: any) {
-      if (!silent) antdMessage.error(`获取网络状态失败: ${err?.message || '未知错误'}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '未知错误';
+      if (!silent) antdMessage.error(`获取网络状态失败: ${msg}`);
     } finally {
       if (!silent) setNetworkLoading(false);
     }
-  };
+  }, [machineId]);
 
   // Batch delete files
-  const handleBatchDelete = async () => {
+  const handleBatchDelete = useCallback(async () => {
     if (!machineId || selectedFilePaths.length === 0) return;
     try {
       await batchDeleteMachineFiles(machineId, selectedFilePaths);
       antdMessage.success(`已删除 ${selectedFilePaths.length} 个文件/文件夹`);
       void fetchDirectory(currentPath);
-    } catch (err: any) {
-      antdMessage.error(`删除失败: ${err?.message || '未知错误'}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '未知错误';
+      antdMessage.error(`删除失败: ${msg}`);
     }
-  };
+  }, [machineId, selectedFilePaths, fetchDirectory, currentPath]);
 
   // Upload file
-  const handleUploadFile = async (file: File) => {
+  const handleUploadFile = useCallback(async (file: File) => {
     if (!machineId) return false;
     try {
       await uploadMachineFile(machineId, currentPath, file);
       antdMessage.success(`文件 "${file.name}" 上传成功`);
       void fetchDirectory(currentPath);
-    } catch (err: any) {
-      antdMessage.error(`上传失败: ${err?.message || '未知错误'}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '未知错误';
+      antdMessage.error(`上传失败: ${msg}`);
     }
     return false;
-  };
+  }, [machineId, currentPath, fetchDirectory]);
 
   // On drawer open
   useEffect(() => {
@@ -353,7 +361,7 @@ export function MachineConsoleDrawer({
       void fetchProcesses();
       void fetchNetwork();
     }
-  }, [open, machineId]);
+  }, [open, machineId, fetchOverview, fetchDirectory, fetchProcesses, fetchNetwork, currentPath]);
 
   // Auto refresh polling
   useEffect(() => {
@@ -364,15 +372,15 @@ export function MachineConsoleDrawer({
       void fetchNetwork(true);
     }, 4000);
     return () => clearInterval(timer);
-  }, [open, machineId, autoRefresh]);
+  }, [open, machineId, autoRefresh, fetchOverview, fetchProcesses, fetchNetwork]);
 
-  const handleParentNav = () => {
+  const handleParentNav = useCallback(() => {
     if (currentPath === '/' || currentPath === '') return;
     const parts = currentPath.replace(/\\/g, '/').split('/').filter(Boolean);
     parts.pop();
     const parentPath = parts.length === 0 ? '/' : '/' + parts.join('/');
     void fetchDirectory(parentPath);
-  };
+  }, [currentPath, fetchDirectory]);
 
   // File sorting
   const sortedFiles = [...files].sort((a, b) => {
@@ -387,89 +395,92 @@ export function MachineConsoleDrawer({
   });
 
   // Columns for Directory table
-  const fileColumns: TableColumnsType<DirectoryEntry> = [
-    {
-      title: '名称',
-      dataIndex: 'name',
-      sorter: (a, b) => a.name.localeCompare(b.name),
-      render: (name: string, record) => (
-        <Space>
-          {record.is_dir ? (
-            <FolderOutlined style={{ color: '#faad14', fontSize: 16 }} />
-          ) : (
-            <FileTextOutlined style={{ color: '#1677ff', fontSize: 16 }} />
-          )}
-          {record.is_dir ? (
-            <Typography.Link
-              strong
-              onClick={() => fetchDirectory(record.path)}
-              style={{ cursor: 'pointer' }}
-            >
-              {name}
-            </Typography.Link>
-          ) : (
-            <Typography.Link strong onClick={() => handleOpenFileEditor(record.path)}>
-              {name}
-            </Typography.Link>
-          )}
-        </Space>
-      ),
-    },
-    {
-      title: '大小',
-      dataIndex: 'size_bytes',
-      width: 90,
-      sorter: (a, b) => a.size_bytes - b.size_bytes,
-      render: (bytes: number, record) =>
-        record.is_dir ? <Typography.Text type="secondary">-</Typography.Text> : formatBytes(bytes),
-    },
-    {
-      title: '权限',
-      dataIndex: 'permissions',
-      width: 80,
-      sorter: (a, b) => a.permissions.localeCompare(b.permissions),
-      render: (p: string) => <Tag style={{ fontFamily: 'monospace' }}>{p}</Tag>,
-    },
-    {
-      title: '修改时间',
-      dataIndex: 'modified_at',
-      width: 150,
-      sorter: (a, b) => a.modified_at.localeCompare(b.modified_at),
-      render: (time: string) => (
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {time || '-'}
-        </Typography.Text>
-      ),
-    },
-    {
-      title: '操作',
-      key: 'actions',
-      width: 90,
-      render: (_v, record) => (
-        <Space size={2}>
-          {!record.is_dir && (
-            <Tooltip title="在标签页中打开编辑">
+  const fileColumns: TableColumnsType<DirectoryEntry> = useMemo(
+    () => [
+      {
+        title: '名称',
+        dataIndex: 'name',
+        sorter: (a, b) => a.name.localeCompare(b.name),
+        render: (name: string, record) => (
+          <Space>
+            {record.is_dir ? (
+              <FolderOutlined style={{ color: '#faad14', fontSize: 16 }} />
+            ) : (
+              <FileTextOutlined style={{ color: '#1677ff', fontSize: 16 }} />
+            )}
+            {record.is_dir ? (
+              <Typography.Link
+                strong
+                onClick={() => fetchDirectory(record.path)}
+                style={{ cursor: 'pointer' }}
+              >
+                {name}
+              </Typography.Link>
+            ) : (
+              <Typography.Link strong onClick={() => handleOpenFileEditor(record.path)}>
+                {name}
+              </Typography.Link>
+            )}
+          </Space>
+        ),
+      },
+      {
+        title: '大小',
+        dataIndex: 'size_bytes',
+        width: 90,
+        sorter: (a, b) => a.size_bytes - b.size_bytes,
+        render: (bytes: number, record) =>
+          record.is_dir ? <Typography.Text type="secondary">-</Typography.Text> : formatBytes(bytes),
+      },
+      {
+        title: '权限',
+        dataIndex: 'permissions',
+        width: 80,
+        sorter: (a, b) => a.permissions.localeCompare(b.permissions),
+        render: (p: string) => <Tag style={{ fontFamily: 'monospace' }}>{p}</Tag>,
+      },
+      {
+        title: '修改时间',
+        dataIndex: 'modified_at',
+        width: 150,
+        sorter: (a, b) => a.modified_at.localeCompare(b.modified_at),
+        render: (time: string) => (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {time || '-'}
+          </Typography.Text>
+        ),
+      },
+      {
+        title: '操作',
+        key: 'actions',
+        width: 90,
+        render: (_v, record) => (
+          <Space size={2}>
+            {!record.is_dir && (
+              <Tooltip title="在标签页中打开编辑">
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<EditOutlined />}
+                  onClick={() => handleOpenFileEditor(record.path)}
+                />
+              </Tooltip>
+            )}
+            <Tooltip title="下载">
               <Button
                 type="text"
                 size="small"
-                icon={<EditOutlined />}
-                onClick={() => handleOpenFileEditor(record.path)}
+                icon={<DownloadOutlined />}
+                href={machineId ? getDownloadFilesUrl(machineId, [record.path]) : '#'}
+                target="_blank"
               />
             </Tooltip>
-          )}
-          <Tooltip title="下载">
-            <Button
-              type="text"
-              size="small"
-              icon={<DownloadOutlined />}
-              href={machineId ? getDownloadFilesUrl(machineId, [record.path]) : '#'}
-              target="_blank"
-            />
-          </Tooltip>
-        </Space>
-      ),
-    },
-  ];
+          </Space>
+        ),
+      },
+    ],
+    [fetchDirectory, handleOpenFileEditor, machineId],
+  );
 
   const downloadSelectedUrl =
     machineId && selectedFilePaths.length > 0
@@ -861,6 +872,14 @@ export function MachineConsoleDrawer({
     overviewError,
     overview,
     openFiles,
+    fetchOverview,
+    fetchProcesses,
+    fetchNetwork,
+    fetchDirectory,
+    fileColumns,
+    handleBatchDelete,
+    handleParentNav,
+    handleUploadFile,
   ]);
 
   const toolbar = (

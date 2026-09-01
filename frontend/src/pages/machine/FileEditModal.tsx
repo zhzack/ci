@@ -75,8 +75,9 @@ export function FileEditModal({
       await saveMachineFile(machineId, filePath, content);
       antdMessage.success(`文件 "${filePath}" 已成功保存回被控机`);
       onSaved?.();
-    } catch (err: any) {
-      antdMessage.error(`保存失败: ${err?.message || '未知错误'}`);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : '未知错误';
+      antdMessage.error(`保存失败: ${message}`);
     } finally {
       setSaving(false);
     }

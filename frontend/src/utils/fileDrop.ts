@@ -3,6 +3,21 @@
  * Uses WebKit FileSystemEntry API to maintain complete nested folder structures.
  */
 
+interface FileSystemEntryLike {
+  isFile: boolean;
+  isDirectory: boolean;
+  name: string;
+  file?: (successCallback: (file: File) => void, errorCallback?: () => void) => void;
+  createReader?: () => FileSystemDirectoryReaderLike;
+}
+
+interface FileSystemDirectoryReaderLike {
+  readEntries: (
+    successCallback: (entries: FileSystemEntryLike[]) => void,
+    errorCallback?: () => void,
+  ) => void;
+}
+
 export async function scanDataTransfer(
   dataTransfer: DataTransfer,
 ): Promise<(File & { webkitRelativePath?: string })[]> {
@@ -14,12 +29,12 @@ export async function scanDataTransfer(
   }
 
   // Define recursive entry reader
-  async function traverseEntry(entry: any, path = ''): Promise<void> {
+  async function traverseEntry(entry: FileSystemEntryLike | null, path = ''): Promise<void> {
     if (!entry) return;
 
-    if (entry.isFile) {
+    if (entry.isFile && entry.file) {
       await new Promise<void>((resolve) => {
-        entry.file(
+        entry.file?.(
           (file: File) => {
             const relPath = path ? `${path}/${file.name}` : file.name;
             Object.defineProperty(file, 'webkitRelativePath', {
@@ -32,17 +47,17 @@ export async function scanDataTransfer(
           () => resolve(),
         );
       });
-    } else if (entry.isDirectory) {
+    } else if (entry.isDirectory && entry.createReader) {
       const dirReader = entry.createReader();
-      const currentDirName = entry.name as string;
+      const currentDirName = entry.name;
       const newPath = path ? `${path}/${currentDirName}` : currentDirName;
 
       // In Chromium / WebKit, readEntries might return in batches of 100
-      const readAllEntries = async (): Promise<any[]> => {
-        let entries: any[] = [];
-        let batch: any[] = await new Promise((res) => {
+      const readAllEntries = async (): Promise<FileSystemEntryLike[]> => {
+        let entries: FileSystemEntryLike[] = [];
+        let batch: FileSystemEntryLike[] = await new Promise((res) => {
           dirReader.readEntries(
-            (ents: any[]) => res(ents),
+            (ents: FileSystemEntryLike[]) => res(ents),
             () => res([]),
           );
         });
@@ -50,7 +65,7 @@ export async function scanDataTransfer(
           entries = entries.concat(batch);
           batch = await new Promise((res) => {
             dirReader.readEntries(
-              (ents: any[]) => res(ents),
+              (ents: FileSystemEntryLike[]) => res(ents),
               () => res([]),
             );
           });
@@ -65,11 +80,14 @@ export async function scanDataTransfer(
     }
   }
 
-  const entries: any[] = [];
+  const entries: FileSystemEntryLike[] = [];
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     if (item && item.kind === 'file') {
-      const entry = (item as any).webkitGetAsEntry ? (item as any).webkitGetAsEntry() : null;
+      const itemWithEntry = item as DataTransferItem & {
+        webkitGetAsEntry?: () => FileSystemEntryLike | null;
+      };
+      const entry = itemWithEntry.webkitGetAsEntry ? itemWithEntry.webkitGetAsEntry() : null;
       if (entry) {
         entries.push(entry);
       }

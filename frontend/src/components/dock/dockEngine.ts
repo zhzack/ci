@@ -493,6 +493,8 @@ export function deserializeLayout(
         }
       }
     }
-  } catch {}
+  } catch {
+    // Ignore invalid stored layout
+  }
   return fallback ?? null;
 }

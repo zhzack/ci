@@ -4,13 +4,14 @@
 
 | | |
 | --- | --- |
-| 当前版本 | `0.3.0`（变更明细见 [CHANGELOG](CHANGELOG.md)） |
+| 当前版本 | `0.3.1`（变更明细见 [CHANGELOG](CHANGELOG.md)） |
 | 后端 | Python 3.9+ · FastAPI · SQLAlchemy 2 · Pydantic v2 |
-| 前端 | React 19 · Vite · TypeScript strict · Ant Design 5 |
-| 存储 | SQLite（零配置开发）/ PostgreSQL 16（Docker Compose 生产） |
-| 用户与团队 | 账户注册/登录（首位用户自动为 Admin）、团队（Teams）管理、资源团队级共享 |
+| 前端 | React 19 · Vite · TypeScript strict · Ant Design 5 · Dock Layout |
+| 存储 | SQLite / PostgreSQL 16 · 本地文件 / S3 兼容对象存储（AWS / MinIO / OSS / R2） |
+| 用户与安全 | 账户注册/登录、邮箱 OTP 验证码/快捷登录/找回密码、团队管理、资源授权共享 |
 | 远程执行 | 多机网络：Pull 模式 Runner Agent（一键安装）+ SSH 直连免 Agent 模式 |
-| 部署体系 | 本地运行 / Docker 双环境（开发热重载 + 生产 Nginx）/ 非源码离线发布 |
+| 工作台 | 计算节点全功能 IDE 工作台（VS Code 级嵌套分栏、多开终端、远程文件、实时监控） |
+| 制品与环境 | 通用制品仓库 Package Hub、多机批量环境装配下发（Provisioning）、全栈 Docker 双环境 |
 
 Mini Pipeline 把「跑一条流水线」拆成三个正交的部分：
 
@@ -25,6 +26,9 @@ Mini Pipeline 把「跑一条流水线」拆成三个正交的部分：
 - [插件规范](#插件规范)
 - [Pipeline 规范](#pipeline-规范)
 - [运行管理](#运行管理)
+- [制品仓库与存储驱动](#制品仓库与存储驱动)
+- [邮件体系与安全认证](#邮件体系与安全认证)
+- [全功能 IDE 模式与 Dock 布局](#全功能-ide-模式与-dock-布局)
 - [鉴权与安全](#鉴权与安全)
 - [REST API 摘要](#rest-api-摘要)
 - [配置参考](#配置参考)
@@ -36,7 +40,7 @@ Mini Pipeline 把「跑一条流水线」拆成三个正交的部分：
 
 ## 特性总览
 
-**执行**
+**执行引擎**
 
 - 四种 Runtime：`shell` / `python` / `node` / `executable`（`docker` 已在契约校验中预留，实现见 [roadmap](docs/roadmap.md)）；
 - 墙钟超时、进程树终止（POSIX `killpg` / Windows `taskkill /T`）、Windows 下自动解析 shebang 经 Git Bash 执行；
@@ -44,7 +48,7 @@ Mini Pipeline 把「跑一条流水线」拆成三个正交的部分：
 - 运行取消：`POST /api/runs/{id}/cancel`，运行中插件进程整树终止，未开始步骤置 `CANCELLED`；
 - Branch run：从任意 step 分支重跑，复用上游已成功的输出。
 
-**实时**
+**实时流式交互**
 
 - `GET /api/runs/{id}/events`：run/task 状态 SSE 事件流（事件总线直推 + 周期性 DB 快照兜底，终态后服务端关流）；
 - `GET /api/runs/{id}/tasks/{step}/log/stream`：任务日志 SSE tail 流（`log` + `end` 事件）。
@@ -54,12 +58,33 @@ Mini Pipeline 把「跑一条流水线」拆成三个正交的部分：
 - **双模式调度**：
   - **Pull 模式 Runner Agent**：基于出站 HTTP 长轮询原子认领任务，支持 15 秒心跳续租与孤儿租约收割（`LeaseReaper`）；
   - **Push 模式 SSH 直连**：免装 Agent，通过 Paramiko SFTP 打包下发与远程命令执行，支持机器实时连通性探测；
-- **单指令自适应部署（`/install`）**：针对 Linux Shell 与 Windows PowerShell 自动下发单行安装脚本，带 Token 自动后台拉起；
-- **机器分类管理**：个人机（个人接入/共享）与管理员机池（平台持有分配，机密凭证 Fernet 对称加密）。
+- **单指令自适应部署（`/install`）**：针对 Linux Shell 与 Windows PowerShell 自动下发单行安装脚本，带 Token 自动后台拉起，支持缺 Python 环境时的绿色运行时自愈；
+- **机器分类管理**：个人机（个人接入/共享）与管理员机池（平台持有分配，机密凭证 Fernet 对称加密）；
+- **环境批量装配（Provisioning）**：制品仓托管 Python/Node 绿色运行包，支持 Web 端勾选多台机器一键批量下发安装与进度追踪。
+
+**通用制品仓库（Package Hub）与存储驱动**
+
+- **多驱动存储后端**：本地文件驱动（`LocalStorageDriver`）与 AWS SigV4 兼容标准库 S3 驱动（`S3StorageDriver`，对接 AWS S3 / MinIO / OSS / COS / R2，零第三方 SDK 依赖）；
+- **在线文件工作台**：目录层级树管理、文件拖拽上传/文件夹递归扫描、图片在线预览、Monaco 风格暗色代码在线编辑保存；
+- **资产沉淀与跨租户分享**：支持将任意制品目录一键直接发布为平台插件；支持生成跨用户带时效的提取码分享链接（`/share/:token`）。
+
+**邮件服务与安全认证体系（Email & OTP）**
+
+- **异步发信引擎**：支持 SMTP / SSL / STARTTLS 加密通道（QQ 邮箱、163、企业微信等），多线程发信零阻塞主流程；
+- **安全认证闭环**：邮箱验证码免密快捷登录、邮箱验证码安全注册、忘记密码验证码安全重置、个人设置换绑邮箱；
+- **任务完成通知**：流水线调度结束自动异步发信给触发者，包含状态、运行耗时、错误摘要及直达详情链接；
+- **管理员 SMTP 控制台**：在线可视化维护发信配置与一键在线连通性测试。
+
+**计算节点全功能 IDE 模式与 Dock 布局工作台**
+
+- **VS Code 级嵌套分栏引擎**：纯 TS/React 递归 `DockLayout` 引擎，支持 `SplitNode`（水平/垂直）与 `TabGroupNode` 无限嵌套；
+- **5 区位拖拽停靠（Drop Preview）**：Tab 拖拽呈现半透明落点高亮（左/右/上/下/同级），松开鼠标瞬间拆分或合并；
+- **同级 Tab 拖拽聚合**：支持 Tab 拖入已有窗口的 TabBar 进行插队或同级合并，自动垃圾回收空分组；
+- **全场景集成**：系统全景性能监控、进程/网络监控、多开交互式原生终端、远程文件管理与实时文件在线编辑。
 
 **多用户与团队协同**
 
-- **动态用户与认证体系**：密码 `scrypt` 加盐哈希安全存储，**系统首位注册用户自动成为超级管理员**；
+- **动态用户与认证体系**：密码 `scrypt` 加盐哈希安全存储，**系统首位注册用户自动成为超级管理员**；首次登录强制修改密码保护；
 - **团队（Teams）全功能管理**：团队创建、成员管理，支持将流水线与机器批量共享给指定团队或个人（viewer / operator 权限细分）；
 - **操作审计**：关键变更与管理操作统一沉淀 `audit_logs` 审计追踪。
 
@@ -70,7 +95,7 @@ Mini Pipeline 把「跑一条流水线」拆成三个正交的部分：
 - 可观测：`/health`（liveness）、`/health/ready`（readiness）、`/health/version`、`/metrics`（Prometheus）、text/JSON 结构化日志 + 全链路 RequestID；
 - API 工程化：统一分页信封、写方法滑动窗口限流、CORS、GZip、OpenAPI tag 元数据；
 - 可靠性：Alembic 迁移、启动孤儿收割（崩溃恢复）、保留策略 GC（`mini-pipeline-gc`）；
-- 产物：sha256 ETag / `If-None-Match` 304 条件下载，API 不暴露文件系统路径。
+- 产物：sha256 ETag / `If-None-Match` 304 条件下载，支持本地盘与 S3 对象存储双模态切换。
 
 ## 快速开始
 
@@ -283,6 +308,47 @@ curl -X POST http://127.0.0.1:8000/api/runs/$RUN_ID/branches \
   -d '{"from_step": "sum", "params": {}}'
 ```
 
+## 制品仓库与存储驱动
+
+Mini Pipeline 提供了开箱即用的企业级制品管理中心（Package Hub）与双模态存储驱动体系：
+
+### 1. 双模态存储驱动（Storage Drivers）
+- **本地目录驱动（LocalStorageDriver）**：零外部依赖，安全隔离在受管目录内，原生提供 Zip Slip 路径穿越防护、文件编码自适应探测与原子暂存写入；
+- **S3 兼容对象存储驱动（S3StorageDriver）**：基于纯 Python 标准库手写 AWS SigV4 签名机制，**零外部 boto3 依赖**，无缝接入 AWS S3、MinIO、阿里云 OSS、腾讯云 COS、Cloudflare R2 等，支持流式分片上传与断点读取；
+- **产物与制品双重持久化**：运行产物（`S3ArtifactStore`）与制品仓库共用同一套底层存储驱动底座，保证架构极简。
+
+### 2. 在线文件工作台与插件沉淀
+- **层级目录与拖拽上传**：Web 端支持递归扫描多层级文件夹拖拽上传，支持大文件流式直传；
+- **Monaco 风格暗色在线编辑**：直接在线编辑 YAML、Shell、Python、JSON 脚本，按 `Ctrl+S` 秒级存盘；
+- **一键发布为平台插件**：在任意包含 `plugin.yaml` 的制品目录点击「发布为插件」，平台自动执行 Manifest 校验并将其注册为平台正式插件；
+- **带时效的跨租户安全分享**：支持为文件或文件夹生成专属分享链接（含提取码与过期时间），外部用户通过 `/share/:token` 页面免登录安全下载与预览。
+
+## 邮件体系与安全认证
+
+Mini Pipeline 集成了完备的异步邮件发信引擎与 OTP 认证生命周期闭环：
+
+- **高性能异步发信**：底层基于线程池异步执行 SMTP 协议发信，不占用 FastAPI 主事件循环；支持 SSL（端口 465）与 STARTTLS（端口 587）加密通信；
+- **邮箱免密快捷登录**：输入注册邮箱接收 6 位验证码，1 秒免密登录系统；
+- **全生命周期安全闭环**：
+  - 邮箱验证码注册新账号；
+  - 忘记密码时通过邮箱验证码重置密码；
+  - 个人设置页通过新邮箱验证码安全换绑；
+  - 防刷机制：60 秒发信冷却限制、5 分钟验证码有效期、5 次连续失败强制废弃；
+- **流水线运行结果通知**：任务调度结束后，自动向流水线创建者/触发者发送包含状态胶囊、运行时长、报错摘要与直达链接的 HTML 邮件报告；
+- **管理员 SMTP 控制台**：平台 Admin 可在后台实时维护发件服务器配置并执行一键连通性测试。
+
+## 全功能 IDE 模式与 Dock 布局
+
+针对计算节点的运维与开发，平台在前端提供了深度集成的 **VS Code 级全功能 IDE 模式与 Dock 布局系统**：
+
+- **自研纯 TS/React 递归 Docking 引擎**：支持 `SplitNode`（水平/垂直分割）与 `TabGroupNode`（标签页组）任意嵌套拆分；
+- **5 区位 Drop Preview 与拖拽合并**：鼠标按住任意 Tab 拖拽至屏幕中央或边缘，呈现半透明停靠预览，松开瞬间完成分屏或合并为同级标签页；
+- **四大核心运维与开发组件**：
+  1. **📊 系统全景（Overview）**：CPU、内存、磁盘实时仪表盘与时序利用率折线图；
+  2. **⚙️ 进程与网络监控**：TOP 进程列表、Kill 进程树、TCP/UDP 端口占用监控；
+  3. **💻 在线多开原生终端**：支持多 Tab 并发开辟交互式终端会话，支持命令智能补全与目录双向联动；
+  4. **📁 远程文件管理器与编辑器**：可视化文件树、批量删除、文件上传下载、直接在 Dock 分栏内多标签打开并编辑远程主机文件。
+
 ## 鉴权与安全
 
 平台采用 **动态用户会话（Session Token）** 与 **静态密钥（API Token）** 双轨安全认证：
@@ -291,6 +357,7 @@ curl -X POST http://127.0.0.1:8000/api/runs/$RUN_ID/branches \
 - **首位用户 Bootstrap**：全新安装的系统中，**首个注册的用户自动成为超级管理员（Admin）**，拥有平台所有管理特权；
 - **密码安全哈希**：基于 `scrypt` 算法（N=16384, r=8, p=1）+ 随机盐哈希，数据库绝不落地明文；
 - **会话机制**：登录成功下发 `mpt_...` 会话令牌（数据库仅存储 SHA-256 哈希），有效期由 `auth.session_ttl_hours`（默认 72h）控制；
+- **首次登录强制改密**：Admin 创建的初始账号或重置密码账号，登录时受全局强阻断弹窗保护，必须修改初始密码后方可进入系统；
 - **注册保护**：生产环境下管理员完成初始化后，可在配置中将 `auth.registration_enabled` 设为 `false` 关闭前台自由注册。
 
 ### 2. 静态 API Token（供自动化脚本调用）
@@ -322,6 +389,19 @@ auth:
 | --- | --- | --- |
 | GET | `/health` · `/health/ready` · `/health/version` | 存活 / 就绪 / 版本探针 |
 | GET | `/metrics` | Prometheus 指标（`observability.metrics_enabled` 可关闭） |
+| GET | `/install` · `/install.sh` · `/install.ps1` | 单指令自适应安装脚本分发 |
+| GET | `/uninstall` · `/uninstall.sh` · `/uninstall.ps1` | 单指令一键卸载脚本分发 |
+| POST | `/api/auth/register` · `/api/auth/login` | 账号注册与登录 |
+| POST | `/api/auth/email/send-code` | 发送邮箱验证码（注册/登录/重置/换绑） |
+| POST | `/api/auth/email/login` | 邮箱验证码免密快捷登录 |
+| POST | `/api/auth/email/reset-password` | 邮箱验证码重置密码 |
+| POST | `/api/auth/email/change-email` | 验证码绑定/更换邮箱 |
+| GET · POST | `/api/machines` | 机器列表查询与接入注册 |
+| POST | `/api/machines/{id}/test-connection` | 机器实时连通性探测（SSH/Agent） |
+| GET | `/api/machines/{id}/diagnostics/**` | 机器全景、进程、网络、目录与文件读写接口 |
+| GET · POST | `/api/packages/**` | 制品仓库目录遍历、上传、下载、在线编辑与分享 |
+| POST | `/api/packages/publish-as-plugin` | 制品目录一键发布为平台插件 |
+| GET · POST | `/api/environments/**` | 运行时环境包管理与多机器批量下发装配 |
 | POST | `/api/plugins/register` | 从 Git / HTTP / toolhub 注册 |
 | POST | `/api/plugins/upload` · `/api/plugins/upload-folder` | ZIP / 文件夹上传注册 |
 | GET | `/api/plugins` | 插件版本列表（分页，支持 `search`） |
@@ -428,29 +508,32 @@ cd frontend && npm run typecheck && npm run lint && npm run build
 ```text
 ci/
 ├── mini_pipeline/           # FastAPI 后端
-│   ├── account/             # 账户与权限核心（密码哈希、Session、Grants、Teams、机器凭证加密）
-│   ├── api/                 # 路由、鉴权、分页信封（流水线/机器/团队/插件）
-│   ├── artifact/            # LocalArtifactStore（ETag/304）
+│   ├── account/             # 账户与权限核心（密码哈希、Session、Grants、Teams、邮件 OTP、凭证加密）
+│   ├── api/                 # 路由、鉴权、分页信封（流水线/机器/团队/制品/环境/插件）
+│   ├── artifact/            # 产物存储（LocalArtifactStore / S3ArtifactStore，ETag/304）
 │   ├── core/                # 配置、Services 装配、EventBus/取消注册表、日志
-│   ├── database/            # ORM 模型、仓储（分页/收割/团队/机器/审计）
+│   ├── database/            # ORM 模型、仓储（分页/收割/团队/机器/审计/制品）
 │   ├── domain/              # v2 资源契约、状态机、异常、Runtime 协议
 │   ├── executor/            # 任务执行、workspace 上下文、输出收集（含 v1 兼容）
 │   ├── maintenance/         # mini-pipeline-gc
 │   ├── pipeline/            # YAML schema、DAG、表达式、wiring 校验
 │   ├── plugin/              # manifest（v1 自动升级）与注册服务
-│   ├── runner/              # Pull 模式 Agent（长轮询、租约心跳、取消信号处理）
+│   ├── runner/              # Pull 模式 Agent + Push 模式 SSH/SFTP 执行器
 │   ├── runtime/             # ProcessRunner 底座 + shell/python/node/executable
-│   ├── scheduler/           # 引擎（取消/重试/事件）、双线程池、恢复
-│   ├── server/              # app 工厂、中间件、指标、单指令安装器（/install）
-│   └── source/              # git/http/upload/toolhub 来源 + 安全解压
-├── frontend/                # React 19 管理后台（Vite + AntD 5）
+│   ├── scheduler/           # 引擎（取消/重试/事件/邮件通知）、双线程池、LeaseReaper
+│   ├── server/              # app 工厂、中间件、指标、单指令安装/卸载器（/install）
+│   ├── source/              # git/http/upload/toolhub 来源 + 安全解压
+│   └── storage/             # 通用制品存储子系统（LocalStorageDriver / S3StorageDriver）
+├── frontend/                # React 19 管理后台（Vite + AntD 5 + 自研 Docking IDE）
+│   ├── src/components/dock/ # 全局复用 VS Code 级递归嵌套分栏与拖拽停靠引擎
+│   └── src/pages/           # 页面（机器全功能 IDE、制品仓库 Package Hub、流水线等）
 ├── deploy/                  # 生产环境非源码交付套件（纯镜像 Compose + 一键部署脚本）
 ├── examples/                # 17 个示例插件 + 4 个示例 Pipeline
 ├── migrations/              # Alembic 迁移
 ├── config/                  # default.yaml（开发）/ docker.yaml（生产）
 ├── toolhub/                 # 独立的 shell 工具分发系统（后端对接其 index.json）
-├── tests/                   # unit/ + integration/
-├── docs/                    # 架构、运维、路线图、非源码部署指南
+├── tests/                   # unit/ + integration/（127 个测试全绿）
+├── docs/                    # 架构、运维、路线图、非源码部署指南、Agent 规范
 └── scripts/                 # start.sh、check.sh、package_release.py（发布打包脚本）
 ```
 

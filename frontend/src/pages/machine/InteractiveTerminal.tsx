@@ -9,6 +9,7 @@ import {
   Tooltip,
   Typography,
   message as antdMessage,
+  type InputRef,
 } from 'antd';
 import {
   BulbOutlined,
@@ -119,7 +120,7 @@ export function InteractiveTerminal({
   const [executing, setExecuting] = useState(false);
 
   const termBottomRef = useRef<HTMLDivElement | null>(null);
-  const inputRef = useRef<any>(null);
+  const inputRef = useRef<InputRef | null>(null);
 
   const activeSession = sessions.find((s) => s.id === activeTabKey) || sessions[0];
 
@@ -243,7 +244,8 @@ export function InteractiveTerminal({
       if (result.new_working_dir && result.new_working_dir !== currentSessionCwd) {
         onDirectoryChange(result.new_working_dir);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : '未知错误';
       setSessions((prev) =>
         prev.map((s) =>
           s.id === activeTabKey
@@ -251,7 +253,7 @@ export function InteractiveTerminal({
                 ...s,
                 lines: [
                   ...s.lines,
-                  { type: 'stderr', text: `执行异常: ${err?.message || '未知错误'}` },
+                  { type: 'stderr', text: `执行异常: ${message}` },
                 ],
               }
             : s
