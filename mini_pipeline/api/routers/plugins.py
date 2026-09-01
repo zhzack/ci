@@ -9,6 +9,7 @@ from mini_pipeline.api.auth import PrincipalDep
 from mini_pipeline.api.dependencies import get_services
 from mini_pipeline.api.pagination import Page, PageParams
 from mini_pipeline.core.container import Services
+from mini_pipeline.source.git import GitSource
 from mini_pipeline.source.upload import FolderFile
 
 router = APIRouter(prefix="/plugins", tags=["plugins"])
@@ -23,6 +24,12 @@ class PluginSourceRequest(BaseModel):
     tag: Optional[str] = None
     revision: Optional[str] = None
     commit: Optional[str] = None
+    credential_id: Optional[str] = None
+
+
+class GitBranchesRequest(BaseModel):
+    url: str
+    credential_id: Optional[str] = None
 
 
 class RegisterPluginRequest(BaseModel):
@@ -80,6 +87,21 @@ def register_plugin(
         resource_id=entity.id, detail={"ref": f"{entity.name}@{entity.version}"},
     )
     return PluginResponse.from_entity(entity)
+
+
+@router.post("/git-branches")
+def list_git_branches(
+    req: GitBranchesRequest,
+    principal: PrincipalDep,
+    services: Annotated[Services, Depends(get_services)],
+) -> dict[str, Any]:
+    """Probe remote Git repository branches and tags using optional credentials."""
+    cred_payload = None
+    if req.credential_id:
+        cred_payload = services.credentials.resolve_secret(
+            req.credential_id, user_id=principal.user_id
+        )
+    return GitSource.list_remote_branches(req.url, cred_payload)
 
 
 @router.post("/upload", response_model=PluginResponse, status_code=status.HTTP_201_CREATED)

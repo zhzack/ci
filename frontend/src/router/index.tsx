@@ -26,6 +26,7 @@ const MachinePage = lazy(() => import('@/pages/machine/MachinesPage'));
 const StorePage = lazy(() => import('@/pages/store/StorePage'));
 const AdminPage = lazy(() => import('@/pages/admin/AdminPage'));
 const ArtifactPage = lazy(() => import('@/pages/artifact/ArtifactPage'));
+const CredentialPage = lazy(() => import('@/pages/credential/CredentialPage'));
 const ShareImportPage = lazy(() =>
   import('@/pages/artifact/ShareImportPage').then((m) => ({ default: m.ShareImportPage })),
 );
@@ -88,6 +89,8 @@ const routes: RouteObject[] = [
       },
       { path: 'machine', element: withSuspense(<MachinePage />), handle: breadcrumb('Machines') },
       { path: 'artifact', element: withSuspense(<ArtifactPage />), handle: breadcrumb('Artifact') },
+      { path: 'credential', element: withSuspense(<CredentialPage />), handle: breadcrumb('Credentials') },
+      { path: 'credentials', element: <Navigate to="/credential" replace /> },
       { path: 'admin', element: withSuspense(<AdminPage />), handle: breadcrumb('Admin') },
       { path: 'setting', element: withSuspense(<SettingPage />), handle: breadcrumb('Setting') },
       { path: '*', element: <Navigate to="/dashboard" replace /> },

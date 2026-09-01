@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 
+from mini_pipeline.account.credential_service import CredentialService
 from mini_pipeline.account.service import (
     AccountService,
     AuditService,
@@ -15,6 +16,7 @@ from mini_pipeline.core.config import Settings
 from mini_pipeline.core.events import EventBus
 from mini_pipeline.database.account_repositories import (
     AuditRepository,
+    CredentialRepository,
     EmailVerificationRepository,
     GrantRepository,
     MachineRepository,
@@ -105,6 +107,8 @@ class Services:
     environment_tasks: EnvironmentDeployTaskRepository
     environments: EnvironmentService
     diagnostics: MachineDiagnosticsService
+    credential_repository: CredentialRepository
+    credentials: CredentialService
 
     @classmethod
     def build(cls, settings: Settings) -> "Services":
@@ -154,6 +158,14 @@ class Services:
                 "Reaped %d orphaned run(s) left behind by a previous process", reaped
             )
 
+        credential_repository = CredentialRepository(database)
+        credentials = CredentialService(
+            credential_repo=credential_repository,
+            team_repo=teams,
+            user_repo=users,
+            settings=settings,
+        )
+
         upload_source = UploadSource(settings.sources)
         sources = SourceRegistry()
         sources.register(GitSource())
@@ -166,6 +178,7 @@ class Services:
             repository=plugin_repository,
             sources=sources,
             upload_source=upload_source,
+            credentials=credentials,
         )
         pipelines = PipelineService(
             pipeline_repository, plugin_repository=plugin_repository
@@ -218,6 +231,7 @@ class Services:
             settings=settings,
             grants=grants,
         )
+        machines.ensure_builtin_master_machine()
         audit = AuditService(audit_repository)
         engine = PipelineEngine(
             plugins=plugin_repository,
@@ -231,6 +245,7 @@ class Services:
             email_service=email_service,
             users=users,
             task_cache=task_cache,
+            credentials=credentials,
         )
         runs = RunService(
             pipelines=pipelines,
@@ -249,6 +264,7 @@ class Services:
             machine_repository=machine_repository,
             settings=settings,
         )
+
         return cls(
             settings=settings,
             database=database,
@@ -283,6 +299,8 @@ class Services:
             environment_tasks=environment_tasks,
             environments=environment_service,
             diagnostics=diagnostics_service,
+            credential_repository=credential_repository,
+            credentials=credentials,
         )
 
     def close(self) -> None:

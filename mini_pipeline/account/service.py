@@ -520,10 +520,73 @@ class MachineService:
         return decrypt_credentials(machine.credentials, self.settings.security.secret_key)
 
     def is_online(self, machine: Machine) -> bool:
+        if machine.labels and machine.labels.get("builtin"):
+            return True
         if machine.status != "active" or machine.last_heartbeat is None:
             return False
         age = (utcnow() - machine.last_heartbeat).total_seconds()
         return age <= self.settings.runner.offline_after_seconds
+
+    def ensure_builtin_master_machine(self) -> Machine:
+        """Ensures the built-in Master host execution machine exists and is active."""
+        import sys
+        master_id = "master-local"
+        try:
+            existing = self.machines.get(master_id)
+            if existing:
+                self.machines.heartbeat(master_id, agent_version="server-builtin-1.0")
+                return existing
+        except NotFoundError:
+            pass
+
+        with self.machines.database.session() as session:
+            m = session.get(Machine, master_id)
+            if not m:
+                m = Machine(
+                    id=master_id,
+                    name="Master 主控节点 (Built-in Server)",
+                    kind="admin",
+                    connection_type="builtin",
+                    owner_id=None,
+                    assigned_user_id=None,
+                    token_hash=hash_token("builtin-master-token-reserved"),
+                    labels={
+                        "builtin": True,
+                        "role": "master",
+                        "executor": "local",
+                        "os": sys.platform,
+                    },
+                    max_concurrency=max(2, self.settings.execution.task_workers),
+                    notes="Mini Pipeline 服务端内置执行节点，仅平台管理员可见与调度",
+                    status="active",
+                    agent_version="server-builtin-1.0",
+                    last_heartbeat=utcnow(),
+                    created_at=utcnow(),
+                )
+                session.add(m)
+                session.flush()
+                session.refresh(m)
+            return m
+
+    def get_deploy_key(
+        self, user: Principal, machine_id: str | None = None
+    ) -> dict[str, Any]:
+        """Retrieves or generates standard SSH Deploy Key for the host or machine."""
+        from pathlib import Path
+
+        from mini_pipeline.account.ssh_utils import get_or_create_host_deploy_key
+
+        storage_dir = Path(self.settings.storage.root)
+        key_info = get_or_create_host_deploy_key(storage_dir)
+        if machine_id:
+            try:
+                m = self.machines.get(machine_id)
+                if m:
+                    key_info["machine_name"] = m.name
+                    key_info["machine_id"] = m.id
+            except Exception:
+                pass
+        return key_info
 
 
 class PermissionService:
@@ -626,6 +689,8 @@ class PermissionService:
         """May the caller submit tasks to this machine?"""
         if user.is_admin:
             return True
+        if machine.labels and machine.labels.get("builtin"):
+            return False
         if machine.status != "active" or user.user_id is None:
             return False
         if machine.kind == "personal" and machine.owner_id == user.user_id:

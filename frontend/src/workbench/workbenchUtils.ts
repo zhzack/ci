@@ -12,6 +12,7 @@ export function pathToTabId(pathname: string): string | null {
   if (clean === 'task/history') return 'task-history';
   if (clean === 'machine') return 'machines';
   if (clean === 'artifact') return 'artifacts';
+  if (clean === 'credential' || clean === 'credentials') return 'credential';
   if (clean === 'admin') return 'admin';
   if (clean === 'setting') return 'settings';
 

@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from mini_pipeline.database.models import (
     AuditLog,
     AuthSession,
+    Credential,
     EmailVerificationCode,
     Machine,
     PackageShareLink,
@@ -783,5 +784,98 @@ class SystemSettingRepository:
             else:
                 record.value = value
                 record.updated_at = utcnow()
+
+
+class CredentialRepository:
+    """Repository for persisting credentials & secrets in the vault."""
+
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def create(
+        self,
+        name: str,
+        type_: str,
+        scope: str,
+        encrypted_data: str,
+        owner_id: str | None = None,
+        team_id: str | None = None,
+        description: str = "",
+        domain_patterns: list[str] | None = None,
+    ) -> Credential:
+        with self.database.session() as session:
+            cred = Credential(
+                name=name.strip(),
+                type=type_.strip(),
+                scope=scope.strip(),
+                encrypted_data=encrypted_data,
+                owner_id=owner_id,
+                team_id=team_id,
+                description=description.strip(),
+                domain_patterns=domain_patterns or [],
+                created_at=utcnow(),
+                updated_at=utcnow(),
+            )
+            session.add(cred)
+            session.flush()
+            session.refresh(cred)
+            return cred
+
+    def get_by_id(self, credential_id: str) -> Credential | None:
+        with self.database.session() as session:
+            return session.get(Credential, credential_id)
+
+    def get_by_name(self, name: str, owner_id: str | None = None) -> Credential | None:
+        with self.database.session() as session:
+            stmt = select(Credential).where(Credential.name == name.strip())
+            if owner_id:
+                stmt = stmt.where(
+                    (Credential.owner_id == owner_id) | (Credential.scope == "global")
+                )
+            return session.scalar(stmt.order_by(Credential.created_at.desc()))
+
+    def list_all(self) -> list[Credential]:
+        with self.database.session() as session:
+            stmt = select(Credential).order_by(Credential.created_at.desc())
+            return list(session.scalars(stmt).all())
+
+    def update(
+        self,
+        credential_id: str,
+        name: str | None = None,
+        description: str | None = None,
+        scope: str | None = None,
+        encrypted_data: str | None = None,
+        team_id: str | None = None,
+        domain_patterns: list[str] | None = None,
+    ) -> Credential:
+        with self.database.session() as session:
+            cred = session.get(Credential, credential_id)
+            if cred is None:
+                raise NotFoundError(f"Credential '{credential_id}' not found")
+            if name is not None:
+                cred.name = name.strip()
+            if description is not None:
+                cred.description = description.strip()
+            if scope is not None:
+                cred.scope = scope.strip()
+            if encrypted_data is not None:
+                cred.encrypted_data = encrypted_data
+            if team_id is not None:
+                cred.team_id = team_id
+            if domain_patterns is not None:
+                cred.domain_patterns = domain_patterns
+            cred.updated_at = utcnow()
+            session.flush()
+            session.refresh(cred)
+            return cred
+
+    def delete(self, credential_id: str) -> None:
+        with self.database.session() as session:
+            cred = session.get(Credential, credential_id)
+            if cred is None:
+                raise NotFoundError(f"Credential '{credential_id}' not found")
+            session.delete(cred)
+
 
 

@@ -56,6 +56,7 @@ import {
   BarChartOutlined,
   RightOutlined,
   DownOutlined,
+  LinkOutlined,
 } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -78,11 +79,14 @@ import {
   batchDownloadPackagesDirect,
   batchDeletePackageItems,
   batchCopyPackageItems,
+  importRemotePackage,
   type StorageItem,
   type FilePreview,
   type PackageShareLink,
   type PackageGrant,
 } from '@/api/packages';
+import { matchCredentials } from '@/api/credentials';
+import { CredentialSelect } from '@/components/credential/CredentialSelect';
 import { adminListUsers, adminListTeams } from '@/api/admin';
 import { useAuthStore } from '@/store/auth';
 import { useUploadStore } from '@/store/upload';
@@ -320,6 +324,33 @@ export function PackageHubTab(): React.JSX.Element {
     onSuccess: () => {
       message.success('分享已撤销');
       void queryClient.invalidateQueries({ queryKey: ['my-package-shares'] });
+    },
+  });
+
+  // --- Remote URL Import state & mutation ---
+  const [isImportRemoteModalOpen, setIsImportRemoteModalOpen] = useState(false);
+  const [importRemoteUrl, setImportRemoteUrl] = useState('');
+  const [importRemoteFilename, setImportRemoteFilename] = useState('');
+  const [importRemoteCredentialId, setImportRemoteCredentialId] = useState<string | undefined>(undefined);
+
+  const importRemoteMutation = useMutation({
+    mutationFn: () =>
+      importRemotePackage({
+        url: importRemoteUrl.trim(),
+        target_dir: currentPath,
+        filename: importRemoteFilename.trim() || undefined,
+        credential_id: importRemoteCredentialId || undefined,
+      }),
+    onSuccess: (item) => {
+      message.success(`文件 ${item.name} 已成功下载并保存到当前目录！`);
+      setIsImportRemoteModalOpen(false);
+      setImportRemoteUrl('');
+      setImportRemoteFilename('');
+      setImportRemoteCredentialId(undefined);
+      void queryClient.invalidateQueries({ queryKey: ['packages', currentPath] });
+    },
+    onError: (err) => {
+      message.error(`远程下载失败: ${err instanceof Error ? err.message : String(err)}`);
     },
   });
 
@@ -944,6 +975,20 @@ export function PackageHubTab(): React.JSX.Element {
                     icon: <InboxOutlined style={{ color: '#52c41a' }} />,
                     label: '拖拽上传区域…',
                     onClick: () => setIsUploadModalOpen(true),
+                  },
+                  {
+                    type: 'divider',
+                  },
+                  {
+                    key: 'import-remote',
+                    icon: <LinkOutlined style={{ color: '#722ed1' }} />,
+                    label: '🔗 远程 HTTP URL 导入 (带凭证认证)',
+                    onClick: () => {
+                      setImportRemoteUrl('');
+                      setImportRemoteFilename('');
+                      setImportRemoteCredentialId(undefined);
+                      setIsImportRemoteModalOpen(true);
+                    },
                   },
                 ],
               }}
@@ -1695,6 +1740,101 @@ export function PackageHubTab(): React.JSX.Element {
           ]}
           locale={{ emptyText: <Empty description="暂无单独授予的 ACL 权限" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
         />
+      </Modal>
+
+      {/* Remote URL Import Modal */}
+      <Modal
+        title={
+          <Space>
+            <LinkOutlined style={{ color: '#722ed1' }} />
+            <span>从远程 HTTP/HTTPS 下载导入文件</span>
+          </Space>
+        }
+        open={isImportRemoteModalOpen}
+        onOk={() => {
+          if (!importRemoteUrl.trim()) {
+            message.warning('请输入远程下载 URL');
+            return;
+          }
+          importRemoteMutation.mutate();
+        }}
+        confirmLoading={importRemoteMutation.isPending}
+        onCancel={() => setIsImportRemoteModalOpen(false)}
+        okText="开始认证下载"
+        cancelText="取消"
+        width={560}
+        destroyOnClose
+      >
+        <div style={{ marginTop: 16 }}>
+          <div style={{ marginBottom: 12 }}>
+            <Typography.Text strong>目标保存目录：</Typography.Text>
+            <Tag color="blue" style={{ marginLeft: 8, fontSize: 13 }}>
+              {currentPath || '根目录 (root)'}
+            </Tag>
+          </div>
+
+          <div style={{ marginBottom: 16 }}>
+            <Typography.Text strong style={{ display: 'block', marginBottom: 4 }}>
+              远程文件下载 URL <span style={{ color: '#ff4d4f' }}>*</span>
+            </Typography.Text>
+            <Input
+              placeholder="https://nexus.corp.internal/repository/npm/app-1.0.0.tgz"
+              value={importRemoteUrl}
+              onChange={(e) => {
+                const url = e.target.value;
+                setImportRemoteUrl(url);
+                if (!importRemoteFilename && url) {
+                  try {
+                    const parsed = new URL(url);
+                    const name = parsed.pathname.split('/').filter(Boolean).pop();
+                    if (name) setImportRemoteFilename(name);
+                  } catch {
+                    // Ignore URL parse error while typing
+                  }
+                }
+                const trimmed = url?.trim();
+                if (trimmed && !importRemoteCredentialId) {
+                  matchCredentials(trimmed)
+                    .then((matched) => {
+                      const first = matched[0];
+                      if (first && !importRemoteCredentialId) {
+                        setImportRemoteCredentialId(first.id);
+                        message.info(`💡 已根据下载域名自动匹配凭据：${first.name}`);
+                      }
+                    })
+                    .catch(() => {});
+                }
+              }}
+            />
+          </div>
+
+          <div style={{ marginBottom: 16 }}>
+            <Typography.Text strong style={{ display: 'block', marginBottom: 4 }}>
+              保存文件名 (可选)
+            </Typography.Text>
+            <Input
+              placeholder="留空则自动从 URL 中解析文件名"
+              value={importRemoteFilename}
+              onChange={(e) => setImportRemoteFilename(e.target.value)}
+            />
+          </div>
+
+          <div style={{ marginBottom: 16 }}>
+            <Typography.Text strong style={{ display: 'block', marginBottom: 4 }}>
+              关联认证凭据 (可选)
+            </Typography.Text>
+            <CredentialSelect
+              placeholder="无需认证 / 公开下载链接"
+              filterTypes={['username_password', 'secret_text']}
+              suggestedUrl={importRemoteUrl}
+              value={importRemoteCredentialId}
+              onChange={(val) => setImportRemoteCredentialId(val)}
+            />
+            <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 4 }}>
+              支持 Basic Auth (用户名+密码) 与 Bearer Token。系统将在后台安全拉取并落库。
+            </Typography.Paragraph>
+          </div>
+        </div>
       </Modal>
 
       {/* Storage Analytics Drawer */}

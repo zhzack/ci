@@ -8,6 +8,7 @@ import {
   DesktopOutlined,
   HistoryOutlined,
   InboxOutlined,
+  KeyOutlined,
   PlusCircleOutlined,
   PlusOutlined,
   SettingOutlined,
@@ -39,6 +40,7 @@ const MachineConsoleTabModule = lazy(() => import('@/pages/machine/MachineConsol
 const StorePage = lazy(() => import('@/pages/store/StorePage'));
 const AdminPage = lazy(() => import('@/pages/admin/AdminPage'));
 const ArtifactPage = lazy(() => import('@/pages/artifact/ArtifactPage'));
+const CredentialPage = lazy(() => import('@/pages/credential/CredentialPage'));
 const SettingPage = lazy(() => import('@/pages/setting/SettingPage'));
 
 function wrapPage(Component: React.ComponentType): React.ReactNode {
@@ -135,6 +137,13 @@ export const WORKBENCH_CATALOG: WorkbenchModuleMeta[] = [
     title: '产物管理 (Artifacts)',
     category: 'system',
     icon: <InboxOutlined style={{ color: '#fa8c16' }} />,
+    closable: true,
+  },
+  {
+    id: 'credential',
+    title: '凭证与密钥中心 (Credentials Vault)',
+    category: 'system',
+    icon: <KeyOutlined style={{ color: '#1677ff' }} />,
     closable: true,
   },
   {
@@ -249,6 +258,13 @@ export function buildWorkbenchTabRegistry(
       icon: <InboxOutlined style={{ color: '#fa8c16' }} />,
       closable: true,
       content: wrapPage(ArtifactPage),
+    },
+    credential: {
+      id: 'credential',
+      title: '凭证与密钥中心',
+      icon: <KeyOutlined style={{ color: '#1677ff' }} />,
+      closable: true,
+      content: wrapPage(CredentialPage),
     },
     admin: {
       id: 'admin',

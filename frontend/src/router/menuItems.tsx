@@ -11,6 +11,7 @@ import {
   SettingOutlined,
   ShopOutlined,
   DesktopOutlined,
+  KeyOutlined,
   SafetyOutlined,
 } from '@ant-design/icons';
 
@@ -60,6 +61,7 @@ export const MENU_ITEMS: MenuEntry[] = [
   },
   { key: 'machine', path: '/machine', label: 'Machines', icon: <DesktopOutlined /> },
   { key: 'artifact', path: '/artifact', label: 'Artifact', icon: <FileTextOutlined /> },
+  { key: 'credential', path: '/credential', label: 'Credentials', icon: <KeyOutlined /> },
   { key: 'admin', path: '/admin', label: 'Admin', icon: <SafetyOutlined />, adminOnly: true },
   { key: 'setting', path: '/setting', label: 'Setting', icon: <SettingOutlined /> },
 ];

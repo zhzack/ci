@@ -86,6 +86,18 @@ export async function extractPackageArchive(
   return data;
 }
 
+export type ImportRemoteRequest = {
+  url: string;
+  target_dir?: string;
+  filename?: string;
+  credential_id?: string;
+};
+
+export async function importRemotePackage(req: ImportRemoteRequest): Promise<StorageItem> {
+  const { data } = await http.post<StorageItem>('/packages/import-remote', req);
+  return data;
+}
+
 export function downloadPackageUrl(path: string): string {
   const auth = loadStoredAuth();
   const tokenParam = auth?.token ? `&token=${encodeURIComponent(auth.token)}` : '';

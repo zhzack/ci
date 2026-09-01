@@ -16,22 +16,27 @@ def resolve_parameters(
     *,
     params: dict[str, Any],
     steps: dict[str, dict[str, Any]],
+    secrets: dict[str, Any] | None = None,
 ) -> Any:
     if isinstance(value, dict):
         return {
-            key: resolve_parameters(item, params=params, steps=steps) for key, item in value.items()
+            key: resolve_parameters(item, params=params, steps=steps, secrets=secrets)
+            for key, item in value.items()
         }
     if isinstance(value, list):
-        return [resolve_parameters(item, params=params, steps=steps) for item in value]
+        return [
+            resolve_parameters(item, params=params, steps=steps, secrets=secrets)
+            for item in value
+        ]
     if not isinstance(value, str):
         return value
 
     full = _FULL_EXPRESSION.fullmatch(value)
     if full:
-        return _lookup(full.group(1), params=params, steps=steps)
+        return _lookup(full.group(1), params=params, steps=steps, secrets=secrets)
 
     def replace(match: re.Match) -> str:
-        resolved = _lookup(match.group(1), params=params, steps=steps)
+        resolved = _lookup(match.group(1), params=params, steps=steps, secrets=secrets)
         if isinstance(resolved, str):
             return resolved
         return json.dumps(resolved, separators=(",", ":"), ensure_ascii=False)
@@ -44,10 +49,32 @@ def _lookup(
     *,
     params: dict[str, Any],
     steps: dict[str, dict[str, Any]],
+    secrets: dict[str, Any] | None = None,
 ) -> Any:
     parts = expression.strip().split(".")
     if any(not _SEGMENT.fullmatch(part) for part in parts):
         raise ValidationError(f"Invalid pipeline expression: {expression!r}")
+    if parts[0] == "secrets":
+        if not secrets:
+            raise ValidationError(f"No secrets available or unknown secret: {expression}")
+        if len(parts) == 2:
+            sec_name = parts[1]
+            if sec_name not in secrets:
+                raise ValidationError(f"Unknown pipeline secret: {sec_name}")
+            val = secrets[sec_name]
+            if isinstance(val, dict) and "secret" in val and len(val) == 1:
+                return val["secret"]
+            return val
+        if len(parts) == 3:
+            sec_name = parts[1]
+            sub_key = parts[2]
+            if sec_name not in secrets:
+                raise ValidationError(f"Unknown pipeline secret: {sec_name}")
+            val = secrets[sec_name]
+            if not isinstance(val, dict) or sub_key not in val:
+                raise ValidationError(f"Unknown key {sub_key!r} in secret {sec_name!r}")
+            return val[sub_key]
+        raise ValidationError(f"Invalid secret expression: {expression!r}")
     if len(parts) == 2 and parts[0] == "params":
         try:
             return params[parts[1]]
@@ -85,3 +112,4 @@ def _lookup(
         except (KeyError, StopIteration) as exc:
             raise ValidationError(f"Unknown step artifact: {expression}") from exc
     raise ValidationError(f"Unsupported pipeline expression: {expression!r}")
+

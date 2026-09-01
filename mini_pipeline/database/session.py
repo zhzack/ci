@@ -58,6 +58,10 @@ class Database:
                         "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
                         "must_change_password BOOLEAN NOT NULL DEFAULT FALSE;"
                     )
+                    conn.exec_driver_sql(
+                        "ALTER TABLE credentials ADD COLUMN IF NOT EXISTS "
+                        "domain_patterns JSON NOT NULL DEFAULT '[]';"
+                    )
                 elif is_sqlite:
                     cursor = conn.connection.cursor()
                     try:
@@ -70,6 +74,13 @@ class Database:
                         cursor.execute(
                             "ALTER TABLE users ADD COLUMN must_change_password "
                             "BOOLEAN NOT NULL DEFAULT 0"
+                        )
+                    try:
+                        cursor.execute("SELECT domain_patterns FROM credentials LIMIT 1")
+                    except Exception:
+                        cursor.execute(
+                            "ALTER TABLE credentials ADD COLUMN domain_patterns "
+                            "JSON NOT NULL DEFAULT '[]'"
                         )
                     cursor.close()
         except Exception:

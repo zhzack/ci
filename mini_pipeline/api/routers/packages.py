@@ -1,11 +1,11 @@
-"""REST API endpoints for package and artifact repository management with sharing and zones."""
-
 from __future__ import annotations
 
+import tempfile
 from datetime import datetime, timedelta
 from typing import Annotated, Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
+import httpx
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -15,7 +15,7 @@ from mini_pipeline.api.dependencies import get_services
 from mini_pipeline.api.routers.plugins import PluginResponse
 from mini_pipeline.core.container import Services
 from mini_pipeline.database.models import utcnow
-from mini_pipeline.domain.exceptions import PermissionDeniedError
+from mini_pipeline.domain.exceptions import PermissionDeniedError, ValidationError
 from mini_pipeline.storage.base import (
     DirectoryListing,
     FilePreview,
@@ -25,6 +25,13 @@ from mini_pipeline.storage.base import (
 
 router = APIRouter(prefix="/packages", tags=["packages"])
 public_router = APIRouter(prefix="/packages", tags=["packages"])
+
+
+class ImportRemoteRequest(BaseModel):
+    url: str = Field(min_length=1, description="HTTP/HTTPS remote download URL")
+    target_dir: str = Field(default="", description="Target directory in package storage")
+    filename: str | None = Field(default=None, description="Optional destination filename")
+    credential_id: str | None = Field(default=None, description="Optional credential identifier")
 
 
 class CreateDirRequest(BaseModel):
@@ -135,6 +142,77 @@ def upload_file(
         stream=file.file,
         relative_path=relative_path or None,
     )
+
+
+@router.post("/import-remote", response_model=StorageItem)
+def import_remote_file(
+    services: Annotated[Services, Depends(get_services)],
+    principal: PrincipalDep,
+    body: ImportRemoteRequest,
+) -> StorageItem:
+    """Download a file from remote HTTP/HTTPS URL with optional credential authentication."""
+    _require_write(principal)
+    services.package_storage.check_zone_access(principal, body.target_dir, write=True)
+
+    url = body.url.strip()
+    if not url.startswith(("http://", "https://")):
+        raise ValidationError("URL must start with http:// or https://")
+
+    # Set up auth from credential if provided
+    auth = None
+    headers = {}
+    if body.credential_id:
+        cred = services.credentials.resolve_secret(body.credential_id, user_id=principal.user_id)
+        if cred:
+            username = cred.get("username")
+            password = cred.get("password")
+            secret = cred.get("secret")
+            if username and password:
+                auth = (str(username), str(password))
+            elif secret:
+                headers["Authorization"] = f"Bearer {secret}"
+
+    # Determine filename
+    filename = (body.filename or "").strip()
+    if not filename:
+        url_path = urlsplit(url).path
+        filename = url_path.split("/")[-1] if url_path else "download.bin"
+    if not filename:
+        filename = "download.bin"
+
+    with tempfile.NamedTemporaryFile(prefix="remote-dl-", suffix=".bin", delete=False) as temp:
+        temp_path = temp.name
+
+    try:
+        with httpx.stream(
+            "GET",
+            url,
+            auth=auth,
+            headers=headers,
+            follow_redirects=True,
+            timeout=60.0,
+        ) as resp:
+            resp.raise_for_status()
+            with open(temp_path, "wb") as f:
+                for chunk in resp.iter_bytes(chunk_size=65536):
+                    f.write(chunk)
+
+        with open(temp_path, "rb") as f:
+            item = services.package_storage.save_uploaded_file(
+                target_dir=body.target_dir,
+                filename=filename,
+                stream=f,
+            )
+        return item
+    except httpx.HTTPError as exc:
+        raise ValidationError(f"Failed to download remote file: {exc}") from exc
+    finally:
+        try:
+            import os
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+        except Exception:
+            pass
 
 
 @router.post("/extract", response_model=StorageItem)

@@ -1,5 +1,7 @@
 """HTTP ZIP plugin source provider."""
 
+from __future__ import annotations
+
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
@@ -25,6 +27,18 @@ class HttpSource:
         if not url.startswith(("http://", "https://")):
             raise SourceError("HTTP source url must use http or https")
 
+        cred = config.get("credential_payload")
+        auth = None
+        headers = {}
+        if cred:
+            username = cred.get("username")
+            password = cred.get("password")
+            secret = cred.get("secret")
+            if username and password:
+                auth = (str(username), str(password))
+            elif secret:
+                headers["Authorization"] = f"Bearer {secret}"
+
         with tempfile.NamedTemporaryFile(prefix="plugin-", suffix=".zip", delete=False) as temp:
             archive_path = Path(temp.name)
         try:
@@ -33,6 +47,8 @@ class HttpSource:
                 with httpx.stream(
                     "GET",
                     url,
+                    auth=auth,
+                    headers=headers,
                     follow_redirects=True,
                     timeout=self.settings.http_timeout_seconds,
                 ) as response:

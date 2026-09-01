@@ -457,3 +457,35 @@ class TaskCacheRecord(Base):
     outputs: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     artifacts: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class Credential(Base):
+    """A secret or credential stored in the credential vault.
+
+    type: 'username_password' | 'secret_text' | 'ssh_key' | 'secret_file'
+    scope: 'personal' (owner and admin) | 'team' (team members) | 'global' (all users)
+    encrypted_data: Fernet-encrypted JSON payload
+    """
+
+    __tablename__ = "credentials"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    type: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope: Mapped[str] = mapped_column(String(16), default="personal", nullable=False)
+    owner_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    team_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("teams.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    # Optional domain/URL wildcard patterns this credential applies to
+    # (e.g. ["*.github.com", "nexus.corp.internal:*"])
+    domain_patterns: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    encrypted_data: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+

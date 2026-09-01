@@ -25,11 +25,13 @@ class PluginService:
         repository: PluginRepository,
         sources: SourceRegistry,
         upload_source: UploadSource,
+        credentials: Optional[Any] = None,
     ) -> None:
         self.storage = storage
         self.repository = repository
         self.sources = sources
         self.upload_source = upload_source
+        self.credentials = credentials
 
     def register(
         self, source: Mapping[str, Any], *, owner_id: Optional[str] = None
@@ -37,8 +39,16 @@ class PluginService:
         source_type = str(source.get("type", "")).strip()
         if not source_type:
             raise SourceError("Plugin source requires a type")
+
+        source_dict = dict(source)
+        cred_id = source_dict.get("credential_id")
+        if cred_id and self.credentials:
+            cred_payload = self.credentials.resolve_secret(cred_id, user_id=owner_id)
+            if cred_payload:
+                source_dict["credential_payload"] = cred_payload
+
         return self._install(
-            lambda destination: self.sources.fetch(source_type, source, destination),
+            lambda destination: self.sources.fetch(source_type, source_dict, destination),
             source_type=source_type,
             source_url=str(source.get("url")) if source.get("url") else None,
             source_revision=self._source_revision(source),

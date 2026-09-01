@@ -370,9 +370,36 @@ def list_machines(
     for machine in services.machine_repository.list():
         if not include_revoked and machine.status == "revoked":
             continue
+        if machine.labels and machine.labels.get("builtin") and not principal.is_admin:
+            continue
         if principal.is_admin or services.machines.can_use(principal, machine):
             visible.append(MachineOut.of(machine, principal, services.machines))
     return visible
+
+
+@router.get("/system/deploy-key")
+def get_system_deploy_key(
+    principal: PrincipalDep,
+    services: Annotated[Services, Depends(get_services)],
+) -> dict[str, Any]:
+    """Get the master host server's SSH deploy public key."""
+    return services.machines.get_deploy_key(principal, "master-local")
+
+
+@router.get("/machines/{machine_id}/deploy-key")
+def get_machine_deploy_key(
+    machine_id: str,
+    principal: PrincipalDep,
+    services: Annotated[Services, Depends(get_services)],
+) -> dict[str, Any]:
+    """Get the SSH deploy public key for the machine or master server."""
+    try:
+        machine = services.machine_repository.get(machine_id)
+    except NotFoundError as exc:
+        raise NotFoundError(str(exc)) from exc
+    if not principal.is_admin and not services.machines.can_use(principal, machine):
+        raise PermissionDeniedError("No permission to view deploy key for this machine")
+    return services.machines.get_deploy_key(principal, machine_id)
 
 
 @router.post("/machines", status_code=201)

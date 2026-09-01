@@ -101,6 +101,7 @@ class PipelineEngine:
         email_service: Any | None = None,
         users: Any | None = None,
         task_cache: TaskCacheRepository | None = None,
+        credentials: Any | None = None,
     ) -> None:
         self.plugins = plugins
         self.runs = runs
@@ -115,6 +116,7 @@ class PipelineEngine:
         self.email_service = email_service
         self.users = users
         self.task_cache = task_cache
+        self.credentials = credentials
         self.cancellations = CancellationRegistry()
         # Set on service shutdown so remote-task wait loops exit instead of
         # blocking dispatcher shutdown forever.
@@ -332,10 +334,21 @@ class PipelineEngine:
                             f"{key} (no dependency declares output {out_key})"
                         )
                     continue
-                # All other ${{ }} forms are treated as params
+                # All other ${{ }} forms are treated as params or secrets
                 params_only = {key: value}
+                secrets_context = {}
+                if self.credentials is not None:
+                    try:
+                        for cred in self.credentials.credential_repo.list_all():
+                            dec = self.credentials.resolve_secret(cred.id, None)
+                            if dec:
+                                secrets_context[cred.name] = dec
+                    except Exception:
+                        pass
                 try:
-                    resolved = resolve_parameters(params_only, params=params, steps={})
+                    resolved = resolve_parameters(
+                        params_only, params=params, steps={}, secrets=secrets_context
+                    )
                     if key not in resolved:
                         missing_steps.setdefault(step.name, []).append(key)
                 except ValidationError:
@@ -817,10 +830,22 @@ class PipelineEngine:
                     for k, v in step_override.items():
                         if k not in expression_context:
                             step_local_params[k] = v
+                secrets_context = {}
+                if self.credentials is not None:
+                    run_entity = self.runs.get(run_id)
+                    owner_id = run_entity.owner_id if run_entity else None
+                    try:
+                        for cred in self.credentials.credential_repo.list_all():
+                            dec = self.credentials.resolve_secret(cred.id, owner_id)
+                            if dec:
+                                secrets_context[cred.name] = dec
+                    except Exception:
+                        pass
                 resolved_params = resolve_parameters(
                     step.parameters,
                     params=step_local_params,
                     steps=expression_context,
+                    secrets=secrets_context,
                 )
             except ValidationError as exc:
                 states[name] = TaskStatus.FAILED

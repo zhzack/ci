@@ -337,6 +337,11 @@ export function GlobalWorkbench(): React.JSX.Element {
             onClick: () => openTab('artifacts'),
           },
           {
+            key: 'credential',
+            label: '凭证与密钥中心 (Credentials Vault)',
+            onClick: () => openTab('credential'),
+          },
+          {
             key: 'admin',
             label: '用户与团队 (Admin)',
             onClick: () => openTab('admin'),

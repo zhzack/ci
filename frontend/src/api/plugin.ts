@@ -58,3 +58,20 @@ export async function uploadPluginFolder(files: File[]): Promise<PluginVersion> 
 export async function deletePlugin(name: string, version: string): Promise<void> {
   await http.delete(`/plugins/${encodeURIComponent(name)}/${encodeURIComponent(version)}`);
 }
+
+export type GitBranchProbeResult = {
+  branches: string[];
+  tags: string[];
+  default_branch: string;
+};
+
+export async function detectGitBranches(
+  url: string,
+  credentialId?: string,
+): Promise<GitBranchProbeResult> {
+  const { data } = await http.post<GitBranchProbeResult>('/plugins/git-branches', {
+    url,
+    credential_id: credentialId || undefined,
+  });
+  return data;
+}

@@ -44,6 +44,7 @@ export type PluginSourceRequest = {
   tag?: string;
   revision?: string;
   commit?: string;
+  credential_id?: string;
 };
 
 export type RegisterPluginRequest = {

@@ -28,6 +28,8 @@ import {
   LinkOutlined,
   PlusOutlined,
   ReloadOutlined,
+  CopyOutlined,
+  SafetyCertificateOutlined,
 } from '@ant-design/icons';
 import { PageHeader } from '@/components/PageHeader';
 import { Loading } from '@/components/Loading';
@@ -43,12 +45,14 @@ import {
   updateMachine,
   readCredentials,
   testMachineConnection,
+  getMachineDeployKey,
   listGrants,
   createGrant,
   deleteGrant,
   listTeams,
   type Machine,
   type RegisterMachineRequest,
+  type DeployKeyInfo,
   type Team,
 } from '@/api/machine';
 import { adminListUsers, type AdminUser } from '@/api/admin';
@@ -482,6 +486,9 @@ export function MachinesPage(): React.JSX.Element {
   const [drawer, setDrawer] = useState<Machine | null>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
   const [newToken, setNewToken] = useState<string | null>(null);
+  const [deployKeyModalOpen, setDeployKeyModalOpen] = useState(false);
+  const [deployKeyData, setDeployKeyData] = useState<DeployKeyInfo | null>(null);
+  const [deployKeyLoading, setDeployKeyLoading] = useState(false);
   const [form] = Form.useForm<RegisterFormValues>();
   const registerMutation = useApiMutation<
     { machine: Machine; token: string },
@@ -492,6 +499,19 @@ export function MachinesPage(): React.JSX.Element {
     },
     [['machines']],
   );
+
+  const handleViewDeployKey = async (machineId?: string) => {
+    setDeployKeyLoading(true);
+    setDeployKeyModalOpen(true);
+    try {
+      const res = await getMachineDeployKey(machineId);
+      setDeployKeyData(res);
+    } catch (err) {
+      antdMessage.error('无法获取部署公钥: ' + describeError(err));
+    } finally {
+      setDeployKeyLoading(false);
+    }
+  };
 
   const onSubmit = async (values: RegisterFormValues) => {
     try {
@@ -531,18 +551,30 @@ export function MachinesPage(): React.JSX.Element {
     {
       title: 'Name',
       dataIndex: 'name',
-      render: (value: string, record) => (
-        <Space>
-          <ApiOutlined style={{ color: record.online ? '#52c41a' : undefined }} />
-          <a onClick={() => setDrawer(record)}>{value}</a>
-        </Space>
-      ),
+      render: (value: string, record) => {
+        const isBuiltin = record.labels?.builtin || record.id === 'master-local';
+        return (
+          <Space wrap size={6}>
+            <ApiOutlined style={{ color: record.online ? '#52c41a' : undefined }} />
+            <a onClick={() => setDrawer(record)}>{value}</a>
+            {isBuiltin && (
+              <Tag color="gold" style={{ marginLeft: 4, fontWeight: 500 }}>
+                👑 Master 内置节点 (管理员专享)
+              </Tag>
+            )}
+          </Space>
+        );
+      },
     },
     {
       title: 'Mode',
       dataIndex: 'connection_type',
-      render: (value: string) =>
-        value === 'ssh' ? <Tag color="orange">SSH</Tag> : <Tag color="cyan">Agent</Tag>,
+      render: (value: string, record) => {
+        if (record.labels?.builtin || record.connection_type === ('builtin' as any)) {
+          return <Tag color="purple">Built-in</Tag>;
+        }
+        return value === 'ssh' ? <Tag color="orange">SSH</Tag> : <Tag color="cyan">Agent</Tag>;
+      },
     },
     {
       title: 'Kind',
@@ -579,7 +611,14 @@ export function MachinesPage(): React.JSX.Element {
       title: 'Actions',
       key: 'actions',
       render: (_value, record) => (
-        <Space>
+        <Space wrap size={6}>
+          <Button
+            size="small"
+            icon={<SafetyCertificateOutlined style={{ color: themeToken.colorPrimary }} />}
+            onClick={() => handleViewDeployKey(record.id)}
+          >
+            部署公钥
+          </Button>
           {record.connection_type === 'ssh' ? (
             <Button
               size="small"
@@ -685,6 +724,12 @@ export function MachinesPage(): React.JSX.Element {
         description="管理分布式 Runner 节点、SSH 远端主机，以及多机一键下发装配 Python/Node 运行环境"
         extra={
           <Space>
+            <Button
+              icon={<SafetyCertificateOutlined />}
+              onClick={() => handleViewDeployKey()}
+            >
+              🔑 部署公钥 (Deploy Key)
+            </Button>
             <Button icon={<ReloadOutlined />} onClick={() => refetch()}>
               刷新
             </Button>
@@ -852,6 +897,79 @@ export function MachinesPage(): React.JSX.Element {
             Register Machine
           </Button>
         </Form>
+      </Modal>
+
+      <Modal
+        title={
+          <Space align="center">
+            <SafetyCertificateOutlined style={{ color: themeToken.colorPrimary }} />
+            <span>
+              {deployKeyData?.machine_name
+                ? `机器部署公钥: ${deployKeyData.machine_name}`
+                : '服务端主机部署公钥 (Master SSH Deploy Key)'}
+            </span>
+          </Space>
+        }
+        open={deployKeyModalOpen}
+        onCancel={() => setDeployKeyModalOpen(false)}
+        width={680}
+        footer={[
+          <Button
+            key="copy"
+            type="primary"
+            icon={<CopyOutlined />}
+            onClick={() => {
+              if (deployKeyData?.public_key) {
+                navigator.clipboard.writeText(deployKeyData.public_key);
+                antdMessage.success('已复制 SSH 部署公钥到剪贴板');
+              }
+            }}
+          >
+            一键复制公钥
+          </Button>,
+          <Button key="close" onClick={() => setDeployKeyModalOpen(false)}>
+            关闭
+          </Button>,
+        ]}
+      >
+        <Alert
+          type="info"
+          showIcon
+          message="GitLab / GitHub 免密打通与部署指引"
+          description="将下方生成的机器 SSH 部署公钥添加到 GitLab/GitHub 仓库设置（Settings -> Repository -> Deploy Keys）中，勾选 Write access 权限，即可实现执行任务或拉取代码时完全免输账号密码。"
+          style={{ marginBottom: 16 }}
+        />
+
+        {deployKeyLoading ? (
+          <Loading rows={3} />
+        ) : (
+          <div>
+            <div style={{ marginBottom: 12 }}>
+              <Space size={12}>
+                <Typography.Text strong>密钥类型:</Typography.Text>
+                <Tag color="cyan">{deployKeyData?.key_type || 'ssh-ed25519'}</Tag>
+                <Typography.Text strong>指纹 (Fingerprint):</Typography.Text>
+                <Tag color="purple">{deployKeyData?.fingerprint || '—'}</Tag>
+              </Space>
+            </div>
+
+            <div style={{ marginBottom: 8 }}>
+              <Typography.Text strong>OpenSSH 部署公钥明文 (Public Key):</Typography.Text>
+            </div>
+            <Input.TextArea
+              readOnly
+              rows={4}
+              value={deployKeyData?.public_key || ''}
+              style={{
+                fontFamily: 'monospace',
+                fontSize: 12,
+                background: themeToken.colorFillAlter,
+                cursor: 'pointer',
+              }}
+              onClick={(e) => (e.target as HTMLTextAreaElement).select()}
+            />
+          </div>
+        )}
       </Modal>
 
       <TokenOnceModal token={newToken} onClose={() => setNewToken(null)} />

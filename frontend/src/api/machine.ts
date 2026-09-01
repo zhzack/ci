@@ -159,3 +159,21 @@ export async function listTeams(): Promise<Team[]> {
   return data;
 }
 
+export type DeployKeyInfo = {
+  public_key: string;
+  key_type: string;
+  fingerprint: string;
+  source: string;
+  comment?: string;
+  machine_name?: string;
+  machine_id?: string;
+};
+
+export async function getMachineDeployKey(machineId?: string): Promise<DeployKeyInfo> {
+  const endpoint = machineId
+    ? `/machines/${encodeURIComponent(machineId)}/deploy-key`
+    : '/system/deploy-key';
+  const { data } = await http.get<DeployKeyInfo>(endpoint);
+  return data;
+}
+
