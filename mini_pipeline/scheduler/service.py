@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from mini_pipeline.account.service import Principal
-from mini_pipeline.database.models import Artifact, PipelineRun, TaskRun
+from mini_pipeline.database.models import Artifact, PipelineRun, TaskRun, utcnow
 from mini_pipeline.database.repositories import RunRepository
 from mini_pipeline.domain.exceptions import ConflictError, NotFoundError, ValidationError
 from mini_pipeline.domain.states import (
@@ -277,13 +277,13 @@ class RunService:
                         task.id,
                         TaskStatus.CANCELLED,
                         message="Cancelled before execution",
-                        finished_at=datetime.utcnow(),
+                        finished_at=utcnow(),
                     )
             self.repository.set_run_state(
                 run_id,
                 PipelineStatus.CANCELLED,
                 message="Run cancelled before start",
-                finished_at=datetime.utcnow(),
+                finished_at=utcnow(),
             )
             self.engine.cancellations.cancel(run_id)
             self.engine.events.publish_run_status(run_id, PipelineStatus.CANCELLED.value)
@@ -368,7 +368,7 @@ class RunService:
                         task.id,
                         TaskStatus.SKIPPED,
                         message="Parent run did not produce a successful result for this step",
-                        finished_at=datetime.utcnow(),
+                        finished_at=utcnow(),
                     )
                     continue
                 self.repository.set_task_state(

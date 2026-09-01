@@ -1,6 +1,5 @@
 import hashlib
 import io
-from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,6 +8,7 @@ import pytest
 from mini_pipeline.artifact import s3 as s3_module
 from mini_pipeline.artifact.s3 import S3ArtifactStore
 from mini_pipeline.core.config import ArtifactStorageConfig, S3PackageStorageConfig
+from mini_pipeline.database.models import utcnow
 from mini_pipeline.domain.exceptions import ExecutionError
 from mini_pipeline.domain.models import ArtifactRecord
 
@@ -54,7 +54,7 @@ class FakeRepository:
             storage_path=kwargs["storage_path"],
             size=kwargs["size"],
             sha256=kwargs["sha256"],
-            created_at=datetime.utcnow(),
+            created_at=utcnow(),
         )
 
 
@@ -159,7 +159,7 @@ def test_s3_open_rejects_foreign_keys(
         storage_path=Path("../../etc/passwd"),
         size=3,
         sha256="x" * 64,
-        created_at=datetime.utcnow(),
+        created_at=utcnow(),
     )
 
     with pytest.raises(ExecutionError, match="unavailable"):

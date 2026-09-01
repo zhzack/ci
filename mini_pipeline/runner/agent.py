@@ -34,6 +34,7 @@ import httpx
 from mini_pipeline import __version__
 from mini_pipeline.domain.runtime import RuntimeRequest
 from mini_pipeline.plugin.manifest import load_manifest
+from mini_pipeline.runtime.docker import DockerRuntime
 from mini_pipeline.runtime.executable_runtime import ExecutableRuntime
 from mini_pipeline.runtime.node_runtime import NodeRuntime
 from mini_pipeline.runtime.python_runtime import PythonRuntime
@@ -359,6 +360,7 @@ def _build_runtime_registry() -> RuntimeRegistry:
     registry.register(PythonRuntime())
     registry.register(NodeRuntime())
     registry.register(ExecutableRuntime())
+    registry.register(DockerRuntime())
     return registry
 
 

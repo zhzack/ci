@@ -14,6 +14,7 @@ from mini_pipeline.api.auth import PrincipalDep
 from mini_pipeline.api.dependencies import get_services
 from mini_pipeline.api.routers.plugins import PluginResponse
 from mini_pipeline.core.container import Services
+from mini_pipeline.database.models import utcnow
 from mini_pipeline.domain.exceptions import PermissionDeniedError
 from mini_pipeline.storage.base import (
     DirectoryListing,
@@ -321,7 +322,7 @@ def create_share_link(
     services.package_storage.check_zone_access(principal, body.source_path, write=False)
     owner_id = getattr(principal, "user_id", "") or principal.name
     expires_at = (
-        datetime.utcnow() + timedelta(hours=body.expires_in_hours)
+        utcnow() + timedelta(hours=body.expires_in_hours)
         if body.expires_in_hours
         else None
     )

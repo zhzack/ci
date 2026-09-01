@@ -18,13 +18,12 @@ import re
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, wait
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from mini_pipeline.core.events import CancellationRegistry, EventBus, RunEvent
-from mini_pipeline.database.models import PipelineRun, TaskRun
-from mini_pipeline.database.repositories import PluginRepository, RunRepository
+from mini_pipeline.database.models import PipelineRun, TaskRun, utcnow
+from mini_pipeline.database.repositories import PluginRepository, RunRepository, TaskCacheRepository
 from mini_pipeline.domain.exceptions import ValidationError
 from mini_pipeline.domain.states import PipelineStatus, TaskStatus
 from mini_pipeline.executor.dependencies import DependencyResult
@@ -101,6 +100,7 @@ class PipelineEngine:
         ssh_executor: Any | None = None,
         email_service: Any | None = None,
         users: Any | None = None,
+        task_cache: TaskCacheRepository | None = None,
     ) -> None:
         self.plugins = plugins
         self.runs = runs
@@ -114,6 +114,7 @@ class PipelineEngine:
         self.task_timeout_seconds = task_timeout_seconds
         self.email_service = email_service
         self.users = users
+        self.task_cache = task_cache
         self.cancellations = CancellationRegistry()
         # Set on service shutdown so remote-task wait loops exit instead of
         # blocking dispatcher shutdown forever.
@@ -122,8 +123,41 @@ class PipelineEngine:
         # The coordinator is single-threaded per run; a plain dict is enough.
         self._resolved_params_cache: dict[tuple[str, str], dict[str, Any]] = {}
         self._dependency_results_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        self._step_cache_keys: dict[tuple[str, str], str] = {}
         # Remote tasks awaiting runner pickup, keyed by task id.
         self.remote_inputs: dict[str, RemoteTaskInputs] = {}
+
+    def _compute_cache_key(
+        self,
+        step: PipelineStep,
+        plugin,
+        params: dict[str, Any],
+        dependencies: dict[str, Any],
+    ) -> str:
+        import hashlib
+
+        hasher = hashlib.sha256()
+        hasher.update(str(plugin.name).encode("utf-8"))
+        hasher.update(str(plugin.version).encode("utf-8"))
+        try:
+            install_path = Path(plugin.install_path)
+            if install_path.is_dir():
+                manifest_file = install_path / "plugin.yaml"
+                if manifest_file.is_file():
+                    hasher.update(manifest_file.read_bytes())
+        except Exception:
+            pass
+        hasher.update(json.dumps(params or {}, sort_keys=True, default=str).encode("utf-8"))
+        dep_dict = {}
+        for dep_name, dep_res in (dependencies or {}).items():
+            if hasattr(dep_res, "model_dump"):
+                dep_dict[dep_name] = dep_res.model_dump()
+            elif isinstance(dep_res, dict):
+                dep_dict[dep_name] = dep_res
+            else:
+                dep_dict[dep_name] = str(dep_res)
+        hasher.update(json.dumps(dep_dict, sort_keys=True, default=str).encode("utf-8"))
+        return hasher.hexdigest()
 
     def _dispatch_email_notification(
         self, run_id: str, status: PipelineStatus, message: str = ""
@@ -406,7 +440,7 @@ class PipelineEngine:
         uploads: dict[str, Path] | None,
         run_cancel,
     ) -> None:
-        now = datetime.utcnow()
+        now = utcnow()
         self.runs.set_run_state(run_id, PipelineStatus.RUNNING, started_at=now)
         self._publish(run_id, "run.status", data={"status": PipelineStatus.RUNNING.value})
         steps = {step.name: step for step in definition.steps}
@@ -461,7 +495,7 @@ class PipelineEngine:
                             TaskStatus.CANCELLED,
                             message="Cancelled",
                             log_path=str(result.log_path) if result.log_path else None,
-                            finished_at=datetime.utcnow(),
+                            finished_at=utcnow(),
                         )
                         self._publish(
                             run_id, "task.status",
@@ -540,8 +574,33 @@ class PipelineEngine:
                         message=result.message,
                         outputs=result.outputs,
                         log_path=str(result.log_path) if result.log_path else None,
-                        finished_at=datetime.utcnow(),
+                        finished_at=utcnow(),
                     )
+                    if (
+                        result.success
+                        and getattr(step, "cache", False)
+                        and self.task_cache is not None
+                    ):
+                        cache_key = self._step_cache_keys.get((run_id, step_name))
+                        if not cache_key:
+                            plugin_inst = self.plugins.get_version(*step.plugin_reference)
+                            cache_key = self._compute_cache_key(
+                                step,
+                                plugin_inst,
+                                self._resolved_params_cache.get((run_id, step_name), {}),
+                                self._dependency_results_cache.get((run_id, step_name), {}),
+                            )
+                        try:
+                            self.task_cache.set(
+                                cache_key=cache_key,
+                                plugin_name=task.plugin_name,
+                                plugin_version=task.plugin_version,
+                                step_name=step_name,
+                                outputs=dict(result.outputs or {}),
+                                artifacts=list(result.artifacts or []),
+                            )
+                        except Exception:
+                            logger.exception("Failed to store cache record for step %s", step_name)
                     self._observe_task(task.plugin_name, task.started_at)
                     self._publish(
                         run_id, "task.status",
@@ -562,7 +621,7 @@ class PipelineEngine:
                             task_entities[name].id,
                             TaskStatus.CANCELLED,
                             message="Cancelled before execution",
-                            finished_at=datetime.utcnow(),
+                            finished_at=utcnow(),
                         )
                         self._publish(
                             run_id, "task.status",
@@ -575,7 +634,7 @@ class PipelineEngine:
                     run_id,
                     PipelineStatus.CANCELLED,
                     message="Run cancelled",
-                    finished_at=datetime.utcnow(),
+                    finished_at=utcnow(),
                 )
                 self._publish(
                     run_id, "run.status",
@@ -590,7 +649,7 @@ class PipelineEngine:
                 run_id,
                 status,
                 message=message,
-                finished_at=datetime.utcnow(),
+                finished_at=utcnow(),
             )
             self._observe_run(status.value)
             self._publish(run_id, "run.status", data={"status": status.value})
@@ -601,7 +660,7 @@ class PipelineEngine:
                 run_id,
                 PipelineStatus.FAILED,
                 message=f"Pipeline coordinator failed: {exc}",
-                finished_at=datetime.utcnow(),
+                finished_at=utcnow(),
             )
             self._observe_run(PipelineStatus.FAILED.value)
             self._publish(
@@ -674,7 +733,7 @@ class PipelineEngine:
         self.runs.set_task_state(
             task.id,
             TaskStatus.QUEUED,
-            started_at=datetime.utcnow(),
+            started_at=utcnow(),
         )
         self._publish(
             task.run_id, "task.status",
@@ -724,7 +783,7 @@ class PipelineEngine:
                         if skipped_state == TaskStatus.CANCELLED
                         else "Skipped because a dependency did not succeed"
                     ),
-                    finished_at=datetime.utcnow(),
+                    finished_at=utcnow(),
                 )
                 self._publish(
                     run_id, "task.status",
@@ -771,7 +830,7 @@ class PipelineEngine:
                     tasks[name].id,
                     TaskStatus.FAILED,
                     message=str(exc),
-                    finished_at=datetime.utcnow(),
+                    finished_at=utcnow(),
                 )
                 self._publish(
                     run_id, "task.status",
@@ -798,7 +857,7 @@ class PipelineEngine:
                 self.runs.set_task_state(
                     tasks[name].id,
                     TaskStatus.RUNNING,
-                    started_at=datetime.utcnow(),
+                    started_at=utcnow(),
                     attempt=1,
                 )
                 self._publish(
@@ -828,7 +887,7 @@ class PipelineEngine:
                 self.runs.set_task_state(
                     tasks[name].id,
                     TaskStatus.QUEUED,
-                    started_at=datetime.utcnow(),
+                    started_at=utcnow(),
                     attempt=1,
                 )
                 self.remote_inputs[tasks[name].id] = RemoteTaskInputs(
@@ -858,11 +917,62 @@ class PipelineEngine:
                 progressed = True
                 continue
 
+            # Check cache for local execution
+            if getattr(step, "cache", False) and self.task_cache is not None:
+                cache_key = self._compute_cache_key(
+                    step, plugin, resolved_params, dependency_results
+                )
+                self._step_cache_keys[(run_id, name)] = cache_key
+                cached = self.task_cache.get(cache_key)
+                if cached is not None:
+                    log_path = None
+                    if self.storage:
+                        log_path = self.storage.logs / run_id / f"{tasks[name].id}.log"
+                        try:
+                            log_path.parent.mkdir(parents=True, exist_ok=True)
+                            msg = (
+                                f"[CACHE HIT] Restored outputs and artifacts from "
+                                f"cache key {cache_key[:12]}\n"
+                            )
+                            log_path.write_text(msg, encoding="utf-8")
+                        except Exception:
+                            pass
+                    states[name] = TaskStatus.SUCCESS
+                    self.runs.set_task_state(
+                        tasks[name].id,
+                        TaskStatus.SUCCESS,
+                        message="[CACHE HIT] Restored from cache",
+                        outputs=dict(cached.outputs or {}),
+                        log_path=str(log_path) if log_path else None,
+                        started_at=utcnow(),
+                        finished_at=utcnow(),
+                    )
+                    results[name] = TaskExecutionResult(
+                        True,
+                        message="[CACHE HIT] Restored from cache",
+                        outputs=dict(cached.outputs or {}),
+                        artifacts=list(cached.artifacts or []),
+                        log_path=log_path,
+                    )
+                    self._publish(
+                        run_id,
+                        "task.status",
+                        task_id=tasks[name].id,
+                        step_name=name,
+                        data={
+                            "status": TaskStatus.SUCCESS.value,
+                            "message": "[CACHE HIT] Restored from cache",
+                            "outputs": cached.outputs,
+                        },
+                    )
+                    progressed = True
+                    continue
+
             states[name] = TaskStatus.RUNNING
             self.runs.set_task_state(
                 tasks[name].id,
                 TaskStatus.RUNNING,
-                started_at=datetime.utcnow(),
+                started_at=utcnow(),
                 attempt=1,
             )
             self._publish(

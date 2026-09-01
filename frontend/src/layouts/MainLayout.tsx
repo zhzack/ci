@@ -29,7 +29,12 @@ export function MainLayout(): React.JSX.Element {
   const user = useAuthStore((state) => state.user);
   const clear = useAuthStore((state) => state.clear);
   const openTab = useWorkbenchStore((state) => state.openTab);
+  const switchUser = useWorkbenchStore((state) => state.switchUser);
   const { token } = antdTheme.useToken();
+
+  useEffect(() => {
+    switchUser(user?.id ?? null);
+  }, [user?.id, switchUser]);
 
   const items = useMemo(
     () => toAntdMenu(visibleMenuItems(user?.role)),
@@ -136,6 +141,7 @@ export function MainLayout(): React.JSX.Element {
                   onClick: () => {
                     void logout().catch(() => undefined);
                     clear();
+                    switchUser(null);
                     navigate('/login');
                   },
                 },

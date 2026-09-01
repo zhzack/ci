@@ -12,6 +12,7 @@ from mini_pipeline.account.service import Principal
 from mini_pipeline.api.auth import PrincipalDep
 from mini_pipeline.api.dependencies import get_services
 from mini_pipeline.core.container import Services
+from mini_pipeline.database.models import utcnow
 from mini_pipeline.domain.exceptions import NotFoundError, PermissionDeniedError, ValidationError
 
 router = APIRouter(tags=["account"])
@@ -223,7 +224,7 @@ def me(
             role="admin",
             status="active",
             must_change_password=False,
-            created_at=datetime.utcnow(),
+            created_at=utcnow(),
         )
     return UserOut.of(services.users.get(principal.user_id))
 

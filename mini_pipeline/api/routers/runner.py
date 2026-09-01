@@ -6,7 +6,6 @@ issued at registration and shown once; the server only stores their SHA-256.
 
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -18,7 +17,7 @@ from mini_pipeline.account.service import MachineIdentity
 from mini_pipeline.api.auth import require_machine
 from mini_pipeline.api.dependencies import get_services
 from mini_pipeline.core.container import Services
-from mini_pipeline.database.models import TaskRun
+from mini_pipeline.database.models import TaskRun, utcnow
 from mini_pipeline.domain.exceptions import NotFoundError, ValidationError
 from mini_pipeline.domain.states import TaskStatus
 from mini_pipeline.runner.bundle import build_task_bundle
@@ -185,7 +184,7 @@ def report_status(
         message=payload.message or None,
         outputs=payload.outputs or None,
         log_path=str(log_path) if log_path.is_file() else task.log_path,
-        finished_at=datetime.utcnow(),
+        finished_at=utcnow(),
     )
     services.engine._publish(
         task.run_id, "task.status",

@@ -14,7 +14,7 @@ from mini_pipeline.database.account_repositories import (
     PackageShareRepository,
     TeamRepository,
 )
-from mini_pipeline.database.models import PackageShareLink, ShareGrant
+from mini_pipeline.database.models import PackageShareLink, ShareGrant, utcnow
 from mini_pipeline.domain.exceptions import NotFoundError, PermissionDeniedError, ValidationError
 from mini_pipeline.domain.models import PluginRecord
 from mini_pipeline.plugin.service import PluginService
@@ -512,7 +512,7 @@ class PackageStorageService:
         if not link:
             raise NotFoundError(f"Share link {token!r} not found")
 
-        if link.expires_at and link.expires_at < datetime.utcnow():
+        if link.expires_at and link.expires_at < utcnow():
             raise NotFoundError("This share link has expired")
 
         return link
@@ -567,7 +567,7 @@ class PackageStorageService:
                 "token": token,
                 "source_path": link.source_path,
                 "name": link.source_path.split("/")[-1],
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": utcnow().isoformat(),
             }
             final_path = (
                 clean_target

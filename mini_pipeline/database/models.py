@@ -1,7 +1,7 @@
 """SQLAlchemy persistence models."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from sqlalchemy import (
@@ -25,7 +25,7 @@ def new_id() -> str:
 
 
 def utcnow() -> datetime:
-    return datetime.utcnow()
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class Base(DeclarativeBase):
@@ -446,4 +446,14 @@ class EnvironmentDeployTask(Base):
     machine: Mapped[Machine] = relationship()
 
 
+class TaskCacheRecord(Base):
+    __tablename__ = "task_cache"
 
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    cache_key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    plugin_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    plugin_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    step_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    outputs: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    artifacts: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)

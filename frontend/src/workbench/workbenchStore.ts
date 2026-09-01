@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { loadStoredAuth } from '@/api/http';
 import type { LayoutNode } from '@/components/dock';
 import {
   closeTab,
@@ -10,8 +11,6 @@ import {
   selectTab,
   serializeLayout,
 } from '@/components/dock';
-
-const STORAGE_KEY = 'mini_pipeline_global_ide_workbench_v1';
 
 export const DEFAULT_WORKBENCH_LAYOUT: LayoutNode = {
   id: 'group-main',
@@ -29,8 +28,10 @@ export interface DynamicTabParam {
 }
 
 interface WorkbenchState {
+  currentUserId: string | null;
   layout: LayoutNode;
   dynamicTabs: Record<string, DynamicTabParam>;
+  switchUser: (userId: string | null) => void;
   setLayout: (layout: LayoutNode) => void;
   resetLayout: (newDefault?: LayoutNode) => void;
   openTab: (tabId: string, dynamicInfo?: DynamicTabParam, targetGroupId?: string) => void;
@@ -39,9 +40,14 @@ interface WorkbenchState {
   isOpen: (tabId: string) => boolean;
 }
 
-function loadInitialLayout(): LayoutNode {
+function getStorageKey(userId?: string | null): string {
+  return userId ? `mini_pipeline_workbench_user_${userId}` : 'mini_pipeline_workbench_guest';
+}
+
+function loadInitialLayout(userId?: string | null): LayoutNode {
   try {
-    const saved = localStorage.getItem(STORAGE_KEY);
+    const key = getStorageKey(userId);
+    const saved = localStorage.getItem(key);
     if (saved) {
       const parsed = deserializeLayout(saved);
       if (parsed) return parsed;
@@ -52,35 +58,52 @@ function loadInitialLayout(): LayoutNode {
   return DEFAULT_WORKBENCH_LAYOUT;
 }
 
-function persistLayout(layout: LayoutNode) {
+function persistLayout(layout: LayoutNode, userId?: string | null) {
   try {
-    localStorage.setItem(STORAGE_KEY, serializeLayout(layout));
+    const key = getStorageKey(userId);
+    localStorage.setItem(key, serializeLayout(layout));
   } catch {
     // Ignore localStorage write errors
   }
 }
 
+const initialUser = loadStoredAuth()?.user;
+const initialUserId = initialUser?.id ?? null;
+
 export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
-  layout: loadInitialLayout(),
+  currentUserId: initialUserId,
+  layout: loadInitialLayout(initialUserId),
   dynamicTabs: {},
 
+  switchUser: (newUserId) => {
+    const { currentUserId, layout } = get();
+    if (currentUserId === newUserId) return;
+    // Persist current layout under current user id
+    persistLayout(layout, currentUserId);
+    // Load layout for new user
+    const newLayout = loadInitialLayout(newUserId);
+    set({ currentUserId: newUserId, layout: newLayout, dynamicTabs: {} });
+  },
+
   setLayout: (newLayout) => {
-    persistLayout(newLayout);
+    const { currentUserId } = get();
+    persistLayout(newLayout, currentUserId);
     set({ layout: newLayout });
   },
 
   resetLayout: (newDefault) => {
+    const { currentUserId } = get();
     const target = newDefault ?? DEFAULT_WORKBENCH_LAYOUT;
-    persistLayout(target);
+    persistLayout(target, currentUserId);
     set({ layout: target, dynamicTabs: {} });
   },
 
   focusTab: (tabId) => {
-    const { layout } = get();
+    const { layout, currentUserId } = get();
     const group = findTabGroupWithTab(layout, tabId);
     if (group) {
       const updated = selectTab(layout, group.id, tabId);
-      persistLayout(updated);
+      persistLayout(updated, currentUserId);
       set({ layout: updated });
     }
   },
@@ -92,7 +115,7 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   },
 
   openTab: (tabId, dynamicInfo, targetGroupId) => {
-    const { layout, dynamicTabs } = get();
+    const { layout, dynamicTabs, currentUserId } = get();
 
     if (dynamicInfo) {
       set({ dynamicTabs: { ...dynamicTabs, [tabId]: dynamicInfo } });
@@ -101,7 +124,7 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
     const existingGroup = findTabGroupWithTab(layout, tabId);
     if (existingGroup) {
       const updated = selectTab(layout, existingGroup.id, tabId);
-      persistLayout(updated);
+      persistLayout(updated, currentUserId);
       set({ layout: updated });
       return;
     }
@@ -121,7 +144,7 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
 
     if (destGroupId) {
       const updated = moveTab(layout, destGroupId, destGroupId, tabId);
-      persistLayout(updated);
+      persistLayout(updated, currentUserId);
       set({ layout: updated });
     } else {
       // If tree is empty, create root group
@@ -131,20 +154,21 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
         tabs: [tabId],
         activeTab: tabId,
       };
-      persistLayout(newGroup);
+      persistLayout(newGroup, currentUserId);
       set({ layout: newGroup });
     }
   },
 
   closeTabById: (tabId) => {
-    const { layout } = get();
+    const { layout, currentUserId } = get();
     const group = findTabGroupWithTab(layout, tabId);
     if (group) {
       const updated = closeTab(layout, group.id, tabId);
       if (updated) {
-        persistLayout(updated);
+        persistLayout(updated, currentUserId);
         set({ layout: updated });
       }
     }
   },
 }));
+

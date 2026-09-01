@@ -27,6 +27,8 @@ class PipelineStep(BaseModel):
     # Optional execution target: machine id or name. Overrides the run-level
     # machine. Resolved and validated at submit time.
     machine: str | None = None
+    # Enable content-addressed result caching for this step
+    cache: bool = False
 
     @field_validator("name")
     @classmethod

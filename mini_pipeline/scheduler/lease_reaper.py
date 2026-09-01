@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import logging
 import threading
-from datetime import datetime
+
+from mini_pipeline.database.models import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ class LeaseReaper:
                 logger.exception("Lease reaper pass failed")
 
     def reap_once(self) -> int:
-        cutoff = datetime.utcnow()
+        cutoff = utcnow()
         reaped = self._runs.fail_expired_leases(
             cutoff=cutoff,
             message="Runner lost: task lease expired without a heartbeat",

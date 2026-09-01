@@ -262,3 +262,90 @@ def test_pipeline_completion_email_dispatch(tmp_path: Path) -> None:
         assert call_kwargs["to_email"] == "admin@example.com"
         assert call_kwargs["pipeline_name"] == "Email Test Pipeline"
         assert call_kwargs["status"] == "SUCCESS"
+
+
+def test_verification_code_retry_attempts_decrement_and_exhaustion(tmp_path: Path) -> None:
+    settings = authed_settings(tmp_path)
+    app = create_app(settings)
+
+    with TestClient(app) as client:
+        services = client.app.state.services
+        services.email_service.send_email_sync = MagicMock(return_value=True)
+
+        # Bootstrap admin
+        register_user(client, "admin")
+        test_email = "bob@example.com"
+
+        # Register Bob with standard endpoint so we can test OTP login
+        client.post(
+            "/api/auth/register",
+            json={
+                "username": "bob",
+                "password": "bob_password_123",
+                "email": test_email,
+            },
+        )
+
+        # Send login code
+        res_send = client.post(
+            "/api/auth/send-code",
+            json={"email": test_email, "purpose": "login"},
+        )
+        assert res_send.status_code == 200
+
+        # Attempt 1: wrong code -> should prompt 4 attempts left
+        r1 = client.post("/api/auth/login-otp", json={"email": test_email, "code": "000000"})
+        assert r1.status_code == 422
+        assert "还剩 4 次尝试机会" in r1.text
+
+        # Attempt 2: wrong code -> should prompt 3 attempts left
+        r2 = client.post("/api/auth/login-otp", json={"email": test_email, "code": "000000"})
+        assert r2.status_code == 422
+        assert "还剩 3 次尝试机会" in r2.text
+
+        # Attempt 3: wrong code -> should prompt 2 attempts left
+        r3 = client.post("/api/auth/login-otp", json={"email": test_email, "code": "000000"})
+        assert r3.status_code == 422
+        assert "还剩 2 次尝试机会" in r3.text
+
+        # Attempt 4: wrong code -> should prompt 1 attempt left
+        r4 = client.post("/api/auth/login-otp", json={"email": test_email, "code": "000000"})
+        assert r4.status_code == 422
+        assert "还剩 1 次尝试机会" in r4.text
+
+        # Attempt 5: wrong code -> should exhaust attempts and invalidate
+        r5 = client.post("/api/auth/login-otp", json={"email": test_email, "code": "000000"})
+        assert r5.status_code == 422
+        assert "失效" in r5.text or "过多" in r5.text
+
+        # Attempt 6: now code is invalid/used
+        r6 = client.post("/api/auth/login-otp", json={"email": test_email, "code": "000000"})
+        assert r6.status_code == 422
+
+
+def test_registration_sends_welcome_email(tmp_path: Path) -> None:
+    settings = authed_settings(tmp_path)
+    app = create_app(settings)
+
+    with TestClient(app) as client:
+        services = client.app.state.services
+        mock_welcome = MagicMock()
+        services.email_service.send_welcome_email = mock_welcome
+
+        # Register user with email
+        res = client.post(
+            "/api/auth/register",
+            json={
+                "username": "charlie",
+                "password": "charlie_password_123",
+                "email": "charlie@example.com",
+                "display_name": "Charlie Chaplin",
+            },
+        )
+        assert res.status_code == 201
+        assert mock_welcome.called
+        call_kwargs = mock_welcome.call_args.kwargs
+        assert call_kwargs["to_email"] == "charlie@example.com"
+        assert call_kwargs["username"] == "charlie"
+        assert call_kwargs["display_name"] == "Charlie Chaplin"
+

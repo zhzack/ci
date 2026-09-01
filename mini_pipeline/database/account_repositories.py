@@ -21,6 +21,7 @@ from mini_pipeline.database.models import (
     Team,
     TeamMember,
     User,
+    utcnow,
 )
 from mini_pipeline.database.session import Database
 from mini_pipeline.domain.exceptions import ConflictError, NotFoundError, ValidationError
@@ -166,7 +167,7 @@ class SessionRepository:
             auth_session = AuthSession(
                 user_id=user_id,
                 token_hash=hash_token(raw),
-                expires_at=datetime.utcnow() + timedelta(hours=ttl_hours),
+                expires_at=utcnow() + timedelta(hours=ttl_hours),
             )
             session.add(auth_session)
             session.flush()
@@ -182,7 +183,7 @@ class SessionRepository:
             )
             if auth_session is None:
                 return None
-            if auth_session.expires_at < datetime.utcnow():
+            if auth_session.expires_at < utcnow():
                 return None
             user = session.get(User, auth_session.user_id)
             if user is None or user.status != "active":
@@ -190,7 +191,7 @@ class SessionRepository:
             session.execute(
                 update(AuthSession)
                 .where(AuthSession.id == auth_session.id)
-                .values(last_seen_at=datetime.utcnow())
+                .values(last_seen_at=utcnow())
             )
             session.expunge(auth_session)
             session.expunge(user)
@@ -443,7 +444,7 @@ class MachineRepository:
 
     def heartbeat(self, machine_id: str, agent_version: str | None) -> None:
         with self.database.session() as session:
-            values: dict[str, Any] = {"last_heartbeat": datetime.utcnow()}
+            values: dict[str, Any] = {"last_heartbeat": utcnow()}
             if agent_version:
                 values["agent_version"] = agent_version
             session.execute(
@@ -667,7 +668,7 @@ class EmailVerificationRepository:
     def check_rate_limit(self, email: str, cooldown_seconds: int = 60) -> None:
         """Ensure no new code was issued for this email in the last `cooldown_seconds`."""
         email_clean = email.strip().lower()
-        cutoff = datetime.utcnow() - timedelta(seconds=cooldown_seconds)
+        cutoff = utcnow() - timedelta(seconds=cooldown_seconds)
         with self.database.session() as session:
             recent = session.scalar(
                 select(EmailVerificationCode)
@@ -688,7 +689,7 @@ class EmailVerificationRepository:
     ) -> str:
         email_clean = email.strip().lower()
         code = f"{secrets.randbelow(900000) + 100000:06d}"
-        expires_at = datetime.utcnow() + timedelta(minutes=expires_minutes)
+        expires_at = utcnow() + timedelta(minutes=expires_minutes)
 
         with self.database.session() as session:
             # Invalidate older unused codes for same email & purpose
@@ -716,7 +717,12 @@ class EmailVerificationRepository:
 
     def verify_code(self, email: str, code: str, purpose: str) -> bool:
         email_clean = email.strip().lower()
-        now = datetime.utcnow()
+        now = utcnow()
+        attempts_left: int | None = None
+        is_expired_or_not_found = False
+        is_too_many_attempts = False
+        is_wrong_code = False
+
         with self.database.session() as session:
             record = session.scalar(
                 select(EmailVerificationCode)
@@ -729,21 +735,30 @@ class EmailVerificationRepository:
                 .order_by(EmailVerificationCode.created_at.desc())
             )
             if record is None:
-                raise ValidationError("验证码已过期或不存在，请重新获取")
-
-            if record.attempts_left <= 0:
+                is_expired_or_not_found = True
+            elif record.attempts_left <= 0:
                 record.is_used = True
-                raise ValidationError("验证码尝试次数过多，请重新获取")
-
-            if record.code != code.strip():
+                is_too_many_attempts = True
+            elif record.code != code.strip():
                 record.attempts_left -= 1
+                attempts_left = record.attempts_left
                 if record.attempts_left <= 0:
                     record.is_used = True
-                raise ValidationError(f"验证码错误，还剩 {record.attempts_left} 次尝试机会")
+                is_wrong_code = True
+            else:
+                # Correct code
+                record.is_used = True
+                return True
 
-            # Correct code
-            record.is_used = True
-            return True
+        if is_expired_or_not_found:
+            raise ValidationError("验证码已过期或不存在，请重新获取")
+        if is_too_many_attempts:
+            raise ValidationError("验证码尝试次数过多，请重新获取")
+        if is_wrong_code:
+            if attempts_left is not None and attempts_left <= 0:
+                raise ValidationError("验证码错误次数过多已失效，请重新获取")
+            raise ValidationError(f"验证码错误，还剩 {attempts_left} 次尝试机会")
+        return True
 
 
 class SystemSettingRepository:
@@ -763,10 +778,10 @@ class SystemSettingRepository:
         with self.database.session() as session:
             record = session.get(SystemSetting, key)
             if record is None:
-                record = SystemSetting(key=key, value=value, updated_at=datetime.utcnow())
+                record = SystemSetting(key=key, value=value, updated_at=utcnow())
                 session.add(record)
             else:
                 record.value = value
-                record.updated_at = datetime.utcnow()
+                record.updated_at = utcnow()
 
 

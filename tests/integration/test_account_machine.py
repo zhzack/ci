@@ -606,17 +606,17 @@ def test_expired_lease_fails_task(tmp_path) -> None:
         assert claim is not None and claim.status_code == 200
         task_id = claim.json()["task_id"]
 
-        from datetime import datetime, timedelta
+        from datetime import timedelta
 
         from sqlalchemy import update
 
-        from mini_pipeline.database.models import TaskRun
+        from mini_pipeline.database.models import TaskRun, utcnow
 
         with services.database.session() as session:
             session.execute(
                 update(TaskRun)
                 .where(TaskRun.id == task_id)
-                .values(lease_expires_at=datetime.utcnow() - timedelta(seconds=1))
+                .values(lease_expires_at=utcnow() - timedelta(seconds=1))
             )
         assert services.lease_reaper.reap_once() == 1
         run = wait_terminal(client, run_id, headers=auth_headers(alice["token"]))

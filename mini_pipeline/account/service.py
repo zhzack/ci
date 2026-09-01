@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 from mini_pipeline.account.crypto import decrypt_credentials, encrypt_credentials
@@ -20,7 +20,7 @@ from mini_pipeline.database.account_repositories import (
     generate_token,
     hash_token,
 )
-from mini_pipeline.database.models import Machine, User
+from mini_pipeline.database.models import Machine, User, utcnow
 from mini_pipeline.domain.exceptions import (
     AuthFailedError,
     ConflictError,
@@ -112,6 +112,12 @@ class AccountService:
             role=role,
             must_change_password=False,
         )
+        if user.email and self.email_service:
+            self.email_service.send_welcome_email(
+                to_email=user.email,
+                username=user.username,
+                display_name=user.display_name,
+            )
         return user, self._new_session(user)
 
     def admin_create_user(
@@ -128,7 +134,7 @@ class AccountService:
         username = self._normalize_username(username)
         if len(password) < 8:
             raise ValidationError("Password must be at least 8 characters")
-        return self.users.create(
+        user = self.users.create(
             username=username,
             password_hash=hash_password(password),
             display_name=display_name,
@@ -136,6 +142,13 @@ class AccountService:
             role=role,
             must_change_password=must_change_password,
         )
+        if user.email and self.email_service:
+            self.email_service.send_welcome_email(
+                to_email=user.email,
+                username=user.username,
+                display_name=user.display_name,
+            )
+        return user
 
     def send_verification_code(self, email: str, purpose: str) -> None:
         """Issue an OTP verification code and send it via email."""
@@ -468,7 +481,7 @@ class MachineService:
     ) -> dict[str, Any]:
         self.machines.heartbeat(machine.id, agent_version)
         if active_task_ids:
-            lease = datetime.utcnow() + timedelta(
+            lease = utcnow() + timedelta(
                 seconds=self.settings.runner.lease_seconds
             )
             self.machines.extend_leases(machine.id, active_task_ids, lease)
@@ -509,7 +522,7 @@ class MachineService:
     def is_online(self, machine: Machine) -> bool:
         if machine.status != "active" or machine.last_heartbeat is None:
             return False
-        age = (datetime.utcnow() - machine.last_heartbeat).total_seconds()
+        age = (utcnow() - machine.last_heartbeat).total_seconds()
         return age <= self.settings.runner.offline_after_seconds
 
 

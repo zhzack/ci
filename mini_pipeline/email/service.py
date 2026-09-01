@@ -15,6 +15,7 @@ from mini_pipeline.email.templates import (
     render_otp_email,
     render_pipeline_notification_email,
     render_test_email,
+    render_welcome_email,
 )
 
 logger = logging.getLogger(__name__)
@@ -138,3 +139,17 @@ class EmailService:
         """Send a test email to verify SMTP configuration."""
         subject, html_content, text_content = render_test_email()
         self.send_email_sync(to_email, subject, html_content, text_content)
+
+    def send_welcome_email(
+        self,
+        to_email: str,
+        username: str,
+        display_name: str = "",
+    ) -> None:
+        """Render and asynchronously send new user registration welcome email."""
+        subject, html_content, text_content = render_welcome_email(
+            username=username,
+            email=to_email,
+            display_name=display_name,
+        )
+        self.send_email_async(to_email, subject, html_content, text_content)

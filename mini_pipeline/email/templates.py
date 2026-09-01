@@ -188,3 +188,67 @@ def render_test_email() -> tuple[str, str, str]:
         "</table></body></html>"
     )
     return subject, html_content, text_content
+
+
+def render_welcome_email(
+    username: str,
+    email: str,
+    display_name: str = "",
+) -> tuple[str, str, str]:
+    """Return (subject, html_content, text_content) for new user registration welcome."""
+    user_title = display_name or username
+    subject = "【Mini Pipeline】注册成功 - 欢迎开启现代自动化流水线之旅 🎉"
+    text_content = (
+        f"尊敬的 {user_title}，您好！\n\n"
+        f"恭喜您成功注册 Mini Pipeline CI/CD 自动化流水线平台账号！\n\n"
+        f"账号信息：\n"
+        f"- 用户名：{username}\n"
+        f"- 绑定邮箱：{email}\n\n"
+        f"您现在可以登录平台探索：\n"
+        f"• 可视化流水线编排与 DAG 依赖编排\n"
+        f"• 零 SDK 插件生态与内容寻址高效缓存\n"
+        f"• 多计算节点 Pull Agent / SSH 远程调度与执行\n"
+        f"• 制品仓库与全功能 IDE 运维工作台\n\n"
+        f"祝您使用愉快！\n"
+        f"— Mini Pipeline 团队"
+    )
+    font_stack = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
+    html_content = (
+        "<!DOCTYPE html><html><head><meta charset='utf-8'></head>"
+        f"<body style=\"margin: 0; padding: 24px; font-family: {font_stack}; "
+        "background-color: #f5f7fa; color: #333333;\">"
+        "<table align='center' border='0' cellpadding='0' cellspacing='0' width='100%' "
+        "style='max-width: 580px; background-color: #ffffff; border-radius: 12px; "
+        "overflow: hidden; box-shadow: 0 4px 18px rgba(0, 0, 0, 0.06);'>"
+        "<tr><td style='padding: 28px 32px; background: linear-gradient(135deg, #1677ff 0%, "
+        "#0958d9 100%); color: #ffffff; text-align: left;'>"
+        "<h1 style='margin: 0; font-size: 22px; font-weight: 700;'>🎉 欢迎加入 Mini Pipeline</h1>"
+        "<p style='margin: 6px 0 0 0; font-size: 13px; opacity: 0.85;'>"
+        "轻量、高性能的现代 CI/CD 自动化流水线平台</p></td></tr>"
+        "<tr><td style='padding: 32px;'>"
+        f"<h2 style='margin: 0 0 16px 0; font-size: 18px; color: #1f1f1f;'>"
+        f"尊敬的 {html.escape(user_title)}，您好！</h2>"
+        "<p style='margin: 0 0 20px 0; font-size: 14px; line-height: 1.6; color: #595959;'>"
+        "恭喜您成功创建 <strong>Mini Pipeline</strong> 账号！"
+        "平台现已为您准备就绪，开启高效流水线编排体验。</p>"
+        "<div style='background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; "
+        "padding: 18px 20px; margin-bottom: 24px; font-size: 13px; color: #475569;'>"
+        f"<div style='margin-bottom: 8px;'><strong>👤 用户名：</strong>"
+        f"{html.escape(username)}</div>"
+        f"<div><strong>✉️ 绑定邮箱：</strong>{html.escape(email)}</div>"
+        "</div>"
+        "<div style='margin-bottom: 24px; font-size: 13px; line-height: 1.8; color: #595959;'>"
+        "<p style='margin: 0 0 8px 0; font-weight: 600; color: #1f1f1f;'>"
+        "🚀 您可以立即体验以下核心功能：</p>"
+        "<div>⚡ <strong>DAG 可视化编排</strong>：节点自由连线与多步骤依赖调度</div>"
+        "<div>🧩 <strong>零 SDK 插件机制</strong>：支持 Shell/Python/Node 及 Docker 运行时</div>"
+        "<div>💾 <strong>内容寻址步骤缓存</strong>：秒级跳过无变化步骤，极大缩短构建耗时</div>"
+        "<div>💻 <strong>多节点分布式执行</strong>：Pull Agent 轮询与 SSH 免代理推送调度</div>"
+        "</div>"
+        "</td></tr>"
+        "<tr><td style='padding: 20px 32px; background-color: #fafafa; "
+        "border-top: 1px solid #f0f0f0; text-align: center; font-size: 12px; color: #bfbfbf;'>"
+        "© 2026 Mini Pipeline CI/CD Platform · 欢迎邮件</td></tr>"
+        "</table></body></html>"
+    )
+    return subject, html_content, text_content

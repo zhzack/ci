@@ -16,7 +16,9 @@ from mini_pipeline.database.models import (
     PipelineRun,
     Plugin,
     PluginVersion,
+    TaskCacheRecord,
     TaskRun,
+    utcnow,
 )
 from mini_pipeline.database.session import Database
 from mini_pipeline.domain.exceptions import ConflictError, NotFoundError, ValidationError
@@ -625,7 +627,7 @@ class RunRepository:
                 .values(
                     status=TaskStatus.FAILED.value,
                     message=message,
-                    finished_at=datetime.utcnow(),
+                    finished_at=utcnow(),
                 )
             )
             return int(result.rowcount or 0)
@@ -660,11 +662,81 @@ class RunRepository:
                 )
                 .values(
                     status=TaskStatus.RUNNING.value,
-                    started_at=datetime.utcnow(),
-                    lease_expires_at=datetime.utcnow()
+                    started_at=utcnow(),
+                    lease_expires_at=utcnow()
                     + timedelta(seconds=lease_seconds),
                 )
             )
             if not result.rowcount:
                 return None
         return self.get_task_by_id(task_id)
+
+
+class TaskCacheRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def get(self, cache_key: str) -> TaskCacheRecord | None:
+        with self.database.session() as session:
+            record = session.scalar(
+                select(TaskCacheRecord).where(TaskCacheRecord.cache_key == cache_key)
+            )
+            if record is None:
+                return None
+            return TaskCacheRecord(
+                id=record.id,
+                cache_key=record.cache_key,
+                plugin_name=record.plugin_name,
+                plugin_version=record.plugin_version,
+                step_name=record.step_name,
+                outputs=dict(record.outputs or {}),
+                artifacts=list(record.artifacts or []),
+                created_at=record.created_at,
+            )
+
+    def set(
+        self,
+        *,
+        cache_key: str,
+        plugin_name: str,
+        plugin_version: str,
+        step_name: str,
+        outputs: dict[str, Any],
+        artifacts: list[dict[str, Any]],
+    ) -> TaskCacheRecord:
+        with self.database.session() as session:
+            record = session.scalar(
+                select(TaskCacheRecord).where(TaskCacheRecord.cache_key == cache_key)
+            )
+            if record is None:
+                record = TaskCacheRecord(
+                    cache_key=cache_key,
+                    plugin_name=plugin_name,
+                    plugin_version=plugin_version,
+                    step_name=step_name,
+                    outputs=outputs,
+                    artifacts=artifacts,
+                )
+                session.add(record)
+            else:
+                record.outputs = outputs
+                record.artifacts = artifacts
+                record.created_at = utcnow()
+            session.commit()
+            return TaskCacheRecord(
+                id=record.id,
+                cache_key=record.cache_key,
+                plugin_name=record.plugin_name,
+                plugin_version=record.plugin_version,
+                step_name=record.step_name,
+                outputs=dict(record.outputs or {}),
+                artifacts=list(record.artifacts or []),
+                created_at=record.created_at,
+            )
+
+    def count(self) -> int:
+        from sqlalchemy import func
+
+        with self.database.session() as session:
+            return session.scalar(select(func.count(TaskCacheRecord.id))) or 0
+

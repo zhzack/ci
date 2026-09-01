@@ -28,7 +28,12 @@ from mini_pipeline.database.environment_repositories import (
     EnvironmentDeployTaskRepository,
     EnvironmentRepository,
 )
-from mini_pipeline.database.repositories import PipelineRepository, PluginRepository, RunRepository
+from mini_pipeline.database.repositories import (
+    PipelineRepository,
+    PluginRepository,
+    RunRepository,
+    TaskCacheRepository,
+)
 from mini_pipeline.database.session import Database
 from mini_pipeline.email.models import SmtpSettings
 from mini_pipeline.email.service import EmailService
@@ -77,6 +82,7 @@ class Services:
     plugin_repository: PluginRepository
     pipeline_repository: PipelineRepository
     run_repository: RunRepository
+    task_cache: TaskCacheRepository
     engine: PipelineEngine
     account: AccountService
     machines: MachineService
@@ -109,6 +115,7 @@ class Services:
         plugin_repository = PluginRepository(database)
         pipeline_repository = PipelineRepository(database)
         run_repository = RunRepository(database)
+        task_cache = TaskCacheRepository(database)
         users = UserRepository(database)
         sessions = SessionRepository(database)
         teams = TeamRepository(database)
@@ -223,6 +230,7 @@ class Services:
             ssh_executor=ssh_executor,
             email_service=email_service,
             users=users,
+            task_cache=task_cache,
         )
         runs = RunService(
             pipelines=pipelines,
@@ -254,6 +262,7 @@ class Services:
             plugin_repository=plugin_repository,
             pipeline_repository=pipeline_repository,
             run_repository=run_repository,
+            task_cache=task_cache,
             account=account,
             machines=machines,
             permissions=permissions,

@@ -570,7 +570,7 @@ def test_rate_limit_blocks_mutating_requests(tmp_path) -> None:
 
 
 def test_gc_removes_old_artifacts(tmp_path) -> None:
-    from datetime import datetime, timedelta
+    from datetime import timedelta
 
     from mini_pipeline.core.config import RetentionConfig
     from mini_pipeline.core.container import Services
@@ -605,7 +605,8 @@ def test_gc_removes_old_artifacts(tmp_path) -> None:
             size=4,
             sha256="x" * 64,
         )
-        finished = datetime.utcnow() - timedelta(days=30)
+        from mini_pipeline.database.models import utcnow
+        finished = utcnow() - timedelta(days=30)
         from mini_pipeline.domain.states import PipelineStatus
 
         services.run_repository.set_run_state(
