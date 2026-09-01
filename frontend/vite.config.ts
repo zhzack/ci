@@ -37,8 +37,16 @@ export default defineConfig({
         target: API_TARGET,
         changeOrigin: true,
       },
-      // System endpoints live outside the /api prefix (health probes).
+      // System endpoints live outside the /api prefix (health probes, installer scripts).
       '/health': {
+        target: API_TARGET,
+        changeOrigin: true,
+      },
+      '/install': {
+        target: API_TARGET,
+        changeOrigin: true,
+      },
+      '/uninstall': {
         target: API_TARGET,
         changeOrigin: true,
       },

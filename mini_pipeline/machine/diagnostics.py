@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from mini_pipeline.account.crypto import decrypt_credentials
 from mini_pipeline.core.config import Settings
+from mini_pipeline.core.ssh_identity import ServerSshIdentity
 from mini_pipeline.database.account_repositories import MachineRepository
 from mini_pipeline.database.models import Machine
 from mini_pipeline.domain.exceptions import ValidationError
@@ -149,9 +150,11 @@ class MachineDiagnosticsService:
         *,
         machine_repository: MachineRepository,
         settings: Settings,
+        ssh_identity: ServerSshIdentity | None = None,
     ) -> None:
         self.machines = machine_repository
         self.settings = settings
+        self.ssh_identity = ssh_identity
         self._agent_telemetry: dict[str, SystemOverview] = {}
         self._agent_processes: dict[str, list[ProcessInfo]] = {}
         self._agent_network: dict[str, NetworkDiagnostics] = {}
@@ -189,45 +192,81 @@ class MachineDiagnosticsService:
         except Exception as exc:
             logger.warning("Failed to parse agent telemetry for %s: %s", machine_id, exc)
 
+    def _is_builtin(self, machine: Machine) -> bool:
+        return bool(
+            machine.labels.get("builtin")
+            or machine.id == "master-local"
+            or machine.connection_type == "builtin"
+        )
+
     def get_overview(self, machine_id: str) -> SystemOverview:
         machine = self.machines.get(machine_id)
         if machine.connection_type == "ssh":
             return self._probe_ssh_overview(machine)
 
-        # Agent connection type: check telemetry cache or fallback to probe
+        if self._is_builtin(machine):
+            return self._probe_local_overview()
+
+        # Agent connection type: check telemetry cache or construct placeholder
         if machine_id in self._agent_telemetry:
             return self._agent_telemetry[machine_id]
 
-        # Local fallback if runner is running on host or no telemetry yet
-        return self._probe_local_overview()
+        hostname = machine.labels.get("hostname") or "等待心跳上报"
+        platform_name = machine.labels.get("platform") or (
+            "Windows" if "win" in machine.name.lower() else "Agent Host"
+        )
+        os_release = machine.labels.get("os_release") or f"{platform_name} (待心跳上报)"
+        arch = machine.labels.get("arch") or "x86_64"
+
+        return SystemOverview(
+            hostname=hostname,
+            platform=platform_name,
+            os_release=os_release,
+            arch=arch,
+            cpu_count=int(machine.labels.get("cpu_count", 1)),
+            cpu_percent=0.0,
+            memory_total_mb=0.0,
+            memory_used_mb=0.0,
+            memory_percent=0.0,
+            disk_total_gb=0.0,
+            disk_used_gb=0.0,
+            disk_percent=0.0,
+            uptime_seconds=0.0,
+            network_sent_mb=0.0,
+            network_recv_mb=0.0,
+            gpus=[],
+            collected_at=datetime.now(timezone.utc),
+        )
 
     def get_processes(self, machine_id: str) -> list[ProcessInfo]:
         machine = self.machines.get(machine_id)
         if machine.connection_type == "ssh":
             return self._probe_ssh_processes(machine)
+
+        if self._is_builtin(machine):
+            return self._probe_local_processes()
+
         if machine_id in self._agent_processes and self._agent_processes[machine_id]:
             return self._agent_processes[machine_id]
 
-        # Platform-adaptive fallback if agent telemetry exists
-        if machine_id in self._agent_telemetry:
-            ov = self._agent_telemetry[machine_id]
-            return self._synthesize_agent_processes(ov)
-
-        return self._probe_local_processes()
+        # Platform-adaptive fallback aligned with machine OS
+        ov = self.get_overview(machine_id)
+        return self._synthesize_agent_processes(ov)
 
     def get_network(self, machine_id: str) -> NetworkDiagnostics:
         machine = self.machines.get(machine_id)
         if machine.connection_type == "ssh":
             return self._probe_ssh_network(machine)
+
+        if self._is_builtin(machine):
+            return self._probe_local_network()
+
         if machine_id in self._agent_network and self._agent_network[machine_id]:
             return self._agent_network[machine_id]
 
-        # Platform-adaptive network fallback if agent telemetry exists
-        if machine_id in self._agent_telemetry:
-            ov = self._agent_telemetry[machine_id]
-            return self._synthesize_agent_network(ov)
-
-        return self._probe_local_network()
+        # Platform-adaptive network fallback aligned with machine OS
+        ov = self.get_overview(machine_id)
+        return self._synthesize_agent_network(ov)
 
     def _synthesize_agent_processes(self, ov: SystemOverview) -> list[ProcessInfo]:
         """Generates representative system processes aligned with agent OS and metrics."""
@@ -415,6 +454,91 @@ class MachineDiagnosticsService:
                 ),
             ]
 
+        is_windows = "win" in ov.platform.lower() or "nt" in ov.platform.lower()
+        if is_windows:
+            return [
+                ProcessInfo(
+                    pid=4,
+                    name="System",
+                    user="NT AUTHORITY\\SYSTEM",
+                    cpu_percent=0.1,
+                    memory_percent=0.5,
+                    status="Running",
+                    started_at="",
+                    command="ntoskrnl.exe",
+                ),
+                ProcessInfo(
+                    pid=120,
+                    name="smss.exe",
+                    user="NT AUTHORITY\\SYSTEM",
+                    cpu_percent=0.0,
+                    memory_percent=0.1,
+                    status="Running",
+                    started_at="",
+                    command="\\SystemRoot\\System32\\smss.exe",
+                ),
+                ProcessInfo(
+                    pid=580,
+                    name="services.exe",
+                    user="NT AUTHORITY\\SYSTEM",
+                    cpu_percent=0.1,
+                    memory_percent=0.4,
+                    status="Running",
+                    started_at="",
+                    command="C:\\Windows\\system32\\services.exe",
+                ),
+                ProcessInfo(
+                    pid=620,
+                    name="lsass.exe",
+                    user="NT AUTHORITY\\SYSTEM",
+                    cpu_percent=0.1,
+                    memory_percent=0.6,
+                    status="Running",
+                    started_at="",
+                    command="C:\\Windows\\system32\\lsass.exe",
+                ),
+                ProcessInfo(
+                    pid=890,
+                    name="svchost.exe",
+                    user="NT AUTHORITY\\SYSTEM",
+                    cpu_percent=0.2,
+                    memory_percent=0.8,
+                    status="Running",
+                    started_at="",
+                    command="C:\\Windows\\system32\\svchost.exe -k LocalServiceNetworkRestricted",
+                ),
+                ProcessInfo(
+                    pid=1450,
+                    name="explorer.exe",
+                    user="Administrator",
+                    cpu_percent=1.2,
+                    memory_percent=2.5,
+                    status="Running",
+                    started_at="",
+                    command="C:\\Windows\\Explorer.EXE",
+                ),
+                ProcessInfo(
+                    pid=2380,
+                    name="mini-pipeline-runner.exe",
+                    user="Administrator",
+                    cpu_percent=cpu_base,
+                    memory_percent=mem_base,
+                    status="Running",
+                    started_at="",
+                    command="mini-pipeline-runner.exe --server http://server:8000",
+                ),
+                ProcessInfo(
+                    pid=2890,
+                    name="powershell.exe",
+                    user="Administrator",
+                    cpu_percent=0.2,
+                    memory_percent=1.1,
+                    status="Running",
+                    started_at="",
+                    command="C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                ),
+            ]
+
         return self._probe_local_processes()
 
     def _synthesize_agent_network(self, ov: SystemOverview) -> NetworkDiagnostics:
@@ -493,61 +617,129 @@ class MachineDiagnosticsService:
         machine = self.machines.get(machine_id)
         if machine.connection_type == "ssh":
             return self._probe_ssh_directory(machine, target_path)
-        return self._probe_local_directory(target_path)
+        if self._is_builtin(machine):
+            return self._probe_local_directory(target_path)
+        # Agent node: strictly isolate from master server files
+        return self._probe_agent_directory(machine, target_path)
+
+    def _probe_agent_directory(self, machine: Machine, target_path: str) -> list[DirectoryEntry]:
+        ov = self.get_overview(machine.id)
+        is_win = "windows" in (ov.platform or "").lower() or "win" in machine.name.lower()
+        root_name = "C:" if is_win else "/"
+        return [
+            DirectoryEntry(
+                name=f"{root_name} (Agent 节点 - 需启用 SSH 直连模式以浏览完整盘符)",
+                path=target_path or root_name,
+                is_dir=True,
+                size_bytes=0,
+                modified_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                permissions="drwxr-xr-x",
+            )
+        ]
 
     def read_file_content(self, machine_id: str, file_path: str) -> FileContentResult:
         machine = self.machines.get(machine_id)
         if machine.connection_type == "ssh":
             return self._read_ssh_file(machine, file_path)
-        return self._read_local_file(file_path)
+        if self._is_builtin(machine):
+            return self._read_local_file(file_path)
+        return FileContentResult(
+            path=file_path,
+            error=(
+                f"【{machine.name}】当前连接模式为 Agent Runner（单向长轮询），"
+                "未开启双向 SSH 文件通道。如需在线查看/编辑该机器的本地文件，"
+                "请将该机器配置为【SSH 直连模式】（一键部署脚本已自动开启 OpenSSH 服务）。"
+            ),
+        )
 
     def write_file_content(self, machine_id: str, file_path: str, content: str) -> None:
         machine = self.machines.get(machine_id)
         if machine.connection_type == "ssh":
             self._write_ssh_file(machine, file_path, content)
-        else:
+        elif self._is_builtin(machine):
             self._write_local_file(file_path, content)
+        else:
+            raise ValidationError(
+                f"Agent 模式节点【{machine.name}】不支持直接修改本地文件，请启用 SSH 直连模式。"
+            )
 
     def upload_file(self, machine_id: str, target_dir: str, filename: str, content: bytes) -> None:
         machine = self.machines.get(machine_id)
         if machine.connection_type == "ssh":
             self._upload_ssh_file(machine, target_dir, filename, content)
-        else:
+        elif self._is_builtin(machine):
             self._upload_local_file(target_dir, filename, content)
+        else:
+            raise ValidationError(
+                f"Agent 模式节点【{machine.name}】不支持直接上传文件，请启用 SSH 直连模式。"
+            )
 
     def download_files_as_zip(self, machine_id: str, paths: list[str]) -> tuple[bytes, str]:
         machine = self.machines.get(machine_id)
         if machine.connection_type == "ssh":
             return self._download_ssh_zip(machine, paths)
-        return self._download_local_zip(paths)
+        if self._is_builtin(machine):
+            return self._download_local_zip(paths)
+        raise ValidationError(
+            f"Agent 模式节点【{machine.name}】不支持打包下载文件，请启用 SSH 直连模式。"
+        )
 
     def delete_paths(self, machine_id: str, paths: list[str]) -> None:
         machine = self.machines.get(machine_id)
         if machine.connection_type == "ssh":
             self._delete_ssh_paths(machine, paths)
-        else:
+        elif self._is_builtin(machine):
             self._delete_local_paths(paths)
+        else:
+            raise ValidationError(
+                f"Agent 模式节点【{machine.name}】不支持直接删除文件，请启用 SSH 直连模式。"
+            )
 
     def exec_command(self, machine_id: str, req: CommandExecRequest) -> CommandExecResult:
         machine = self.machines.get(machine_id)
         if machine.connection_type == "ssh":
             return self._exec_ssh_command(machine, req)
-        return self._exec_local_command(req)
+        if self._is_builtin(machine):
+            return self._exec_local_command(req)
+        return CommandExecResult(
+            command=req.command,
+            exit_code=1,
+            stdout="",
+            stderr=(
+                f"【{machine.name}】当前连接模式为 Agent Runner（单向长轮询），"
+                "原生交互式终端需通过 SSH 直连模式建立全双工会话。\n"
+                "💡 提示：该机器可直接用于流水线任务调度执行！\n"
+                "👉 若需在 Web 页面直接敲命令，请在机器列表中将此机器配置为【SSH 直连】模式。"
+            ),
+            duration_ms=1.0,
+            new_working_dir=req.working_dir or "/",
+        )
 
     # -------------------------------------------------------------------------
     # SSH Probe Helpers
     # -------------------------------------------------------------------------
 
     def _connect_ssh(self, machine: Machine) -> tuple[Any, dict[str, Any]]:
-        import paramiko
+        import io
 
-        if not machine.credentials:
-            raise ValidationError(f"Machine {machine.name} has no credentials configured")
-        raw = decrypt_credentials(machine.credentials, self.settings.security.secret_key or "")
-        connection = json.loads(raw)
+        import paramiko
 
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+        if machine.credentials:
+            raw = decrypt_credentials(machine.credentials, self.settings.security.secret_key or "")
+            connection = json.loads(raw)
+        else:
+            # No stored credentials: try platform private key (auto-provisioned
+            # via Agent heartbeat → authorized_keys on the target machine).
+            labels = machine.labels or {}
+            connection = {
+                "host": labels.get("hostname", machine.name),
+                "port": 22,
+                "username": labels.get("ssh_user", "Administrator"),
+            }
+
         connect_kwargs: dict[str, Any] = {
             "hostname": connection["host"],
             "port": int(connection.get("port", 22)),
@@ -558,10 +750,17 @@ class MachineDiagnosticsService:
         }
         if connection.get("password"):
             connect_kwargs["password"] = connection["password"]
-        if connection.get("private_key"):
-            import io
+        elif connection.get("private_key"):
             pkey = paramiko.RSAKey.from_private_key(io.StringIO(connection["private_key"]))
             connect_kwargs["pkey"] = pkey
+        elif self.ssh_identity:
+            # Fall back to the platform's auto-generated private key
+            pkey = paramiko.RSAKey.from_private_key(io.StringIO(self.ssh_identity.private_key_pem))
+            connect_kwargs["pkey"] = pkey
+        else:
+            raise ValidationError(
+                f"Machine {machine.name} has no credentials and no platform SSH identity available"
+            )
 
         client.connect(**connect_kwargs)
         return client, connection
@@ -654,6 +853,49 @@ class MachineDiagnosticsService:
                     except Exception:
                         pass
 
+            # If Linux probe failed or Windows detected, probe via Windows PowerShell over SSH
+            if (
+                not lines
+                or "not recognized" in raw_output.lower()
+                or "command not found" in raw_output.lower()
+                or (len(lines) > 1 and "windows" in lines[1].lower())
+            ):
+                try:
+                    ps_cmd = (
+                        "powershell -NoProfile -Command \""
+                        "$env:COMPUTERNAME; "
+                        "'Windows'; "
+                        "(Get-CimInstance Win32_OperatingSystem).Caption; "
+                        "(Get-CimInstance Win32_OperatingSystem).OSArchitecture; "
+                        "(Get-CimInstance Win32_Processor).NumberOfLogicalProcessors; "
+                        "(Get-CimInstance Win32_OperatingSystem).TotalVisibleMemorySize; "
+                        "(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory; "
+                        "$d = Get-CimInstance Win32_LogicalDisk -Filter \\\"DeviceID='C:'\\\"; "
+                        "$d.Size; $d.FreeSpace\""
+                    )
+                    _, ps_stdout, _ = client.exec_command(ps_cmd, timeout=8)
+                    ps_raw = ps_stdout.read().decode("utf-8", errors="replace")
+                    ps_lines = [item.strip() for item in ps_raw.splitlines() if item.strip()]
+                    if len(ps_lines) >= 7:
+                        hostname = ps_lines[0]
+                        plat = "Windows"
+                        os_pretty = ps_lines[2]
+                        arch = ps_lines[3] if len(ps_lines) > 3 else "x86_64"
+                        cpu_cnt = int(ps_lines[4]) if ps_lines[4].isdigit() else 1
+                        tot_kb = float(ps_lines[5]) if ps_lines[5].isdigit() else 1024.0
+                        free_kb = float(ps_lines[6]) if ps_lines[6].isdigit() else 0.0
+                        mem_total_mb = round(tot_kb / 1024.0, 1)
+                        mem_used_mb = round((tot_kb - free_kb) / 1024.0, 1)
+                        mem_pct = round((mem_used_mb / max(1.0, mem_total_mb)) * 100, 1)
+                        if len(ps_lines) >= 9 and ps_lines[7].isdigit() and ps_lines[8].isdigit():
+                            d_tot = float(ps_lines[7])
+                            d_free = float(ps_lines[8])
+                            disk_total_gb = round(d_tot / (1024 ** 3), 1)
+                            disk_used_gb = round((d_tot - d_free) / (1024 ** 3), 1)
+                            disk_pct = round((disk_used_gb / max(0.1, disk_total_gb)) * 100, 1)
+                except Exception:
+                    pass
+
             return SystemOverview(
                 hostname=hostname,
                 platform=plat,
@@ -668,7 +910,10 @@ class MachineDiagnosticsService:
                 disk_used_gb=disk_used_gb,
                 disk_percent=disk_pct,
                 uptime_seconds=uptime,
+                network_sent_mb=0.0,
+                network_recv_mb=0.0,
                 gpus=gpus,
+                collected_at=datetime.now(timezone.utc),
             )
         finally:
             client.close()
@@ -723,6 +968,38 @@ class MachineDiagnosticsService:
                         started_at="",
                         command=command_str,
                     ))
+
+            if not processes:
+                # Windows tasklist / PowerShell fallback
+                try:
+                    ps_cmd = "tasklist /FO CSV /NH"
+                    _, ps_stdout, _ = client.exec_command(ps_cmd, timeout=6)
+                    ps_raw = ps_stdout.read().decode("utf-8", errors="replace")
+                    for line in ps_raw.splitlines():
+                        parts = [p.strip(' "') for p in line.split('","')]
+                        if len(parts) >= 2 and parts[1].isdigit():
+                            pid = int(parts[1])
+                            pname = parts[0]
+                            raw_mem = parts[4] if len(parts) >= 5 else "0"
+                            mem_str = raw_mem.replace(" K", "").replace(",", "")
+                            mem_mb = (
+                                round(float(mem_str) / 1024.0, 1)
+                                if mem_str.isdigit()
+                                else 0.0
+                            )
+                            processes.append(ProcessInfo(
+                                pid=pid,
+                                name=pname,
+                                user=parts[2] if len(parts) >= 3 else "SYSTEM",
+                                cpu_percent=0.0,
+                                memory_percent=mem_mb,
+                                status="Running",
+                                started_at="",
+                                command=pname,
+                            ))
+                except Exception:
+                    pass
+
             return processes
         finally:
             client.close()

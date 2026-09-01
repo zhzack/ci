@@ -321,9 +321,19 @@ class MachineOut(BaseModel):
     has_credentials: bool
     can_manage: bool
     can_use: bool
+    hostname: str | None = None
+    platform: str | None = None
+    os_release: str | None = None
+    arch: str | None = None
 
     @classmethod
     def of(cls, machine, principal: Principal, machines_service) -> MachineOut:
+        labels = machine.labels or {}
+        hostname = labels.get("hostname")
+        platform = labels.get("platform") or labels.get("os")
+        os_release = labels.get("os_release")
+        arch = labels.get("arch")
+
         return cls(
             id=machine.id,
             name=machine.name,
@@ -331,7 +341,7 @@ class MachineOut(BaseModel):
             connection_type=machine.connection_type,
             owner_id=machine.owner_id,
             assigned_user_id=machine.assigned_user_id,
-            labels=machine.labels or {},
+            labels=labels,
             max_concurrency=machine.max_concurrency,
             notes=machine.notes,
             agent_version=machine.agent_version,
@@ -341,6 +351,10 @@ class MachineOut(BaseModel):
             has_credentials=bool(machine.credentials),
             can_manage=machines_service.can_manage(principal, machine),
             can_use=machines_service.can_use(principal, machine),
+            hostname=hostname,
+            platform=platform,
+            os_release=os_release,
+            arch=arch,
         )
 
 

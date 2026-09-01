@@ -66,9 +66,23 @@ def heartbeat(
     """Renew leases for executing tasks; returns cancel directives."""
     if payload.metrics:
         services.diagnostics.update_agent_telemetry(identity.machine.id, payload.metrics)
-    return services.machines.heartbeat(
+        m = identity.machine
+        cur_labels = dict(m.labels or {})
+        changed = False
+        for k in ["hostname", "platform", "os_release", "arch"]:
+            val = payload.metrics.get(k)
+            if val and cur_labels.get(k) != val:
+                cur_labels[k] = val
+                changed = True
+        if changed:
+            services.machine_repository.update(m.id, labels=cur_labels)
+    result = services.machines.heartbeat(
         identity.machine, payload.agent_version, payload.active_task_ids
     )
+    # Distribute server public key so the agent can install it in
+    # ~/.ssh/authorized_keys, enabling zero-config SSH direct connect.
+    result["server_pubkey"] = services.ssh_identity.public_key
+    return result
 
 
 @router.post("/tasks/claim")

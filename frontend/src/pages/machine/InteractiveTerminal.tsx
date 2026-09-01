@@ -38,6 +38,9 @@ interface TerminalSession {
 interface Props {
   machineId: string | null;
   machineName: string;
+  connectionType?: string;
+  hostname?: string;
+  platform?: string;
   currentCwd: string;
   currentFiles?: DirectoryEntry[];
   onDirectoryChange: (newDir: string) => void;
@@ -90,6 +93,9 @@ const COMMON_COMMANDS = [
 export function InteractiveTerminal({
   machineId,
   machineName,
+  connectionType = 'agent',
+  hostname,
+  platform,
   currentCwd,
   currentFiles = [],
   onDirectoryChange,
@@ -110,7 +116,12 @@ export function InteractiveTerminal({
       lines: [
         {
           type: 'system',
-          text: `⚡ 已连接到远程节点控制台 [${machineName}]。支持 Tab 键自动补全、cd 实时联动文件目录。`,
+          text:
+            machineId === 'master-local' || connectionType === 'builtin'
+              ? `⚡ [${machineName}] (模式: 👑 MASTER 本地内置)。已建立本地交互终端。`
+              : connectionType === 'ssh'
+              ? `⚡ [${machineName}] (主机: ${hostname || 'SSH 远端'} | 模式: 🌐 SSH 直连 | 系统: ${platform || 'Windows/Linux'})。已建立 SSH 原生交互会话，支持命令实时执行、Tab 补全与目录联动。`
+              : `⚡ [${machineName}] (主机: ${hostname || '已就绪'} | 模式: 🤖 AGENT 轮询 | 系统: ${platform || 'Windows/Linux'})。此节点已建立心跳通信，已支持全自动流水线任务执行！如需在 Web 页面直接开启原生全双工交互终端与 SFTP 盘符管理，请在机器配置中切换为【SSH 直连模式】。`,
         },
       ],
     },

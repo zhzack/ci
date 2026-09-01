@@ -52,11 +52,114 @@ def _collect_system_metrics() -> dict[str, Any]:
     disk_used_gb = round(used_b / (1024 ** 3), 1)
     disk_pct = round((used_b / max(1, total_b)) * 100, 1)
 
-    # Basic memory and CPU estimate
+    # Accurate memory metrics
     mem_total_mb = 8192.0
     mem_used_mb = 2048.0
     mem_pct = 25.0
+    uptime_sec = 3600.0
     cpu_pct = 5.0
+    net_sent_mb = 0.0
+    net_recv_mb = 0.0
+    interfaces = []
+
+    if os.name == "nt":
+        import ctypes
+
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        try:
+            stat = MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                mem_total_mb = round(stat.ullTotalPhys / (1024 * 1024), 1)
+                mem_free_mb = round(stat.ullAvailPhys / (1024 * 1024), 1)
+                mem_used_mb = round(mem_total_mb - mem_free_mb, 1)
+                mem_pct = float(stat.dwMemoryLoad)
+        except Exception:
+            pass
+
+        try:
+            uptime_ms = ctypes.windll.kernel32.GetTickCount64()
+            uptime_sec = round(uptime_ms / 1000.0, 1)
+        except Exception:
+            pass
+
+        try:
+            out_net = subprocess.check_output(
+                ["netstat", "-e"], text=True, timeout=2, errors="replace"
+            )
+            for line in out_net.splitlines():
+                if "Bytes" in line:
+                    parts = line.split()
+                    if len(parts) >= 3 and parts[1].isdigit() and parts[2].isdigit():
+                        net_recv_mb = round(int(parts[1]) / (1024 * 1024), 2)
+                        net_sent_mb = round(int(parts[2]) / (1024 * 1024), 2)
+        except Exception:
+            pass
+
+        try:
+            import socket
+            host_n = socket.gethostname()
+            ip_list = socket.gethostbyname_ex(host_n)[2]
+            for idx, ip in enumerate(ip_list):
+                interfaces.append({
+                    "name": f"Adapter {idx + 1}",
+                    "ipv4": ip,
+                    "status": "connected",
+                    "rx_mb": round(net_recv_mb / max(1, len(ip_list)), 2),
+                    "tx_mb": round(net_sent_mb / max(1, len(ip_list)), 2),
+                })
+        except Exception:
+            pass
+    else:
+        if os.path.exists("/proc/meminfo"):
+            try:
+                mem_dict = {}
+                with open("/proc/meminfo", encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        parts = line.split(":")
+                        if len(parts) == 2:
+                            mem_dict[parts[0].strip()] = parts[1].strip()
+                t_kb = int(mem_dict.get("MemTotal", "0 kB").split()[0])
+                a_kb = int(mem_dict.get("MemAvailable", mem_dict.get("MemFree", "0 kB")).split()[0])
+                if t_kb > 0:
+                    mem_total_mb = round(t_kb / 1024.0, 1)
+                    mem_free_mb = round(a_kb / 1024.0, 1)
+                    mem_used_mb = round(mem_total_mb - mem_free_mb, 1)
+                    mem_pct = round((mem_used_mb / mem_total_mb) * 100.0, 1)
+            except Exception:
+                pass
+
+        if os.path.exists("/proc/uptime"):
+            try:
+                with open("/proc/uptime", encoding="utf-8", errors="replace") as f:
+                    uptime_sec = round(float(f.read().split()[0]), 1)
+            except Exception:
+                pass
+
+        if os.path.exists("/proc/net/dev"):
+            try:
+                with open("/proc/net/dev", encoding="utf-8", errors="replace") as f:
+                    for line in f.readlines()[2:]:
+                        fields = line.split()
+                        if len(fields) >= 10 and not fields[0].startswith("lo"):
+                            net_recv_mb += int(fields[1])
+                            net_sent_mb += int(fields[9])
+                net_recv_mb = round(net_recv_mb / (1024 * 1024), 2)
+                net_sent_mb = round(net_sent_mb / (1024 * 1024), 2)
+            except Exception:
+                pass
 
     # Probe GPU if nvidia-smi is installed
     gpus = []
@@ -107,7 +210,7 @@ def _collect_system_metrics() -> dict[str, Any]:
                         "name": row[0],
                         "user": row[2] if len(row) > 2 else "SYSTEM",
                         "cpu_percent": 0.5,
-                        "memory_percent": round((mem_mb / 8192) * 100, 1),
+                        "memory_percent": round((mem_mb / max(1, mem_total_mb)) * 100, 1),
                         "status": "Running",
                         "started_at": "",
                         "command": f"{row[0]} (Mem: {mem_mb} MB)",
@@ -154,7 +257,7 @@ def _collect_system_metrics() -> dict[str, Any]:
                         "name": name,
                         "user": user,
                         "cpu_percent": 0.1,
-                        "memory_percent": round((mem_mb / 8192) * 100, 1),
+                        "memory_percent": round((mem_mb / max(1, mem_total_mb)) * 100, 1),
                         "status": status,
                         "started_at": "",
                         "command": cmd,
@@ -202,7 +305,15 @@ def _collect_system_metrics() -> dict[str, Any]:
         "disk_total_gb": disk_total_gb,
         "disk_used_gb": disk_used_gb,
         "disk_percent": disk_pct,
-        "uptime_seconds": 3600.0,
+        "uptime_seconds": uptime_sec,
+        "network_sent_mb": net_sent_mb,
+        "network_recv_mb": net_recv_mb,
+        "network": {
+            "sent_total_mb": net_sent_mb,
+            "recv_total_mb": net_recv_mb,
+            "interfaces": interfaces,
+            "connections": [],
+        },
         "gpus": gpus,
         "processes": processes,
     }
@@ -211,30 +322,64 @@ def _collect_system_metrics() -> dict[str, Any]:
 class RunnerClient:
     def __init__(self, server: str, token: str) -> None:
         self._base = server.rstrip("/")
+        self._token = token
         self._headers = {"Authorization": f"Bearer {token}"}
-        self._http = httpx.Client(
-            base_url=self._base, headers=self._headers, timeout=35.0
+        self._lock = threading.Lock()
+        self._http = self._create_http_client()
+
+    def _create_http_client(self) -> httpx.Client:
+        return httpx.Client(
+            base_url=self._base,
+            headers=self._headers,
+            timeout=35.0,
+            limits=httpx.Limits(max_keepalive_connections=5, keepalive_expiry=10.0),
         )
+
+    def _reset_http_client(self) -> None:
+        with self._lock:
+            try:
+                self._http.close()
+            except Exception:
+                pass
+            self._http = self._create_http_client()
 
     def heartbeat(self, active_task_ids: list[str]) -> dict[str, Any]:
         metrics = _collect_system_metrics()
-        response = self._http.post(
-            "/api/runner/heartbeat",
-            json={
-                "agent_version": __version__,
-                "active_task_ids": active_task_ids,
-                "metrics": metrics,
-            },
-        )
-        response.raise_for_status()
-        return response.json()
+        try:
+            response = self._http.post(
+                "/api/runner/heartbeat",
+                json={
+                    "agent_version": __version__,
+                    "active_task_ids": active_task_ids,
+                    "metrics": metrics,
+                },
+            )
+            response.raise_for_status()
+            return response.json()
+        except (
+            httpx.ConnectError,
+            httpx.RemoteProtocolError,
+            httpx.TimeoutException,
+            httpx.NetworkError,
+        ):
+            self._reset_http_client()
+            raise
 
     def claim(self) -> dict[str, Any] | None:
-        response = self._http.post("/api/runner/tasks/claim")
-        if response.status_code == 204:
-            return None
-        response.raise_for_status()
-        return response.json()
+        try:
+            response = self._http.post("/api/runner/tasks/claim")
+            if response.status_code == 204:
+                return None
+            response.raise_for_status()
+            return response.json()
+        except (
+            httpx.ConnectError,
+            httpx.RemoteProtocolError,
+            httpx.TimeoutException,
+            httpx.NetworkError,
+        ):
+            self._reset_http_client()
+            raise
 
     def download_bundle(self, task_id: str, destination: Path) -> Path:
         with self._http.stream(
@@ -505,6 +650,32 @@ def main(argv: list[str] | None = None) -> int:
     active: dict[str, threading.Thread] = {}
     cancelled: set[str] = set()
 
+    def _ensure_authorized_key(pubkey: str) -> None:
+        """Idempotently append the server public key to ~/.ssh/authorized_keys."""
+        try:
+            ssh_dir = Path.home() / ".ssh"
+            ssh_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            auth_file = ssh_dir / "authorized_keys"
+            # Read existing content (empty string if file doesn't exist)
+            existing = auth_file.read_text() if auth_file.exists() else ""
+            marker = "mini-pipeline-server"
+            # Check if a key with our marker is already present
+            if marker in existing:
+                # Update in place if the key changed (e.g. server key rotation)
+                lines = [ln for ln in existing.splitlines() if marker not in ln]
+                lines.append(pubkey)
+                auth_file.write_text("\n".join(lines) + "\n")
+            else:
+                with auth_file.open("a") as f:
+                    f.write("\n" + pubkey + "\n")
+            try:
+                auth_file.chmod(0o600)
+            except Exception:
+                pass  # Windows ignores POSIX chmod
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).debug("authorized_keys update skipped: %s", exc)
+
     def heartbeat_loop() -> None:
         nonlocal heartbeat_interval
         while True:
@@ -520,6 +691,10 @@ def main(argv: list[str] | None = None) -> int:
                 if interval is None:
                     # Adaptive: keep leases comfortably ahead of expiry.
                     heartbeat_interval = 15.0
+                # Install server pubkey for zero-config SSH access
+                pubkey = response.get("server_pubkey")
+                if pubkey:
+                    _ensure_authorized_key(pubkey)
             except Exception:
                 pass  # offline: leases expire server-side; keep working
             time.sleep(heartbeat_interval or 15.0)

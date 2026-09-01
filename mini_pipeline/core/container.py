@@ -61,6 +61,7 @@ from mini_pipeline.source.http import HttpSource
 from mini_pipeline.source.registry import SourceRegistry
 from mini_pipeline.source.toolhub import ToolhubSource
 from mini_pipeline.source.upload import UploadSource
+from mini_pipeline.core.ssh_identity import ServerSshIdentity
 from mini_pipeline.storage.service import PackageStorageService
 
 
@@ -109,6 +110,7 @@ class Services:
     diagnostics: MachineDiagnosticsService
     credential_repository: CredentialRepository
     credentials: CredentialService
+    ssh_identity: ServerSshIdentity
 
     @classmethod
     def build(cls, settings: Settings) -> "Services":
@@ -260,9 +262,13 @@ class Services:
             interval_seconds=max(5.0, settings.runner.lease_seconds / 8),
         )
         lease_reaper.start()
+        # Generate or load the platform RSA keypair for zero-config SSH access
+        ssh_identity = ServerSshIdentity(settings.storage.root)
+
         diagnostics_service = MachineDiagnosticsService(
             machine_repository=machine_repository,
             settings=settings,
+            ssh_identity=ssh_identity,
         )
 
         return cls(
@@ -301,6 +307,7 @@ class Services:
             diagnostics=diagnostics_service,
             credential_repository=credential_repository,
             credentials=credentials,
+            ssh_identity=ssh_identity,
         )
 
     def close(self) -> None:

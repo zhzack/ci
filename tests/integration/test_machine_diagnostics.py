@@ -19,6 +19,8 @@ from tests.integration.test_account_machine import (
 
 
 def test_machine_diagnostics_and_file_ops_workflow(tmp_path: Path) -> None:
+    """Full file-ops workflow using the builtin master-local machine which has
+    direct local filesystem access and interactive shell support."""
     settings = authed_settings(tmp_path)
     app = create_app(settings)
 
@@ -27,15 +29,8 @@ def test_machine_diagnostics_and_file_ops_workflow(tmp_path: Path) -> None:
         admin = register_user(client, "admin")
         h_admin = auth_headers(admin["token"])
 
-        # 2. Register a machine
-        res_machine = client.post(
-            "/api/machines",
-            json={"name": "Dev Host 01", "connection_type": "agent"},
-            headers=h_admin,
-        )
-        assert res_machine.status_code == 201
-        machine = res_machine.json()["machine"]
-        machine_id = machine["id"]
+        # 2. Use the builtin master-local machine for full local file access
+        machine_id = "master-local"
 
         # 3. Query system overview
         res_overview = client.get(
@@ -152,3 +147,94 @@ def test_machine_diagnostics_and_file_ops_workflow(tmp_path: Path) -> None:
         # 12. Access control validation
         res_unauth = client.get(f"/api/machines/{machine_id}/diagnostics/overview")
         assert res_unauth.status_code == 401
+
+
+def test_agent_node_isolation(tmp_path: Path) -> None:
+    """Verify that Agent-mode machines are strictly isolated from master server
+    local files. File/exec operations must return appropriate error responses
+    instead of silently leaking master server filesystem data."""
+    settings = authed_settings(tmp_path)
+    app = create_app(settings)
+
+    with TestClient(app) as client:
+        admin = register_user(client, "admin")
+        h_admin = auth_headers(admin["token"])
+
+        # Create an agent-type machine (default for user-deployed runners)
+        res_machine = client.post(
+            "/api/machines",
+            json={"name": "Windows Agent 01", "connection_type": "agent"},
+            headers=h_admin,
+        )
+        assert res_machine.status_code == 201
+        machine_id = res_machine.json()["machine"]["id"]
+
+        # Overview / monitoring still work (heartbeat telemetry cache)
+        assert client.get(
+            f"/api/machines/{machine_id}/diagnostics/overview", headers=h_admin
+        ).status_code == 200
+        assert client.get(
+            f"/api/machines/{machine_id}/diagnostics/processes", headers=h_admin
+        ).status_code == 200
+        assert client.get(
+            f"/api/machines/{machine_id}/diagnostics/network", headers=h_admin
+        ).status_code == 200
+
+        # File upload must be rejected (422)
+        res_upload = client.post(
+            f"/api/machines/{machine_id}/diagnostics/files/upload",
+            data={"target_dir": "/tmp"},
+            files={"file": ("test.txt", b"data", "text/plain")},
+            headers=h_admin,
+        )
+        assert res_upload.status_code == 422
+
+        # Write file must be rejected (422)
+        res_write = client.put(
+            f"/api/machines/{machine_id}/diagnostics/files/content",
+            json={"path": "/tmp/test.txt", "content": "data"},
+            headers=h_admin,
+        )
+        assert res_write.status_code == 422
+
+        # Download must be rejected (422)
+        res_download = client.get(
+            f"/api/machines/{machine_id}/diagnostics/files/download",
+            params={"paths": ["/tmp"]},
+            headers=h_admin,
+        )
+        assert res_download.status_code == 422
+
+        # Batch delete must be rejected (422)
+        res_del = client.post(
+            f"/api/machines/{machine_id}/diagnostics/files/batch-delete",
+            json={"paths": ["/tmp/test.txt"]},
+            headers=h_admin,
+        )
+        assert res_del.status_code == 422
+
+        # Exec returns HTTP 200 but with guidance message, NOT master shell output
+        res_exec = client.post(
+            f"/api/machines/{machine_id}/diagnostics/exec",
+            json={"command": "whoami", "working_dir": "/"},
+            headers=h_admin,
+        )
+        assert res_exec.status_code == 200
+        exec_data = res_exec.json()
+        assert exec_data["exit_code"] == 1          # agent restriction signal
+        assert exec_data["stdout"] == ""             # master shell NOT invoked
+        assert "SSH" in exec_data["stderr"] or "Agent" in exec_data["stderr"]
+
+        # Directory listing returns placeholder, NOT master server filesystem
+        res_files = client.get(
+            f"/api/machines/{machine_id}/diagnostics/files",
+            params={"path": "/"},
+            headers=h_admin,
+        )
+        assert res_files.status_code == 200
+        files = res_files.json()
+        real_master_dirs = {"/etc", "/app", "/root", "/var", "/usr"}
+        listed_paths = {f["path"] for f in files}
+        assert listed_paths.isdisjoint(real_master_dirs), (
+            f"Agent node leaked master server paths: {listed_paths & real_master_dirs}"
+        )

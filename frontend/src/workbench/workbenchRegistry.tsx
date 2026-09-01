@@ -315,6 +315,12 @@ export function buildWorkbenchTabRegistry(
       const machineId = tabId.replace('machine-console:', '');
       const machineName = (info?.props?.machineName as string) ?? machineId;
       const connectionType = (info?.props?.connectionType as string) ?? 'agent';
+      const hostname = (info?.props?.hostname as string) ?? '';
+      const platform = (info?.props?.platform as string) ?? '';
+      const osRelease = (info?.props?.osRelease as string) ?? '';
+      const arch = (info?.props?.arch as string) ?? '';
+      const online = (info?.props?.online as boolean) ?? false;
+      const lastHeartbeat = (info?.props?.lastHeartbeat as string) ?? '';
       registry[tabId] = {
         id: tabId,
         title: `控制台: ${machineName}`,
@@ -327,6 +333,12 @@ export function buildWorkbenchTabRegistry(
                 machineId={machineId}
                 machineName={machineName}
                 connectionType={connectionType}
+                hostname={hostname}
+                platform={platform}
+                osRelease={osRelease}
+                arch={arch}
+                online={online}
+                lastHeartbeat={lastHeartbeat}
               />
             </Suspense>
           </div>

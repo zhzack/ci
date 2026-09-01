@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  Alert,
   Button,
   Card,
   Col,
@@ -79,6 +80,12 @@ export interface MachineConsoleProps {
   machineId: string | null;
   machineName: string;
   connectionType: string;
+  hostname?: string;
+  platform?: string;
+  osRelease?: string;
+  arch?: string;
+  online?: boolean;
+  lastHeartbeat?: string;
 }
 
 interface Props extends MachineConsoleProps {
@@ -163,7 +170,17 @@ const DEFAULT_IDE_LAYOUT: LayoutNode = {
 };
 
 /** Thin wrapper for workbench tab usage — renders the console inline, no Drawer. */
-export function MachineConsoleTab({ machineId, machineName, connectionType }: MachineConsoleProps): React.JSX.Element {
+export function MachineConsoleTab({
+  machineId,
+  machineName,
+  connectionType,
+  hostname,
+  platform,
+  osRelease,
+  arch,
+  online,
+  lastHeartbeat,
+}: MachineConsoleProps): React.JSX.Element {
   return (
     <MachineConsoleDrawer
       open={true}
@@ -171,6 +188,12 @@ export function MachineConsoleTab({ machineId, machineName, connectionType }: Ma
       machineId={machineId}
       machineName={machineName}
       connectionType={connectionType}
+      hostname={hostname}
+      platform={platform}
+      osRelease={osRelease}
+      arch={arch}
+      online={online}
+      lastHeartbeat={lastHeartbeat}
       onClose={() => undefined}
     />
   );
@@ -181,6 +204,12 @@ export function MachineConsoleDrawer({
   machineId,
   machineName,
   connectionType,
+  hostname,
+  platform,
+  osRelease,
+  arch,
+  online,
+  lastHeartbeat,
   onClose,
   tabMode = false,
 }: Props): React.JSX.Element {
@@ -402,8 +431,8 @@ export function MachineConsoleDrawer({
       {
         title: '名称',
         dataIndex: 'name',
-        sorter: (a, b) => a.name.localeCompare(b.name),
-        render: (name: string, record) => (
+        sorter: (a: DirectoryEntry, b: DirectoryEntry) => a.name.localeCompare(b.name),
+        render: (name: string, record: DirectoryEntry) => (
           <Space>
             {record.is_dir ? (
               <FolderOutlined style={{ color: '#faad14', fontSize: 16 }} />
@@ -430,22 +459,22 @@ export function MachineConsoleDrawer({
         title: '大小',
         dataIndex: 'size_bytes',
         width: 90,
-        sorter: (a, b) => a.size_bytes - b.size_bytes,
-        render: (bytes: number, record) =>
+        sorter: (a: DirectoryEntry, b: DirectoryEntry) => a.size_bytes - b.size_bytes,
+        render: (bytes: number, record: DirectoryEntry) =>
           record.is_dir ? <Typography.Text type="secondary">-</Typography.Text> : formatBytes(bytes),
       },
       {
         title: '权限',
         dataIndex: 'permissions',
         width: 80,
-        sorter: (a, b) => a.permissions.localeCompare(b.permissions),
+        sorter: (a: DirectoryEntry, b: DirectoryEntry) => a.permissions.localeCompare(b.permissions),
         render: (p: string) => <Tag style={{ fontFamily: 'monospace' }}>{p}</Tag>,
       },
       {
         title: '修改时间',
         dataIndex: 'modified_at',
         width: 150,
-        sorter: (a, b) => a.modified_at.localeCompare(b.modified_at),
+        sorter: (a: DirectoryEntry, b: DirectoryEntry) => a.modified_at.localeCompare(b.modified_at),
         render: (time: string) => (
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {time || '-'}
@@ -456,7 +485,7 @@ export function MachineConsoleDrawer({
         title: '操作',
         key: 'actions',
         width: 90,
-        render: (_v, record) => (
+        render: (_v: unknown, record: DirectoryEntry) => (
           <Space size={2}>
             {!record.is_dir && (
               <Tooltip title="在标签页中打开编辑">
@@ -621,6 +650,15 @@ export function MachineConsoleDrawer({
         icon: <FolderOpenOutlined style={{ color: '#faad14' }} />,
         content: (
           <div style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: '8px 12px' }}>
+            {connectionType === 'agent' && machineId !== 'master-local' && (
+              <Alert
+                type="info"
+                showIcon
+                style={{ marginBottom: 8, fontSize: 12 }}
+                message="Agent 轮询节点文件提示"
+                description="当前节点为 Agent Runner 模式（出站长轮询），核心用于流水线任务调度与实时性能监控。若需直接在 Web 网页中基于 SFTP 浏览、编辑、上传下载该机器本地的全部盘符与文件，请在机器配置中切换为【SSH 直连模式】（一键部署脚本已自动配置并开启 OpenSSH 服务）。"
+              />
+            )}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center', flex: 1, marginRight: 8 }}>
                 <Button
@@ -714,6 +752,9 @@ export function MachineConsoleDrawer({
           <InteractiveTerminal
             machineId={machineId}
             machineName={machineName}
+            connectionType={connectionType}
+            hostname={overview?.hostname || hostname}
+            platform={overview?.platform || platform}
             currentCwd={currentPath}
             currentFiles={files}
             onDirectoryChange={(newDir) => fetchDirectory(newDir)}
@@ -756,6 +797,89 @@ export function MachineConsoleDrawer({
               <ErrorAlert error={new Error(overviewError)} onRetry={() => fetchOverview()} />
             ) : overview ? (
               <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                {/* 1. 目标计算节点身份与连接状态指示卡片 */}
+                <Card
+                  size="small"
+                  style={{
+                    borderRadius: 6,
+                    background: token.colorFillAlter,
+                    border: `1px solid ${token.colorBorderSecondary}`,
+                  }}
+                >
+                  <Descriptions
+                    size="small"
+                    column={{ xxl: 4, xl: 4, lg: 2, md: 2, sm: 1, xs: 1 }}
+                  >
+                    <Descriptions.Item label="当前机器自定义名称">
+                      <Typography.Text strong style={{ fontSize: 13 }}>
+                        {machineName}
+                      </Typography.Text>
+                    </Descriptions.Item>
+                    <Descriptions.Item label="真实主机名 (Hostname)">
+                      <Tag color="geekblue" style={{ fontFamily: 'monospace', fontWeight: 600 }}>
+                        💻 {overview.hostname || hostname || '待连接上报'}
+                      </Tag>
+                    </Descriptions.Item>
+                    <Descriptions.Item label="系统类型与架构">
+                      <Tag
+                        color={
+                          (overview.platform || platform || '').toLowerCase().includes('win')
+                            ? 'blue'
+                            : (overview.platform || platform || '').toLowerCase().includes('linux')
+                            ? 'green'
+                            : (overview.platform || platform || '').toLowerCase().includes('mac')
+                            ? 'magenta'
+                            : 'default'
+                        }
+                      >
+                        {(overview.platform || platform || '').toLowerCase().includes('win')
+                          ? '🪟 Windows'
+                          : (overview.platform || platform || '').toLowerCase().includes('linux')
+                          ? '🐧 Linux'
+                          : (overview.platform || platform || '').toLowerCase().includes('mac')
+                          ? '🍎 macOS'
+                          : '💻 Host'}{' '}
+                        ({overview.arch || arch || 'x64'})
+                      </Tag>
+                    </Descriptions.Item>
+                    <Descriptions.Item label="连接模式与状态">
+                      <Space size={4}>
+                        <Tag
+                          color={
+                            machineId === 'master-local' || connectionType === 'builtin'
+                              ? 'purple'
+                              : connectionType === 'ssh'
+                              ? 'orange'
+                              : 'cyan'
+                          }
+                        >
+                          {machineId === 'master-local' || connectionType === 'builtin'
+                            ? '👑 Master 内置'
+                            : connectionType === 'ssh'
+                            ? '🌐 SSH 远端'
+                            : '🤖 Agent Runner'}
+                        </Tag>
+                        <Tag color={online || overview.uptime_seconds > 0 ? 'success' : 'default'}>
+                          {online || overview.uptime_seconds > 0
+                            ? '🟢 实时在线'
+                            : '⚪ 离线 / 等待心跳'}
+                        </Tag>
+                      </Space>
+                    </Descriptions.Item>
+                  </Descriptions>
+                </Card>
+
+                {!(online || overview.uptime_seconds > 0) &&
+                  machineId !== 'master-local' &&
+                  connectionType !== 'builtin' && (
+                    <Alert
+                      type="warning"
+                      showIcon
+                      message={`节点 [${machineName}] 当前处于离线/等待通信状态`}
+                      description="该节点尚未向平台建立实时心跳通信。请确认目标机器已执行一键部署脚本且后台守护进程正常运行。上线后系统全景将自动更新该机器的实时 CPU、内存与磁盘数据。"
+                    />
+                  )}
+
                 <Row gutter={[10, 10]}>
                   <Col span={6}>
                     <Card
@@ -796,9 +920,14 @@ export function MachineConsoleDrawer({
                       <div style={{ fontSize: 18, fontWeight: 'bold', margin: '2px 0' }}>
                         {overview.memory_percent}%
                       </div>
-                      <Progress percent={overview.memory_percent} strokeColor="#52c41a" showInfo={false} />
+                      <Progress
+                        percent={overview.memory_percent}
+                        strokeColor="#52c41a"
+                        showInfo={false}
+                      />
                       <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                        {Math.round(overview.memory_used_mb)}M / {Math.round(overview.memory_total_mb)}M
+                        {Math.round(overview.memory_used_mb)}M /{' '}
+                        {Math.round(overview.memory_total_mb)}M
                       </Typography.Text>
                     </Card>
                   </Col>
@@ -818,7 +947,11 @@ export function MachineConsoleDrawer({
                       <div style={{ fontSize: 18, fontWeight: 'bold', margin: '2px 0' }}>
                         {overview.disk_percent}%
                       </div>
-                      <Progress percent={overview.disk_percent} strokeColor="#fa8c16" showInfo={false} />
+                      <Progress
+                        percent={overview.disk_percent}
+                        strokeColor="#fa8c16"
+                        showInfo={false}
+                      />
                       <Typography.Text type="secondary" style={{ fontSize: 11 }}>
                         {overview.disk_used_gb}G / {overview.disk_total_gb}G
                       </Typography.Text>
@@ -848,12 +981,18 @@ export function MachineConsoleDrawer({
                   </Col>
                 </Row>
 
-                <Descriptions column={4} size="small">
-                  <Descriptions.Item label="主机">{overview.hostname}</Descriptions.Item>
-                  <Descriptions.Item label="系统">{overview.os_release}</Descriptions.Item>
-                  <Descriptions.Item label="架构">{overview.arch}</Descriptions.Item>
+                <Descriptions
+                  column={{ xxl: 5, xl: 5, lg: 3, md: 2, sm: 1, xs: 1 }}
+                  size="small"
+                >
+                  <Descriptions.Item label="主机">{overview.hostname || hostname || '—'}</Descriptions.Item>
+                  <Descriptions.Item label="系统">{overview.os_release || osRelease || '—'}</Descriptions.Item>
+                  <Descriptions.Item label="架构">{overview.arch || arch || '—'}</Descriptions.Item>
                   <Descriptions.Item label="运行时长">
                     {formatUptime(overview.uptime_seconds)}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="最近心跳">
+                    {lastHeartbeat ? new Date(lastHeartbeat).toLocaleString() : '—'}
                   </Descriptions.Item>
                 </Descriptions>
               </Space>
@@ -893,6 +1032,11 @@ export function MachineConsoleDrawer({
     downloadSelectedUrl,
     machineId,
     machineName,
+    connectionType,
+    hostname,
+    platform,
+    arch,
+    online,
     files,
     processes,
     procLoading,
@@ -902,6 +1046,7 @@ export function MachineConsoleDrawer({
     overviewError,
     overview,
     openFiles,
+    token,
     fetchOverview,
     fetchProcesses,
     fetchNetwork,
@@ -912,17 +1057,71 @@ export function MachineConsoleDrawer({
     handleUploadFile,
   ]);
 
+  const effectiveHostname = overview?.hostname || hostname || '待心跳上报';
+  const effectivePlatform = (overview?.platform || platform || '').toLowerCase();
+  const effectiveArch = overview?.arch || arch || 'x64';
+  const isWindows =
+    effectivePlatform.includes('win') || (overview?.os_release || '').toLowerCase().includes('win');
+  const isLinux =
+    effectivePlatform.includes('linux') ||
+    (overview?.os_release || '').toLowerCase().includes('linux');
+  const isMac =
+    effectivePlatform.includes('darwin') ||
+    effectivePlatform.includes('mac') ||
+    (overview?.os_release || '').toLowerCase().includes('mac');
+  const isBuiltin = machineId === 'master-local' || connectionType === 'builtin';
+  const isSSH = connectionType === 'ssh';
+  const isOnline = online ?? (overview ? overview.uptime_seconds > 0 : false);
+
   const toolbar = (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-      <Space size={10}>
+    <div
+      style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        width: '100%',
+      }}
+    >
+      <Space size={10} wrap>
         <DesktopOutlined style={{ fontSize: 18, color: '#1677ff' }} />
         <div>
-          <Typography.Text strong style={{ fontSize: tabMode ? 14 : 16 }}>
-            {machineName} — 计算节点全功能 IDE 工作台
-          </Typography.Text>
-          <Tag color="cyan" style={{ marginLeft: 8 }}>
-            {connectionType.toUpperCase()} 协议
-          </Tag>
+          <Space size={6} wrap>
+            <Typography.Text strong style={{ fontSize: tabMode ? 14 : 16 }}>
+              {machineName}
+            </Typography.Text>
+            <Tag color="geekblue" style={{ fontFamily: 'monospace', fontSize: 11, margin: 0 }}>
+              💻 {effectiveHostname}
+            </Tag>
+            <Tag
+              color={
+                isBuiltin
+                  ? 'purple'
+                  : isSSH
+                  ? 'orange'
+                  : isWindows
+                  ? 'blue'
+                  : isLinux
+                  ? 'green'
+                  : isMac
+                  ? 'magenta'
+                  : 'cyan'
+              }
+              style={{ margin: 0 }}
+            >
+              {isBuiltin
+                ? '👑 Built-in Server'
+                : isSSH
+                ? '🌐 SSH'
+                : isWindows
+                ? `🪟 Windows (${effectiveArch})`
+                : isLinux
+                ? `🐧 Linux (${effectiveArch})`
+                : `🤖 Agent (${connectionType})`}
+            </Tag>
+            <Tag color={isOnline ? 'success' : 'default'} style={{ margin: 0 }}>
+              {isOnline ? '🟢 在线' : '⚪ 离线'}
+            </Tag>
+          </Space>
         </div>
       </Space>
 

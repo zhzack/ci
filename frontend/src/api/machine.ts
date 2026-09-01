@@ -12,7 +12,7 @@ export type Machine = {
   id: string;
   name: string;
   kind: 'admin' | 'personal';
-  connection_type: 'agent' | 'ssh';
+  connection_type: 'agent' | 'ssh' | 'builtin';
   owner_id: string | null;
   assigned_user_id: string | null;
   labels: Record<string, string>;
@@ -25,6 +25,10 @@ export type Machine = {
   has_credentials: boolean;
   can_manage: boolean;
   can_use: boolean;
+  hostname?: string | null;
+  platform?: string | null;
+  os_release?: string | null;
+  arch?: string | null;
 };
 
 export type MachineRegistration = {
