@@ -26,6 +26,8 @@ export interface SystemOverview {
   network_sent_mb?: number;
   network_recv_mb?: number;
   gpus: GpuMetric[];
+  online?: boolean;
+  last_heartbeat?: string | null;
   collected_at: string;
 }
 
@@ -75,6 +77,17 @@ export interface DirectoryEntry {
   permissions: string;
 }
 
+export interface DriveInfo {
+  device_id: string;
+  mount_point: string;
+  volume_name?: string;
+  total_gb: number;
+  used_gb: number;
+  free_gb: number;
+  percent: number;
+  fs_type?: string;
+}
+
 export interface FileContentResult {
   path: string;
   content: string;
@@ -116,6 +129,13 @@ export async function getMachineProcesses(machineId: string): Promise<ProcessInf
 export async function getMachineNetwork(machineId: string): Promise<NetworkDiagnostics> {
   const { data } = await http.get<NetworkDiagnostics>(
     `/machines/${encodeURIComponent(machineId)}/diagnostics/network`
+  );
+  return data;
+}
+
+export async function getMachineDrives(machineId: string): Promise<DriveInfo[]> {
+  const { data } = await http.get<DriveInfo[]>(
+    `/machines/${encodeURIComponent(machineId)}/diagnostics/drives`
   );
   return data;
 }

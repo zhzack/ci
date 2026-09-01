@@ -28,9 +28,40 @@ from mini_pipeline.domain.exceptions import ValidationError
 logger = logging.getLogger("mini_pipeline.machine.diagnostics")
 
 
+def _safe_decode_bytes(raw_bytes: bytes) -> str:
+    """Decode raw stdout/stderr bytes handling UTF-8, GB18030, GBK, and CP936 seamlessly."""
+    if not raw_bytes:
+        return ""
+    try:
+        text = raw_bytes.decode("utf-8")
+        # Check for typical mojibake patterns when Chinese GBK was decoded as UTF-8
+        if any(bad in text for bad in ("ϵͳ", "רҵ", "Ӱ", "λ\n", "λ\r")):
+            try:
+                return raw_bytes.decode("gb18030")
+            except Exception:
+                return text
+        return text
+    except UnicodeDecodeError:
+        try:
+            return raw_bytes.decode("gb18030")
+        except Exception:
+            return raw_bytes.decode("utf-8", errors="replace")
+
+
 # -----------------------------------------------------------------------------
 # Data Models
 # -----------------------------------------------------------------------------
+
+class DriveInfo(BaseModel):
+    device_id: str
+    mount_point: str
+    volume_name: str = ""
+    total_gb: float = 0.0
+    used_gb: float = 0.0
+    free_gb: float = 0.0
+    percent: float = 0.0
+    fs_type: str = ""
+
 
 class GpuMetric(BaseModel):
     name: str
@@ -58,6 +89,8 @@ class SystemOverview(BaseModel):
     network_sent_mb: float = 0.0
     network_recv_mb: float = 0.0
     gpus: list[GpuMetric] = Field(default_factory=list)
+    online: bool = True
+    last_heartbeat: datetime | None = None
     collected_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -201,15 +234,46 @@ class MachineDiagnosticsService:
 
     def get_overview(self, machine_id: str) -> SystemOverview:
         machine = self.machines.get(machine_id)
+        is_online = bool(
+            self._is_builtin(machine)
+            or (
+                machine.status == "active"
+                and machine.last_heartbeat is not None
+                and (
+                    datetime.now(timezone.utc).replace(tzinfo=None) - machine.last_heartbeat
+                ).total_seconds()
+                <= self.settings.runner.offline_after_seconds
+            )
+        )
+
         if machine.connection_type == "ssh":
-            return self._probe_ssh_overview(machine)
+            ov = self._probe_ssh_overview(machine)
+            ov.online = is_online
+            ov.last_heartbeat = machine.last_heartbeat
+            return ov
 
         if self._is_builtin(machine):
-            return self._probe_local_overview()
+            ov = self._probe_local_overview()
+            ov.online = True
+            ov.last_heartbeat = machine.last_heartbeat
+            return ov
 
-        # Agent connection type: check telemetry cache or construct placeholder
+        # Agent connection type: check telemetry cache or probe via SSH
         if machine_id in self._agent_telemetry:
-            return self._agent_telemetry[machine_id]
+            ov = self._agent_telemetry[machine_id]
+            ov.online = is_online
+            ov.last_heartbeat = machine.last_heartbeat
+            return ov
+
+        # If cache is cold (e.g. server restarted), attempt direct SSH probe
+        try:
+            ov = self._probe_ssh_overview(machine)
+            ov.online = is_online
+            ov.last_heartbeat = machine.last_heartbeat
+            self._agent_telemetry[machine_id] = ov
+            return ov
+        except Exception:
+            pass
 
         hostname = machine.labels.get("hostname") or "等待心跳上报"
         platform_name = machine.labels.get("platform") or (
@@ -235,6 +299,8 @@ class MachineDiagnosticsService:
             network_sent_mb=0.0,
             network_recv_mb=0.0,
             gpus=[],
+            online=is_online,
+            last_heartbeat=machine.last_heartbeat,
             collected_at=datetime.now(timezone.utc),
         )
 
@@ -248,6 +314,15 @@ class MachineDiagnosticsService:
 
         if machine_id in self._agent_processes and self._agent_processes[machine_id]:
             return self._agent_processes[machine_id]
+
+        # Try live SSH probe
+        try:
+            procs = self._probe_ssh_processes(machine)
+            if procs:
+                self._agent_processes[machine_id] = procs
+                return procs
+        except Exception:
+            pass
 
         # Platform-adaptive fallback aligned with machine OS
         ov = self.get_overview(machine_id)
@@ -264,9 +339,24 @@ class MachineDiagnosticsService:
         if machine_id in self._agent_network and self._agent_network[machine_id]:
             return self._agent_network[machine_id]
 
+        # Try live SSH probe
+        try:
+            net = self._probe_ssh_network(machine)
+            if net and (net.interfaces or net.connections):
+                self._agent_network[machine_id] = net
+                return net
+        except Exception:
+            pass
+
         # Platform-adaptive network fallback aligned with machine OS
         ov = self.get_overview(machine_id)
         return self._synthesize_agent_network(ov)
+
+    def list_drives(self, machine_id: str) -> list[DriveInfo]:
+        machine = self.machines.get(machine_id)
+        if self._is_builtin(machine):
+            return self._probe_local_drives()
+        return self._probe_ssh_drives(machine)
 
     def _synthesize_agent_processes(self, ov: SystemOverview) -> list[ProcessInfo]:
         """Generates representative system processes aligned with agent OS and metrics."""
@@ -619,8 +709,10 @@ class MachineDiagnosticsService:
             return self._probe_ssh_directory(machine, target_path)
         if self._is_builtin(machine):
             return self._probe_local_directory(target_path)
-        # Agent node: strictly isolate from master server files
-        return self._probe_agent_directory(machine, target_path)
+        try:
+            return self._probe_ssh_directory(machine, target_path)
+        except Exception:
+            return self._probe_agent_directory(machine, target_path)
 
     def _probe_agent_directory(self, machine: Machine, target_path: str) -> list[DirectoryEntry]:
         ov = self.get_overview(machine.id)
@@ -643,14 +735,18 @@ class MachineDiagnosticsService:
             return self._read_ssh_file(machine, file_path)
         if self._is_builtin(machine):
             return self._read_local_file(file_path)
-        return FileContentResult(
-            path=file_path,
-            error=(
-                f"【{machine.name}】当前连接模式为 Agent Runner（单向长轮询），"
-                "未开启双向 SSH 文件通道。如需在线查看/编辑该机器的本地文件，"
-                "请将该机器配置为【SSH 直连模式】（一键部署脚本已自动开启 OpenSSH 服务）。"
-            ),
-        )
+        try:
+            return self._read_ssh_file(machine, file_path)
+        except Exception:
+            return FileContentResult(
+                path=file_path,
+                error=(
+                    f"【{machine.name}】当前连接模式为 Agent Runner（单向长轮询）。"
+                    "如需在线查看/编辑该机器的本地文件，"
+                    "请将该机器配置为【SSH 直连模式】"
+                    "（一键部署脚本已自动开启 OpenSSH 服务并配置公钥）。"
+                ),
+            )
 
     def write_file_content(self, machine_id: str, file_path: str, content: str) -> None:
         machine = self.machines.get(machine_id)
@@ -701,19 +797,22 @@ class MachineDiagnosticsService:
             return self._exec_ssh_command(machine, req)
         if self._is_builtin(machine):
             return self._exec_local_command(req)
-        return CommandExecResult(
-            command=req.command,
-            exit_code=1,
-            stdout="",
-            stderr=(
-                f"【{machine.name}】当前连接模式为 Agent Runner（单向长轮询），"
-                "原生交互式终端需通过 SSH 直连模式建立全双工会话。\n"
-                "💡 提示：该机器可直接用于流水线任务调度执行！\n"
-                "👉 若需在 Web 页面直接敲命令，请在机器列表中将此机器配置为【SSH 直连】模式。"
-            ),
-            duration_ms=1.0,
-            new_working_dir=req.working_dir or "/",
-        )
+        try:
+            return self._exec_ssh_command(machine, req)
+        except Exception as exc:
+            logger.debug("Agent fallback SSH exec failed for %s: %s", machine.name, exc)
+            return CommandExecResult(
+                command=req.command,
+                exit_code=1,
+                stdout="",
+                stderr=(
+                    f"【{machine.name}】当前连接模式为 Agent Runner（单向长轮询）。\n"
+                    "💡 提示：该机器已支持流水线任务调度与硬件性能监控！\n"
+                    "👉 若需在 Web 页面直接敲命令，请在机器列表中将此机器配置为【SSH 直连】模式。"
+                ),
+                duration_ms=1.0,
+                new_working_dir=req.working_dir or "/",
+            )
 
     # -------------------------------------------------------------------------
     # SSH Probe Helpers
@@ -734,10 +833,21 @@ class MachineDiagnosticsService:
             # No stored credentials: try platform private key (auto-provisioned
             # via Agent heartbeat → authorized_keys on the target machine).
             labels = machine.labels or {}
+            host = labels.get("ip") or labels.get("hostname") or "127.0.0.1"
+            if host in ("127.0.0.1", "localhost", "0.0.0.0") and (
+                Path("/.dockerenv").exists() or os.getenv("DOCKER_CONTAINER")
+            ):
+                host = "host.docker.internal"
+            username = (
+                labels.get("ssh_user")
+                or os.getenv("USERNAME")
+                or os.getenv("USER")
+                or "Administrator"
+            )
             connection = {
-                "host": labels.get("hostname", machine.name),
+                "host": host,
                 "port": 22,
-                "username": labels.get("ssh_user", "Administrator"),
+                "username": username,
             }
 
         connect_kwargs: dict[str, Any] = {
@@ -874,7 +984,7 @@ class MachineDiagnosticsService:
                         "$d.Size; $d.FreeSpace\""
                     )
                     _, ps_stdout, _ = client.exec_command(ps_cmd, timeout=8)
-                    ps_raw = ps_stdout.read().decode("utf-8", errors="replace")
+                    ps_raw = _safe_decode_bytes(ps_stdout.read())
                     ps_lines = [item.strip() for item in ps_raw.splitlines() if item.strip()]
                     if len(ps_lines) >= 7:
                         hostname = ps_lines[0]
@@ -926,7 +1036,7 @@ class MachineDiagnosticsService:
                 "ps -eo pid,user,%cpu,%mem,stat,args 2>/dev/null || ps aux 2>/dev/null || ps -ef"
             )
             _, stdout, _ = client.exec_command(cmd, timeout=10)
-            raw = stdout.read().decode("utf-8", errors="replace")
+            raw = _safe_decode_bytes(stdout.read())
             processes = []
             for line in raw.splitlines()[1:]:
                 p = line.strip().split()
@@ -962,8 +1072,8 @@ class MachineDiagnosticsService:
                         pid=pid,
                         name=name,
                         user=user,
-                        cpu_percent=cpu,
-                        memory_percent=mem,
+                        cpu_percent=min(100.0, max(0.0, cpu)),
+                        memory_percent=min(100.0, max(0.0, mem)),
                         status=stat,
                         started_at="",
                         command=command_str,
@@ -974,7 +1084,7 @@ class MachineDiagnosticsService:
                 try:
                     ps_cmd = "tasklist /FO CSV /NH"
                     _, ps_stdout, _ = client.exec_command(ps_cmd, timeout=6)
-                    ps_raw = ps_stdout.read().decode("utf-8", errors="replace")
+                    ps_raw = _safe_decode_bytes(ps_stdout.read())
                     for line in ps_raw.splitlines():
                         parts = [p.strip(' "') for p in line.split('","')]
                         if len(parts) >= 2 and parts[1].isdigit():
@@ -987,12 +1097,15 @@ class MachineDiagnosticsService:
                                 if mem_str.isdigit()
                                 else 0.0
                             )
+                            # Convert to reasonable percent
+                            # (assume 16GB default baseline for percent calculation)
+                            mem_pct = round((mem_mb / 16384.0) * 100, 1)
                             processes.append(ProcessInfo(
                                 pid=pid,
                                 name=pname,
                                 user=parts[2] if len(parts) >= 3 else "SYSTEM",
                                 cpu_percent=0.0,
-                                memory_percent=mem_mb,
+                                memory_percent=min(100.0, max(0.0, mem_pct)),
                                 status="Running",
                                 started_at="",
                                 command=pname,
@@ -1216,16 +1329,34 @@ class MachineDiagnosticsService:
         client, _ = self._connect_ssh(machine)
         start = time.time()
         try:
-            # Wrap command to output the new working directory at the end marker
             cwd_marker = "---MINI_PIPELINE_CWD---"
-            base_cd = f"cd '{req.working_dir}' && " if req.working_dir else ""
-            wrapped_cmd = (
-                f"{base_cd}{req.command}; __RET=$?; echo \"{cwd_marker}\"; pwd; exit $__RET"
+            is_win = (
+                "win" in str(machine.labels.get("platform", "")).lower()
+                or "win" in machine.name.lower()
+                or (req.working_dir and ":" in req.working_dir)
             )
 
+            if is_win:
+                cd_cmd = (
+                    f"Set-Location -LiteralPath '{req.working_dir}'; "
+                    if req.working_dir
+                    else ""
+                )
+                escaped_cmd = req.command.replace('"', '`"')
+                wrapped_cmd = (
+                    f'powershell.exe -NoProfile -NonInteractive -Command "{cd_cmd}{escaped_cmd}; '
+                    f'$code = $LASTEXITCODE; if ($null -eq $code) {{ $code = 0 }}; '
+                    f'Write-Output \'{cwd_marker}\'; (Get-Location).Path; exit $code"'
+                )
+            else:
+                base_cd = f"cd '{req.working_dir}' && " if req.working_dir else ""
+                wrapped_cmd = (
+                    f"{base_cd}{req.command}; __RET=$?; echo \"{cwd_marker}\"; pwd; exit $__RET"
+                )
+
             _, stdout, stderr = client.exec_command(wrapped_cmd, timeout=req.timeout_seconds)
-            raw_out = stdout.read().decode("utf-8", errors="replace")
-            err = stderr.read().decode("utf-8", errors="replace")
+            raw_out = _safe_decode_bytes(stdout.read())
+            err = _safe_decode_bytes(stderr.read())
             exit_code = stdout.channel.recv_exit_status()
             duration_ms = round((time.time() - start) * 1000, 1)
 
@@ -1248,6 +1379,185 @@ class MachineDiagnosticsService:
             )
         finally:
             client.close()
+
+    def _probe_local_drives(self) -> list[DriveInfo]:
+        drives: list[DriveInfo] = []
+        if os.name == "nt":
+            import string
+            for letter in string.ascii_uppercase:
+                root = f"{letter}:\\"
+                if os.path.exists(root):
+                    try:
+                        tot, used, free = shutil.disk_usage(root)
+                        tot_gb = round(tot / (1024 ** 3), 1)
+                        used_gb = round(used / (1024 ** 3), 1)
+                        free_gb = round(free / (1024 ** 3), 1)
+                        pct = round((used / max(1, tot)) * 100, 1)
+                        vol_name = "系统盘" if letter == "C" else "本地磁盘"
+                        drives.append(DriveInfo(
+                            device_id=f"{letter}:",
+                            mount_point=f"{letter}:/",
+                            volume_name=vol_name,
+                            total_gb=tot_gb,
+                            used_gb=used_gb,
+                            free_gb=free_gb,
+                            percent=min(100.0, max(0.0, pct)),
+                            fs_type="NTFS",
+                        ))
+                    except Exception:
+                        pass
+        else:
+            try:
+                tot, used, free = shutil.disk_usage("/")
+                tot_gb = round(tot / (1024 ** 3), 1)
+                used_gb = round(used / (1024 ** 3), 1)
+                free_gb = round(free / (1024 ** 3), 1)
+                pct = round((used / max(1, tot)) * 100, 1)
+                drives.append(DriveInfo(
+                    device_id="/",
+                    mount_point="/",
+                    volume_name="根分区",
+                    total_gb=tot_gb,
+                    used_gb=used_gb,
+                    free_gb=free_gb,
+                    percent=min(100.0, max(0.0, pct)),
+                    fs_type="ext4",
+                ))
+            except Exception:
+                pass
+        return drives or [DriveInfo(device_id="/", mount_point="/", volume_name="主分区")]
+
+    def _probe_ssh_drives(self, machine: Machine) -> list[DriveInfo]:
+        drives: list[DriveInfo] = []
+        is_win = (
+            "win" in str(machine.labels.get("platform", "")).lower()
+            or "win" in machine.name.lower()
+        )
+        try:
+            client, _ = self._connect_ssh(machine)
+        except Exception as exc:
+            logger.warning(
+                "SSH connect failed in _probe_ssh_drives for %s: %s",
+                machine.name,
+                exc,
+            )
+            if is_win:
+                return [
+                    DriveInfo(
+                        device_id="C:",
+                        mount_point="C:/",
+                        volume_name="系统盘",
+                        total_gb=0,
+                        used_gb=0,
+                        free_gb=0,
+                        percent=0,
+                    )
+                ]
+            return [
+                DriveInfo(
+                    device_id="/",
+                    mount_point="/",
+                    volume_name="根分区",
+                    total_gb=0,
+                    used_gb=0,
+                    free_gb=0,
+                    percent=0,
+                )
+            ]
+
+        try:
+            # 1. Try Windows PowerShell probe first if machine is Windows
+            if is_win:
+                ps_cmd = (
+                    "powershell -NoProfile -NonInteractive -Command \""
+                    "Get-CimInstance Win32_LogicalDisk | "
+                    "Select-Object DeviceID, VolumeName, Size, FreeSpace, FileSystem | "
+                    "ConvertTo-Json -Compress\""
+                )
+                _, stdout, _ = client.exec_command(ps_cmd, timeout=8)
+                raw = _safe_decode_bytes(stdout.read()).strip()
+                if raw.startswith("{") or raw.startswith("["):
+                    try:
+                        data = json.loads(raw)
+                        items = data if isinstance(data, list) else [data]
+                        for item in items:
+                            dev = str(item.get("DeviceID") or "")
+                            if not dev:
+                                continue
+                            vol = str(item.get("VolumeName") or "")
+                            if not vol:
+                                vol = "系统盘" if "C" in dev.upper() else "本地磁盘"
+                            size_b = float(item.get("Size") or 0)
+                            free_b = float(item.get("FreeSpace") or 0)
+                            if size_b > 0:
+                                used_b = max(0.0, size_b - free_b)
+                                tot_gb = round(size_b / (1024 ** 3), 1)
+                                used_gb = round(used_b / (1024 ** 3), 1)
+                                free_gb = round(free_b / (1024 ** 3), 1)
+                                pct = round((used_b / max(1.0, size_b)) * 100, 1)
+                                mount_p = f"{dev.rstrip(':')}:/"
+                                drives.append(DriveInfo(
+                                    device_id=dev,
+                                    mount_point=mount_p,
+                                    volume_name=vol,
+                                    total_gb=tot_gb,
+                                    used_gb=used_gb,
+                                    free_gb=free_gb,
+                                    percent=min(100.0, max(0.0, pct)),
+                                    fs_type=str(item.get("FileSystem") or "NTFS"),
+                                ))
+                    except Exception as e:
+                        logger.debug("Failed parsing Windows logical disks JSON: %s", e)
+
+            # 2. Linux df -PTk probe (or fallback if Windows ps probe didn't return drives)
+            if not drives:
+                _, stdout, _ = client.exec_command("df -PTk 2>/dev/null", timeout=6)
+                raw_df = stdout.read().decode("utf-8", errors="replace")
+                for line in raw_df.splitlines()[1:]:
+                    p = line.split()
+                    if len(p) >= 6 and (
+                        p[0].startswith("/") or "dev" in p[0] or p[-1].startswith("/")
+                    ):
+                        fs_dev = p[0]
+                        fs_type = p[1]
+                        tot_k = float(p[2]) if p[2].isdigit() else 0.0
+                        used_k = float(p[3]) if p[3].isdigit() else 0.0
+                        free_k = float(p[4]) if p[4].isdigit() else 0.0
+                        pct_str = p[5].rstrip("%")
+                        pct = float(pct_str) if pct_str.replace(".", "").isdigit() else 0.0
+                        mnt = p[6] if len(p) >= 7 else p[5]
+
+                        # Filter pseudo filesystems
+                        if fs_type in ("tmpfs", "devtmpfs", "squashfs", "overlay"):
+                            continue
+
+                        tot_gb = round(tot_k / (1024 * 1024), 1)
+                        used_gb = round(used_k / (1024 * 1024), 1)
+                        free_gb = round(free_k / (1024 * 1024), 1)
+
+                        vol_label = "根分区" if mnt == "/" else Path(mnt).name or mnt
+                        drives.append(DriveInfo(
+                            device_id=fs_dev,
+                            mount_point=mnt,
+                            volume_name=vol_label,
+                            total_gb=tot_gb,
+                            used_gb=used_gb,
+                            free_gb=free_gb,
+                            percent=min(100.0, max(0.0, pct)),
+                            fs_type=fs_type,
+                        ))
+        finally:
+            client.close()
+
+        if not drives:
+            drives = [
+                DriveInfo(
+                    device_id="C:" if is_win else "/",
+                    mount_point="C:/" if is_win else "/",
+                    volume_name="主磁盘",
+                )
+            ]
+        return drives
 
     # -------------------------------------------------------------------------
     # Local System / Agent Fallback Helpers

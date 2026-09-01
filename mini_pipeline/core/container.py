@@ -14,6 +14,7 @@ from mini_pipeline.artifact.local import LocalArtifactStore
 from mini_pipeline.artifact.s3 import S3ArtifactStore
 from mini_pipeline.core.config import Settings
 from mini_pipeline.core.events import EventBus
+from mini_pipeline.core.ssh_identity import ServerSshIdentity
 from mini_pipeline.database.account_repositories import (
     AuditRepository,
     CredentialRepository,
@@ -61,7 +62,6 @@ from mini_pipeline.source.http import HttpSource
 from mini_pipeline.source.registry import SourceRegistry
 from mini_pipeline.source.toolhub import ToolhubSource
 from mini_pipeline.source.upload import UploadSource
-from mini_pipeline.core.ssh_identity import ServerSshIdentity
 from mini_pipeline.storage.service import PackageStorageService
 
 

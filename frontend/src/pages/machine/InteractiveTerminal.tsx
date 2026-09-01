@@ -15,6 +15,7 @@ import {
   BulbOutlined,
   ClearOutlined,
   CodeOutlined,
+  DownOutlined,
   PlusOutlined,
 } from '@ant-design/icons';
 import { execMachineCommand, type DirectoryEntry } from '@/api/diagnostics';
@@ -49,20 +50,25 @@ interface Props {
 const COMMON_COMMANDS = [
   'ls',
   'ls -lah',
+  'dir',
   'cd',
   'pwd',
   'cat',
+  'type',
   'mkdir',
   'rm',
   'rm -rf',
+  'del',
   'cp',
+  'copy',
   'mv',
-  'touch',
-  'grep',
-  'tail -f',
-  'head',
-  'chmod',
-  'chown',
+  'move',
+  'Get-Process',
+  'Get-Service',
+  'ipconfig',
+  'systeminfo',
+  'netstat',
+  'netstat -an',
   'ps',
   'top',
   'df -h',
@@ -70,22 +76,16 @@ const COMMON_COMMANDS = [
   'uptime',
   'uname -a',
   'systemctl',
-  'journalctl',
   'docker',
   'docker ps',
-  'docker logs',
   'python',
-  'python3',
-  'pip',
+  'python --version',
   'pip list',
   'git status',
   'git log',
   'nvidia-smi',
   'curl',
-  'wget',
-  'tar',
-  'zip',
-  'unzip',
+  'cls',
   'clear',
   'echo',
 ];
@@ -100,17 +100,20 @@ export function InteractiveTerminal({
   currentFiles = [],
   onDirectoryChange,
 }: Props): React.JSX.Element {
+  const isWin = (platform || '').toLowerCase().includes('win');
   const globalMode = useThemeStore((state) => state.mode);
   const [localTheme, setLocalTheme] = useState<'light' | 'dark' | 'auto'>('auto');
 
   const effectiveMode = localTheme === 'auto' ? globalMode : localTheme;
   const isDark = effectiveMode === 'dark';
 
+  const defaultCwd = currentCwd || (isWin ? 'C:\\' : '/');
+
   const [sessions, setSessions] = useState<TerminalSession[]>([
     {
       id: 'term-1',
       title: '终端 1',
-      cwd: currentCwd || '/',
+      cwd: defaultCwd,
       history: [],
       historyIndex: -1,
       lines: [
@@ -121,7 +124,7 @@ export function InteractiveTerminal({
               ? `⚡ [${machineName}] (模式: 👑 MASTER 本地内置)。已建立本地交互终端。`
               : connectionType === 'ssh'
               ? `⚡ [${machineName}] (主机: ${hostname || 'SSH 远端'} | 模式: 🌐 SSH 直连 | 系统: ${platform || 'Windows/Linux'})。已建立 SSH 原生交互会话，支持命令实时执行、Tab 补全与目录联动。`
-              : `⚡ [${machineName}] (主机: ${hostname || '已就绪'} | 模式: 🤖 AGENT 轮询 | 系统: ${platform || 'Windows/Linux'})。此节点已建立心跳通信，已支持全自动流水线任务执行！如需在 Web 页面直接开启原生全双工交互终端与 SFTP 盘符管理，请在机器配置中切换为【SSH 直连模式】。`,
+              : `⚡ [${machineName}] (主机: ${hostname || '已就绪'} | 模式: 🤖 一键接入 | 系统: ${platform || 'Windows/Linux'})。已建立安全心跳与免密直连通道，支持原生命令实时执行、Tab 补全与盘符文件联动！`,
         },
       ],
     },
@@ -131,14 +134,25 @@ export function InteractiveTerminal({
   const [executing, setExecuting] = useState(false);
 
   const termBottomRef = useRef<HTMLDivElement | null>(null);
+  const terminalContainerRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<InputRef | null>(null);
+  const [isScrolledUp, setIsScrolledUp] = useState(false);
 
   const activeSession = sessions.find((s) => s.id === activeTabKey) || sessions[0];
 
-  // Auto scroll to bottom when lines change
+  // Auto scroll to bottom ONLY when user is not manually scrolling up
   useEffect(() => {
-    termBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [activeSession?.lines]);
+    if (!isScrolledUp) {
+      termBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [activeSession?.lines, isScrolledUp]);
+
+  const handleContainerScroll = () => {
+    if (!terminalContainerRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = terminalContainerRef.current;
+    const isUp = scrollHeight - scrollTop - clientHeight > 45;
+    setIsScrolledUp(isUp);
+  };
 
   const handleAddTab = () => {
     const newId = `term-${Date.now()}`;
@@ -484,7 +498,10 @@ export function InteractiveTerminal({
 
       {/* Terminal Viewport */}
       <div
+        ref={terminalContainerRef}
+        onScroll={handleContainerScroll}
         style={{
+          position: 'relative',
           background: themeStyles.termBg,
           color: themeStyles.termText,
           padding: '12px 16px',
@@ -501,12 +518,25 @@ export function InteractiveTerminal({
           if (line.type === 'prompt') {
             return (
               <div key={idx} style={{ margin: '6px 0 2px 0' }}>
-                <span style={{ color: themeStyles.userHostColor, fontWeight: 'bold' }}>
-                  root@{machineName}
-                </span>
-                <span style={{ color: themeStyles.cwdColor }}>
-                  :{line.cwd || activeSession.cwd}${' '}
-                </span>
+                {isWin ? (
+                  <>
+                    <span style={{ color: themeStyles.userHostColor, fontWeight: 'bold' }}>
+                      PS{' '}
+                    </span>
+                    <span style={{ color: themeStyles.cwdColor }}>
+                      {line.cwd || activeSession.cwd}&gt;{' '}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span style={{ color: themeStyles.userHostColor, fontWeight: 'bold' }}>
+                      root@{hostname || machineName}
+                    </span>
+                    <span style={{ color: themeStyles.cwdColor }}>
+                      :{line.cwd || activeSession.cwd}${' '}
+                    </span>
+                  </>
+                )}
                 <span style={{ color: themeStyles.promptCmdColor, fontWeight: 600 }}>
                   {line.text}
                 </span>
@@ -573,18 +603,37 @@ export function InteractiveTerminal({
 
         {/* Live Input Line */}
         <div style={{ display: 'flex', alignItems: 'center', marginTop: 8 }}>
-          <span
-            style={{
-              color: themeStyles.userHostColor,
-              fontWeight: 'bold',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            root@{machineName}
-          </span>
-          <span style={{ color: themeStyles.cwdColor, whiteSpace: 'nowrap' }}>
-            :{activeSession?.cwd}${' '}
-          </span>
+          {isWin ? (
+            <>
+              <span
+                style={{
+                  color: themeStyles.userHostColor,
+                  fontWeight: 'bold',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                PS{' '}
+              </span>
+              <span style={{ color: themeStyles.cwdColor, whiteSpace: 'nowrap' }}>
+                {activeSession?.cwd}&gt;{' '}
+              </span>
+            </>
+          ) : (
+            <>
+              <span
+                style={{
+                  color: themeStyles.userHostColor,
+                  fontWeight: 'bold',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                root@{hostname || machineName}
+              </span>
+              <span style={{ color: themeStyles.cwdColor, whiteSpace: 'nowrap' }}>
+                :{activeSession?.cwd}${' '}
+              </span>
+            </>
+          )}
           <Input
             ref={inputRef}
             value={inputVal}
@@ -608,6 +657,28 @@ export function InteractiveTerminal({
             }}
           />
         </div>
+        {isScrolledUp && (
+          <Button
+            type="primary"
+            size="small"
+            icon={<DownOutlined />}
+            onClick={() => {
+              setIsScrolledUp(false);
+              termBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+            }}
+            style={{
+              position: 'sticky',
+              bottom: 12,
+              float: 'right',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+              borderRadius: 16,
+              zIndex: 10,
+              fontSize: 12,
+            }}
+          >
+            滚动到底部
+          </Button>
+        )}
         <div ref={termBottomRef} />
       </div>
 
@@ -622,17 +693,30 @@ export function InteractiveTerminal({
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             快捷指令:
           </Typography.Text>
-          {[
-            'pwd',
-            'ls -lah',
-            'cd ..',
-            'cd ~',
-            'df -h',
-            'free -m',
-            'top -bn1 | head -n 15',
-            'nvidia-smi',
-            'docker ps',
-          ].map((cmd) => (
+          {(isWin
+            ? [
+                'dir',
+                'Get-Process | select -First 10',
+                'Get-Service | select -First 10',
+                'ipconfig',
+                'systeminfo',
+                'netstat -an',
+                'git status',
+                'cls',
+              ]
+            : [
+                'pwd',
+                'ls -lah',
+                'cd ..',
+                'cd ~',
+                'df -h',
+                'free -m',
+                'top -bn1 | head -n 15',
+                'nvidia-smi',
+                'docker ps',
+                'clear',
+              ]
+          ).map((cmd) => (
             <Tag
               key={cmd}
               color={isDark ? 'geekblue' : undefined}

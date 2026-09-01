@@ -126,10 +126,19 @@ if (Test-Path $StartupFolder) {
     Write-Host "==> [✓] 已注册 Windows 开机自启动守护任务 ($StartupLink)"
 }
 
-# 4. 自动检测并开启 Windows 官方 OpenSSH Server 服务端
-$SshStatus = "未安装"
+# 0. 自动检查并请求 Windows 管理员权限 (配置 OpenSSH 服务端与防火墙所需)
 $p = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 $isAdmin = $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    Write-Host "==> 正在请求系统管理员权限以完成 OpenSSH 服务端与开机自启配置..."
+    $cmd = "irm '$Server/install.ps1?token=$Token' | iex"
+    Start-Process powershell -Verb RunAs `
+        -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"$cmd`""
+    exit 0
+}
+
+# 4. 自动检测并开启 Windows 官方 OpenSSH Server 服务端并写入平台公钥
+$SshStatus = "未安装"
 
 try {
     $sshd = Get-Service -Name 'sshd' -ErrorAction SilentlyContinue
@@ -163,6 +172,45 @@ try {
         }
     } else {
         $SshStatus = "未安装 (以管理员身份运行部署指令可自动一键安装开启)"
+    }
+
+    # 4.1 自动拉取平台公钥并写入 authorized_keys (实现零配置免密直连)
+    try {
+        $pubResp = Invoke-RestMethod -Uri ($Server + '/system/pubkey') -UseBasicParsing
+        $pubkey = $pubResp.public_key
+        if ($pubkey) {
+            $userSsh = Join-Path $env:USERPROFILE '.ssh'
+            New-Item -ItemType Directory -Force -Path $userSsh | Out-Null
+            $userAuth = Join-Path $userSsh 'authorized_keys'
+            $exist1 = if (Test-Path $userAuth) { Get-Content $userAuth -Raw } else { '' }
+            if ($exist1 -notmatch [regex]::Escape($pubkey.Trim())) {
+                Add-Content -Path $userAuth -Value ("`r`n" + $pubkey.Trim()) -Force
+            }
+            $pDataSsh = Join-Path $env:ProgramData 'ssh'
+            if (Test-Path $pDataSsh) {
+                $admAuth = Join-Path $pDataSsh 'administrators_authorized_keys'
+                $exist2 = if (Test-Path $admAuth) { Get-Content $admAuth -Raw } else { '' }
+                if ($exist2 -notmatch [regex]::Escape($pubkey.Trim())) {
+                    Add-Content -Path $admAuth -Value ("`r`n" + $pubkey.Trim()) -Force
+                }
+                icacls $admAuth /inheritance:r `
+                    /grant "Administrators:F" /grant "SYSTEM:F" | Out-Null
+            }
+            # 确保 sshd_config 允许标准用户的 ~/.ssh/authorized_keys 认证
+            $cfgFile = Join-Path $pDataSsh 'sshd_config'
+            if (Test-Path $cfgFile) {
+                $cfg = Get-Content $cfgFile -Raw
+                if ($cfg -match 'Match Group administrators') {
+                    $cfg = $cfg -replace '(?m)^(\s*Match Group administrators)', '# $1'
+                    $cfg = $cfg -replace '(?m)^(\s*AuthorizedKeysFile __PROGRAMDATA__)', '# $1'
+                    Set-Content -Path $cfgFile -Value $cfg -Force
+                    Restart-Service sshd -ErrorAction SilentlyContinue
+                }
+            }
+            Write-Host "==> [✓] 已自动将平台公钥写入 SSH 授权库，平台已具备免密直连控制能力！"
+        }
+    } catch {
+        Write-Host "==> [!] 获取平台公钥跳过: $($_.Exception.Message)"
     }
 } catch {
     $SshStatus = "检测/开启异常"
@@ -410,6 +458,19 @@ if command -v systemctl >/dev/null 2>&1; then
   fi
 fi
 
+if command -v curl >/dev/null 2>&1; then
+  PUBKEY=$(curl -fsSL "$SERVER/system/pubkey" 2>/dev/null | \
+    grep -o '"public_key": *"[^"]*"' | cut -d'"' -f4)
+  if [ -n "$PUBKEY" ]; then
+    mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+    if ! grep -q "mini-pipeline-server" "$HOME/.ssh/authorized_keys" 2>/dev/null; then
+      echo "$PUBKEY" >> "$HOME/.ssh/authorized_keys"
+      chmod 600 "$HOME/.ssh/authorized_keys"
+      echo "==> [✓] 已自动将平台公钥写入 ~/.ssh/authorized_keys"
+    fi
+  fi
+fi
+
 echo ""
 echo "=================================================================="
 echo " [✓] Mini Pipeline Runner 部署成功并已在后台常驻运行！"
@@ -634,3 +695,11 @@ def uninstall_universal(request: Request, purge: str = "true") -> Response:
     if "powershell" in user_agent or "pwsh" in user_agent:
         return uninstall_ps1(purge=purge)
     return uninstall_sh(purge=purge)
+
+
+@installer_router.get("/system/pubkey", include_in_schema=True)
+def get_system_pubkey(request: Request) -> dict[str, str]:
+    """Retrieve platform OpenSSH public key for zero-config SSH agent authorization."""
+    services = request.app.state.services
+    return {"public_key": services.ssh_identity.public_key}
+

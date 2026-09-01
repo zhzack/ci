@@ -316,6 +316,8 @@ def _collect_system_metrics() -> dict[str, Any]:
         },
         "gpus": gpus,
         "processes": processes,
+        "ssh_user": os.getenv("USERNAME") or os.getenv("USER") or "Administrator",
+        "ip": interfaces[0]["ipv4"] if interfaces and interfaces[0].get("ipv4") else "",
     }
 
 

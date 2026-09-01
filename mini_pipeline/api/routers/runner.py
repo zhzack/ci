@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
@@ -62,6 +62,7 @@ def heartbeat(
     payload: HeartbeatRequest,
     identity: Annotated[MachineIdentity, Depends(require_machine)],
     services: Annotated[Services, Depends(get_services)],
+    request: Request,
 ) -> dict[str, Any]:
     """Renew leases for executing tasks; returns cancel directives."""
     if payload.metrics:
@@ -69,7 +70,11 @@ def heartbeat(
         m = identity.machine
         cur_labels = dict(m.labels or {})
         changed = False
-        for k in ["hostname", "platform", "os_release", "arch"]:
+        client_ip = request.client.host if request.client else ""
+        if client_ip and client_ip not in ("127.0.0.1", "::1") and not cur_labels.get("ip"):
+            cur_labels["ip"] = client_ip
+            changed = True
+        for k in ["hostname", "platform", "os_release", "arch", "ssh_user", "ip"]:
             val = payload.metrics.get(k)
             if val and cur_labels.get(k) != val:
                 cur_labels[k] = val

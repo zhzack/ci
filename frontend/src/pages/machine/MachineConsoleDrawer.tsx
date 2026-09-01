@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
+  Breadcrumb,
   Button,
   Card,
   Col,
@@ -19,15 +20,17 @@ import {
   Table,
   Tag,
   Tooltip,
+  Tree,
   Typography,
   Upload,
   message as antdMessage,
   theme as antdTheme,
 } from 'antd';
-import type { MenuProps, TableColumnsType } from 'antd';
+import type { MenuProps, TableColumnsType, TreeDataNode } from 'antd';
 import {
   AppstoreOutlined,
   ArrowUpOutlined,
+  CheckOutlined,
   DashboardOutlined,
   DeleteOutlined,
   DesktopOutlined,
@@ -38,6 +41,7 @@ import {
   FolderOutlined,
   FundProjectionScreenOutlined,
   GlobalOutlined,
+  HddOutlined,
   LayoutOutlined,
   PlusOutlined,
   ReloadOutlined,
@@ -48,12 +52,14 @@ import {
 import {
   batchDeleteMachineFiles,
   getDownloadFilesUrl,
+  getMachineDrives,
   getMachineNetwork,
   getMachineOverview,
   getMachineProcesses,
   listMachineDirectory,
   uploadMachineFile,
   type DirectoryEntry,
+  type DriveInfo,
   type NetworkDiagnostics,
   type ProcessInfo,
   type SystemOverview,
@@ -244,10 +250,79 @@ export function MachineConsoleDrawer({
   // 2. Directory state
   const [currentPath, setCurrentPath] = useState('/');
   const [inputPath, setInputPath] = useState('/');
+  const [isEditingPath, setIsEditingPath] = useState(false);
   const [files, setFiles] = useState<DirectoryEntry[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
   const [selectedFilePaths, setSelectedFilePaths] = useState<string[]>([]);
   const [fileSortBy, setFileSortBy] = useState<string>('default');
+
+  // Multi-drive & in-memory directory cache
+  const [drives, setDrives] = useState<DriveInfo[]>([]);
+  const [dirCache, setDirCache] = useState<Map<string, DirectoryEntry[]>>(() => new Map());
+
+  // Directory Tree sidebar state
+  const [treeData, setTreeData] = useState<TreeDataNode[]>([]);
+  const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([]);
+  const [treeSearch, setTreeSearch] = useState<string>('');
+
+  const initTreeRoots = useCallback(() => {
+    const isWin =
+      overview?.platform?.toLowerCase().includes('win') ||
+      currentPath.includes(':') ||
+      platform?.toLowerCase().includes('win');
+
+    if (isWin) {
+      const roots: TreeDataNode[] = [
+        {
+          title: 'C:\\ [系统盘]',
+          key: 'C:/',
+          isLeaf: false,
+          icon: <HddOutlined style={{ color: '#1677ff' }} />,
+        },
+      ];
+      setTreeData(roots);
+      setExpandedKeys(['C:/']);
+    } else {
+      const roots: TreeDataNode[] = [
+        {
+          title: '/ (根目录)',
+          key: '/',
+          isLeaf: false,
+          icon: <FolderOutlined style={{ color: '#faad14' }} />,
+        },
+      ];
+      setTreeData(roots);
+      setExpandedKeys(['/']);
+    }
+  }, [overview?.platform, currentPath, platform]);
+
+  const fetchDrives = useCallback(async () => {
+    if (!machineId) return;
+    try {
+      const driveList = await getMachineDrives(machineId);
+      setDrives(driveList);
+      if (driveList.length > 0) {
+        const roots: TreeDataNode[] = driveList.map((d) => {
+          const vol = d.volume_name ? ` [${d.volume_name}]` : '';
+          const cap = d.total_gb > 0 ? ` (${d.used_gb}G/${d.total_gb}G)` : '';
+          return {
+            title: `${d.device_id}${vol}${cap}`,
+            key: d.mount_point,
+            isLeaf: false,
+            icon: <HddOutlined style={{ color: '#1677ff' }} />,
+          };
+        });
+        setTreeData(roots);
+        if (driveList[0]?.mount_point) {
+          setExpandedKeys([driveList[0].mount_point]);
+        }
+      } else {
+        initTreeRoots();
+      }
+    } catch {
+      initTreeRoots();
+    }
+  }, [machineId, initTreeRoots]);
 
   // 3. Process state
   const [processes, setProcesses] = useState<ProcessInfo[]>([]);
@@ -293,6 +368,89 @@ export function MachineConsoleDrawer({
     }
   }, [layout, handleLayoutChange]);
 
+  // Normalize directory path across Windows and Linux
+  const normalizePath = (p: string): string => {
+    if (!p) return '/';
+    let s = p.replace(/\\/g, '/').replace(/\/+/g, '/');
+    if (/^[a-zA-Z]:$/.test(s)) {
+      return s + '/';
+    }
+    if (/^[a-zA-Z]:\/$/.test(s)) {
+      return s;
+    }
+    if (s.length > 1 && s.endsWith('/')) {
+      s = s.slice(0, -1);
+    }
+    return s;
+  };
+
+  // Get all ancestor paths leading to targetPath
+  const getPathAncestors = (targetPath: string): string[] => {
+    const norm = normalizePath(targetPath);
+    if (norm === '/' || norm === 'C:/' || norm === 'D:/') {
+      return [norm];
+    }
+    const isWin = /^[a-zA-Z]:/.test(norm);
+    const prefix = isWin ? norm.substring(0, 3) : '/'; // 'C:/' or '/'
+    const rest = isWin ? norm.substring(3) : norm.substring(1);
+    const parts = rest.split('/').filter(Boolean);
+
+    const result: string[] = [prefix];
+    let cur = prefix.endsWith('/') ? prefix.slice(0, -1) : prefix;
+    for (const part of parts) {
+      cur = `${cur}/${part}`;
+      result.push(cur);
+    }
+    return result;
+  };
+
+  // Recursively merge tree nodes and their children while preserving sibling nodes
+  const mergeTreeNodes = (
+    nodes: TreeDataNode[],
+    targetKey: string,
+    newChildren: TreeDataNode[]
+  ): TreeDataNode[] => {
+    const normTarget = normalizePath(targetKey);
+    return nodes.map((node) => {
+      const normNodeKey = normalizePath(node.key as string);
+      if (normNodeKey === normTarget) {
+        const existingMap = new Map<string, TreeDataNode>();
+        (node.children || []).forEach((c) =>
+          existingMap.set(normalizePath(c.key as string), c)
+        );
+
+        newChildren.forEach((child) => {
+          const childKey = normalizePath(child.key as string);
+          const existing = existingMap.get(childKey);
+          if (existing) {
+            existingMap.set(childKey, {
+              ...existing,
+              ...child,
+              children:
+                child.children && child.children.length > 0
+                  ? child.children
+                  : existing.children,
+            });
+          } else {
+            existingMap.set(childKey, child);
+          }
+        });
+
+        return {
+          ...node,
+          children: Array.from(existingMap.values()),
+        };
+      }
+      if (node.children && node.children.length > 0) {
+        return {
+          ...node,
+          children: mergeTreeNodes(node.children, targetKey, newChildren),
+        };
+      }
+      return node;
+    });
+  };
+
   // Fetch Overview
   const fetchOverview = useCallback(async (silent = false) => {
     if (!machineId) return;
@@ -309,23 +467,178 @@ export function MachineConsoleDrawer({
     }
   }, [machineId]);
 
-  // Fetch Directory
-  const fetchDirectory = useCallback(async (targetPath: string) => {
-    if (!machineId) return;
-    setFilesLoading(true);
-    try {
-      const data = await listMachineDirectory(machineId, targetPath);
-      setFiles(data);
-      setCurrentPath(targetPath);
-      setInputPath(targetPath);
-      setSelectedFilePaths([]);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '未知错误';
-      antdMessage.error(`读取目录 "${targetPath}" 失败: ${msg}`);
-    } finally {
-      setFilesLoading(false);
-    }
-  }, [machineId]);
+  // Fetch Directory with caching & complete tree synchronization
+  const fetchDirectory = useCallback(
+    async (targetPath: string, forceRefresh = false) => {
+      if (!machineId) return;
+      const normPath = normalizePath(targetPath);
+
+      // 0. Instant Cache Lookup
+      if (!forceRefresh && dirCache.has(normPath)) {
+        const cached = dirCache.get(normPath)!;
+        setFiles(cached);
+        setCurrentPath(normPath);
+        setInputPath(normPath);
+        setSelectedFilePaths([]);
+
+        const dirNodes: TreeDataNode[] = cached
+          .filter((e) => e.is_dir)
+          .map((d) => ({
+            title: d.name,
+            key: normalizePath(d.path),
+            isLeaf: false,
+            icon: <FolderOutlined style={{ color: '#faad14' }} />,
+          }));
+        const ancestors = getPathAncestors(normPath);
+        setTreeData((origin) => {
+          let updated = origin;
+          for (let i = 0; i < ancestors.length - 1; i++) {
+            const parentKey = ancestors[i];
+            const childKey = ancestors[i + 1];
+            if (!parentKey || !childKey) continue;
+            const childName = childKey.split('/').pop() || childKey;
+            const skeleton: TreeDataNode = {
+              title: childName,
+              key: childKey,
+              isLeaf: false,
+              icon: <FolderOutlined style={{ color: '#faad14' }} />,
+            };
+            updated = mergeTreeNodes(updated, parentKey, [skeleton]);
+          }
+          return mergeTreeNodes(updated, normPath, dirNodes);
+        });
+        setExpandedKeys((prev) => Array.from(new Set([...prev, ...ancestors])));
+        return;
+      }
+
+      setFilesLoading(true);
+      try {
+        const data = await listMachineDirectory(machineId, normPath);
+        setDirCache((prev) => new Map(prev).set(normPath, data));
+        setFiles(data);
+        setCurrentPath(normPath);
+        setInputPath(normPath);
+        setSelectedFilePaths([]);
+
+        // 1. Build child directory nodes
+        const dirNodes: TreeDataNode[] = data
+          .filter((e) => e.is_dir)
+          .map((d) => ({
+            title: d.name,
+            key: normalizePath(d.path),
+            isLeaf: false,
+            icon: <FolderOutlined style={{ color: '#faad14' }} />,
+          }));
+
+        // 2. Ensure all ancestor branches exist in TreeData
+        const ancestors = getPathAncestors(normPath);
+        setTreeData((origin) => {
+          let updated = origin;
+          for (let i = 0; i < ancestors.length - 1; i++) {
+            const parentKey = ancestors[i];
+            const childKey = ancestors[i + 1];
+            if (!parentKey || !childKey) continue;
+            const childName = childKey.split('/').pop() || childKey;
+            const skeleton: TreeDataNode = {
+              title: childName,
+              key: childKey,
+              isLeaf: false,
+              icon: <FolderOutlined style={{ color: '#faad14' }} />,
+            };
+            updated = mergeTreeNodes(updated, parentKey, [skeleton]);
+          }
+          return mergeTreeNodes(updated, normPath, dirNodes);
+        });
+
+        // 3. Expand all ancestors leading to this directory
+        setExpandedKeys((prev) => Array.from(new Set([...prev, ...ancestors])));
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : '未知错误';
+        antdMessage.error(`读取目录 "${normPath}" 失败: ${msg}`);
+      } finally {
+        setFilesLoading(false);
+      }
+    },
+    [machineId, dirCache]
+  );
+
+  // Dynamic tree load on expand
+  const onLoadTreeData = useCallback(
+    ({ key, children }: { key: React.Key; children?: TreeDataNode[] }) =>
+      new Promise<void>((resolve) => {
+        if (!machineId || (children && children.length > 0)) {
+          resolve();
+          return;
+        }
+        const normKey = normalizePath(key as string);
+        if (dirCache.has(normKey)) {
+          const cached = dirCache.get(normKey)!;
+          const dirNodes: TreeDataNode[] = cached
+            .filter((e) => e.is_dir)
+            .map((d) => ({
+              title: d.name,
+              key: normalizePath(d.path),
+              isLeaf: false,
+              icon: <FolderOutlined style={{ color: '#faad14' }} />,
+            }));
+          setTreeData((origin) => mergeTreeNodes(origin, normKey, dirNodes));
+          resolve();
+          return;
+        }
+
+        listMachineDirectory(machineId, normKey)
+          .then((entries) => {
+            setDirCache((prev) => new Map(prev).set(normKey, entries));
+            const dirNodes: TreeDataNode[] = entries
+              .filter((e) => e.is_dir)
+              .map((d) => ({
+                title: d.name,
+                key: normalizePath(d.path),
+                isLeaf: false,
+                icon: <FolderOutlined style={{ color: '#faad14' }} />,
+              }));
+            setTreeData((origin) => mergeTreeNodes(origin, normKey, dirNodes));
+            resolve();
+          })
+          .catch(() => {
+            resolve();
+          });
+      }),
+    [machineId, dirCache]
+  );
+
+  // Tree node select handler
+  const onSelectTree = useCallback(
+    (selectedKeys: React.Key[]) => {
+      if (selectedKeys.length > 0) {
+        const target = selectedKeys[0] as string;
+        void fetchDirectory(target);
+      }
+    },
+    [fetchDirectory]
+  );
+
+  // Filtered Tree data by search term
+  const filteredTreeData = useMemo(() => {
+    if (!treeSearch) return treeData;
+    const filterNodes = (nodes: TreeDataNode[]): TreeDataNode[] => {
+      return nodes
+        .map((node) => {
+          const titleStr = typeof node.title === 'string' ? node.title : '';
+          const match = titleStr.toLowerCase().includes(treeSearch.toLowerCase());
+          const filteredChildren = node.children ? filterNodes(node.children) : undefined;
+          if (match || (filteredChildren && filteredChildren.length > 0)) {
+            return {
+              ...node,
+              children: filteredChildren,
+            };
+          }
+          return null;
+        })
+        .filter(Boolean) as TreeDataNode[];
+    };
+    return filterNodes(treeData);
+  }, [treeData, treeSearch]);
 
   // Fetch Processes
   const fetchProcesses = useCallback(async (silent = false) => {
@@ -387,12 +700,13 @@ export function MachineConsoleDrawer({
   // On drawer open
   useEffect(() => {
     if (open && machineId) {
+      initTreeRoots();
       void fetchOverview();
       void fetchDirectory(currentPath);
       void fetchProcesses();
       void fetchNetwork();
     }
-  }, [open, machineId, fetchOverview, fetchDirectory, fetchProcesses, fetchNetwork, currentPath]);
+  }, [open, machineId, initTreeRoots, fetchOverview, fetchDirectory, fetchProcesses, fetchNetwork, currentPath]);
 
   // Auto refresh polling
   useEffect(() => {
@@ -406,10 +720,22 @@ export function MachineConsoleDrawer({
   }, [open, machineId, autoRefresh, fetchOverview, fetchProcesses, fetchNetwork]);
 
   const handleParentNav = useCallback(() => {
-    if (currentPath === '/' || currentPath === '') return;
-    const parts = currentPath.replace(/\\/g, '/').split('/').filter(Boolean);
+    if (
+      currentPath === '/' ||
+      currentPath === '' ||
+      currentPath === 'C:/' ||
+      currentPath === 'D:/'
+    )
+      return;
+    const isWin = /^[a-zA-Z]:/.test(currentPath);
+    const prefix = isWin ? currentPath.substring(0, 3) : '/';
+    const rest = isWin ? currentPath.substring(3) : currentPath.substring(1);
+    const parts = rest.split('/').filter(Boolean);
     parts.pop();
-    const parentPath = parts.length === 0 ? '/' : '/' + parts.join('/');
+    const parentPath =
+      parts.length === 0
+        ? prefix
+        : (prefix.endsWith('/') ? prefix.slice(0, -1) : prefix) + '/' + parts.join('/');
     void fetchDirectory(parentPath);
   }, [currentPath, fetchDirectory]);
 
@@ -649,97 +975,298 @@ export function MachineConsoleDrawer({
         title: '远程文件',
         icon: <FolderOpenOutlined style={{ color: '#faad14' }} />,
         content: (
-          <div style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: '8px 12px' }}>
-            {connectionType === 'agent' && machineId !== 'master-local' && (
-              <Alert
-                type="info"
-                showIcon
-                style={{ marginBottom: 8, fontSize: 12 }}
-                message="Agent 轮询节点文件提示"
-                description="当前节点为 Agent Runner 模式（出站长轮询），核心用于流水线任务调度与实时性能监控。若需直接在 Web 网页中基于 SFTP 浏览、编辑、上传下载该机器本地的全部盘符与文件，请在机器配置中切换为【SSH 直连模式】（一键部署脚本已自动配置并开启 OpenSSH 服务）。"
-              />
-            )}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center', flex: 1, marginRight: 8 }}>
-                <Button
-                  size="small"
-                  icon={<ArrowUpOutlined />}
-                  disabled={currentPath === '/' || currentPath === ''}
-                  onClick={handleParentNav}
-                >
-                  上一级
-                </Button>
-                <Input
-                  size="small"
-                  value={inputPath}
-                  onChange={(e) => setInputPath(e.target.value)}
-                  onPressEnter={() => fetchDirectory(inputPath)}
-                  placeholder="路径，例如 /var/log 或 C:\..."
-                  style={{ flex: 1, fontFamily: 'monospace' }}
-                />
-                <Button size="small" type="primary" onClick={() => fetchDirectory(inputPath)}>
-                  前往
-                </Button>
+          <div style={{ display: 'flex', height: '100%', overflow: 'hidden' }}>
+            {/* Left: Directory Tree Sidebar */}
+            <div
+              style={{
+                width: 240,
+                minWidth: 180,
+                maxWidth: 320,
+                borderRight: '1px solid rgba(140, 140, 140, 0.18)',
+                display: 'flex',
+                flexDirection: 'column',
+                background: 'rgba(0, 0, 0, 0.015)',
+                padding: '8px 8px',
+                userSelect: 'none',
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '0 4px 6px 4px',
+                  borderBottom: '1px solid rgba(140, 140, 140, 0.12)',
+                  marginBottom: 8,
+                }}
+              >
+                <Space size={6}>
+                  <FolderOpenOutlined style={{ color: '#faad14', fontSize: 14 }} />
+                  <Typography.Text strong style={{ fontSize: 13 }}>
+                    目录结构
+                  </Typography.Text>
+                </Space>
+                <Tooltip title="刷新磁盘与目录树">
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<ReloadOutlined />}
+                    onClick={() => void fetchDrives()}
+                  />
+                </Tooltip>
               </div>
 
-              <Space size={4}>
-                <Select
-                  size="small"
-                  value={fileSortBy}
-                  onChange={setFileSortBy}
-                  style={{ width: 110 }}
-                  suffixIcon={<SortAscendingOutlined />}
-                  options={[
-                    { label: '默认排序', value: 'default' },
-                    { label: '名称 A-Z', value: 'name_asc' },
-                    { label: '名称 Z-A', value: 'name_desc' },
-                    { label: '大小 大到小', value: 'size_desc' },
-                    { label: '大小 由小到大', value: 'size_asc' },
-                    { label: '修改时间 最新', value: 'time_desc' },
-                    { label: '修改时间 最旧', value: 'time_asc' },
-                  ]}
-                />
-                <Upload beforeUpload={handleUploadFile} showUploadList={false} multiple>
-                  <Button size="small" icon={<UploadOutlined />}>
-                    上传
-                  </Button>
-                </Upload>
-                <Button
-                  size="small"
-                  icon={<DownloadOutlined />}
-                  href={downloadSelectedUrl}
-                  target="_blank"
-                >
-                  {selectedFilePaths.length > 0 ? `下载(${selectedFilePaths.length})` : '打包下载'}
-                </Button>
-                {selectedFilePaths.length > 0 && (
-                  <Popconfirm
-                    title={`确定删除选中的 ${selectedFilePaths.length} 个文件？`}
-                    onConfirm={handleBatchDelete}
-                    okText="删除"
-                    cancelText="取消"
+              <Input
+                size="small"
+                placeholder="筛选目录树..."
+                value={treeSearch}
+                onChange={(e) => setTreeSearch(e.target.value)}
+                allowClear
+                style={{ marginBottom: 8, fontSize: 12 }}
+              />
+
+              <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
+                {treeData.length > 0 ? (
+                  <Tree
+                    showIcon
+                    blockNode
+                    treeData={filteredTreeData}
+                    loadData={onLoadTreeData}
+                    selectedKeys={[normalizePath(currentPath)]}
+                    expandedKeys={expandedKeys}
+                    onExpand={(keys) => setExpandedKeys(keys)}
+                    onSelect={onSelectTree}
+                  />
+                ) : (
+                  <div
+                    style={{
+                      padding: '24px 8px',
+                      textAlign: 'center',
+                      color: '#999',
+                      fontSize: 12,
+                    }}
                   >
-                    <Button size="small" danger icon={<DeleteOutlined />}>
-                      删除
-                    </Button>
-                  </Popconfirm>
+                    暂无目录数据
+                  </div>
                 )}
-              </Space>
+              </div>
             </div>
 
-            <div style={{ flex: 1, overflowY: 'auto' }}>
-              <Table<DirectoryEntry>
-                rowKey="path"
-                columns={fileColumns}
-                dataSource={sortedFiles}
-                loading={filesLoading}
-                size="small"
-                pagination={false}
-                rowSelection={{
-                  selectedRowKeys: selectedFilePaths,
-                  onChange: (keys) => setSelectedFilePaths(keys as string[]),
+            {/* Right: File Explorer Table & Actions */}
+            <div
+              style={{
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                height: '100%',
+                padding: '8px 12px',
+                minWidth: 0,
+              }}
+            >
+              {/* WinSCP Style: Drive Switcher Pills */}
+              {drives.length > 0 && (
+                <div
+                  style={{
+                    display: 'flex',
+                    gap: 6,
+                    alignItems: 'center',
+                    marginBottom: 6,
+                    flexWrap: 'wrap',
+                  }}
+                >
+                  <Typography.Text type="secondary" style={{ fontSize: 11, marginRight: 2 }}>
+                    <HddOutlined /> 磁盘:
+                  </Typography.Text>
+                  {drives.map((d) => {
+                    const isActive = normalizePath(currentPath)
+                      .toLowerCase()
+                      .startsWith(d.mount_point.toLowerCase().slice(0, 2));
+                    return (
+                      <Tag
+                        key={d.mount_point}
+                        color={isActive ? 'blue' : 'default'}
+                        style={{
+                          cursor: 'pointer',
+                          padding: '1px 8px',
+                          fontSize: 12,
+                          borderRadius: 10,
+                          border: isActive ? '1px solid #1677ff' : undefined,
+                        }}
+                        onClick={() => void fetchDirectory(d.mount_point)}
+                      >
+                        <span style={{ fontWeight: isActive ? 600 : 400 }}>{d.device_id}</span>
+                        {d.total_gb > 0 && (
+                          <span style={{ fontSize: 10, opacity: 0.75, marginLeft: 4 }}>
+                            ({d.free_gb}G 可用)
+                          </span>
+                        )}
+                      </Tag>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Navigation & Action Toolbar */}
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginBottom: 8,
+                  gap: 8,
                 }}
-              />
+              >
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', flex: 1, minWidth: 0 }}>
+                  <Button
+                    size="small"
+                    icon={<ArrowUpOutlined />}
+                    disabled={
+                      currentPath === '/' ||
+                      currentPath === '' ||
+                      currentPath === 'C:/' ||
+                      currentPath === 'D:/' ||
+                      currentPath === 'G:/' ||
+                      currentPath === 'F:/' ||
+                      currentPath === 'H:/'
+                    }
+                    onClick={handleParentNav}
+                    title="返回上一级目录"
+                  />
+                  <Button
+                    size="small"
+                    icon={<ReloadOutlined />}
+                    onClick={() => void fetchDirectory(currentPath, true)}
+                    title="刷新当前目录 (F5)"
+                  />
+
+                  {/* Interactive Breadcrumbs / Editable Path Toggle */}
+                  {isEditingPath ? (
+                    <div style={{ display: 'flex', gap: 4, flex: 1 }}>
+                      <Input
+                        size="small"
+                        value={inputPath}
+                        onChange={(e) => setInputPath(e.target.value)}
+                        onPressEnter={() => {
+                          setIsEditingPath(false);
+                          void fetchDirectory(inputPath);
+                        }}
+                        placeholder="路径，例如 /var/log 或 C:\..."
+                        style={{ flex: 1, fontFamily: 'monospace' }}
+                      />
+                      <Button
+                        size="small"
+                        type="primary"
+                        icon={<CheckOutlined />}
+                        onClick={() => {
+                          setIsEditingPath(false);
+                          void fetchDirectory(inputPath);
+                        }}
+                      />
+                    </div>
+                  ) : (
+                    <div
+                      style={{
+                        flex: 1,
+                        display: 'flex',
+                        alignItems: 'center',
+                        background: 'rgba(0, 0, 0, 0.03)',
+                        padding: '2px 8px',
+                        borderRadius: 4,
+                        overflowX: 'auto',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      <Breadcrumb
+                        items={getPathAncestors(currentPath).map((p, idx, arr) => {
+                          const isLast = idx === arr.length - 1;
+                          const name = idx === 0 ? p : p.split('/').pop() || p;
+                          return {
+                            title: (
+                              <span
+                                style={{
+                                  cursor: 'pointer',
+                                  fontWeight: isLast ? 600 : 400,
+                                  color: isLast ? '#1677ff' : undefined,
+                                }}
+                                onClick={() => void fetchDirectory(p)}
+                              >
+                                {name}
+                              </span>
+                            ),
+                          };
+                        })}
+                      />
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={<EditOutlined style={{ fontSize: 11, opacity: 0.6 }} />}
+                        onClick={() => setIsEditingPath(true)}
+                        style={{ marginLeft: 6 }}
+                        title="编辑路径"
+                      />
+                    </div>
+                  )}
+                </div>
+
+                <Space size={4}>
+                  <Select
+                    size="small"
+                    value={fileSortBy}
+                    onChange={setFileSortBy}
+                    style={{ width: 110 }}
+                    suffixIcon={<SortAscendingOutlined />}
+                    options={[
+                      { label: '默认排序', value: 'default' },
+                      { label: '名称 A-Z', value: 'name_asc' },
+                      { label: '名称 Z-A', value: 'name_desc' },
+                      { label: '大小 大到小', value: 'size_desc' },
+                      { label: '大小 由小到大', value: 'size_asc' },
+                      { label: '修改时间 最新', value: 'time_desc' },
+                      { label: '修改时间 最旧', value: 'time_asc' },
+                    ]}
+                  />
+                  <Upload beforeUpload={handleUploadFile} showUploadList={false} multiple>
+                    <Button size="small" icon={<UploadOutlined />}>
+                      上传
+                    </Button>
+                  </Upload>
+                  <Button
+                    size="small"
+                    icon={<DownloadOutlined />}
+                    href={downloadSelectedUrl}
+                    target="_blank"
+                  >
+                    {selectedFilePaths.length > 0 ? `下载(${selectedFilePaths.length})` : '打包下载'}
+                  </Button>
+                  {selectedFilePaths.length > 0 && (
+                    <Popconfirm
+                      title={`确定删除选中的 ${selectedFilePaths.length} 个文件？`}
+                      onConfirm={handleBatchDelete}
+                      okText="删除"
+                      cancelText="取消"
+                    >
+                      <Button size="small" danger icon={<DeleteOutlined />}>
+                        删除
+                      </Button>
+                    </Popconfirm>
+                  )}
+                </Space>
+              </div>
+
+              <div style={{ flex: 1, overflowY: 'auto' }}>
+                <Table<DirectoryEntry>
+                  rowKey="path"
+                  columns={fileColumns}
+                  dataSource={sortedFiles}
+                  loading={filesLoading}
+                  size="small"
+                  pagination={false}
+                  rowSelection={{
+                    selectedRowKeys: selectedFilePaths,
+                    onChange: (keys) => setSelectedFilePaths(keys as string[]),
+                  }}
+                />
+              </div>
             </div>
           </div>
         ),
@@ -859,8 +1386,14 @@ export function MachineConsoleDrawer({
                             ? '🌐 SSH 远端'
                             : '🤖 Agent Runner'}
                         </Tag>
-                        <Tag color={online || overview.uptime_seconds > 0 ? 'success' : 'default'}>
-                          {online || overview.uptime_seconds > 0
+                        <Tag
+                          color={
+                            overview?.online ?? (online || overview.uptime_seconds > 0)
+                              ? 'success'
+                              : 'default'
+                          }
+                        >
+                          {overview?.online ?? (online || overview.uptime_seconds > 0)
                             ? '🟢 实时在线'
                             : '⚪ 离线 / 等待心跳'}
                         </Tag>
@@ -869,7 +1402,7 @@ export function MachineConsoleDrawer({
                   </Descriptions>
                 </Card>
 
-                {!(online || overview.uptime_seconds > 0) &&
+                {!(overview?.online ?? (online || overview.uptime_seconds > 0)) &&
                   machineId !== 'master-local' &&
                   connectionType !== 'builtin' && (
                     <Alert
@@ -980,6 +1513,93 @@ export function MachineConsoleDrawer({
                     </Card>
                   </Col>
                 </Row>
+
+                {/* FinalShell Style: Multi-Disk Partitions Breakdown */}
+                {drives.length > 0 && (
+                  <Card
+                    size="small"
+                    title={
+                      <Space size={6}>
+                        <HddOutlined style={{ color: '#1677ff' }} />
+                        <Typography.Text strong style={{ fontSize: 13 }}>
+                          物理存储与分区状态 ({drives.length} 个盘符/挂载点)
+                        </Typography.Text>
+                      </Space>
+                    }
+                    style={{
+                      borderRadius: 6,
+                      background: token.colorFillQuaternary,
+                      border: `1px solid ${token.colorBorderSecondary}`,
+                    }}
+                  >
+                    <Row gutter={[12, 12]}>
+                      {drives.map((d) => (
+                        <Col
+                          span={drives.length === 1 ? 24 : drives.length === 2 ? 12 : 6}
+                          key={d.mount_point}
+                        >
+                          <div
+                            style={{
+                              padding: '8px 10px',
+                              background: token.colorBgContainer,
+                              borderRadius: 6,
+                              border: `1px solid ${token.colorBorderSecondary}`,
+                            }}
+                          >
+                            <div
+                              style={{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                marginBottom: 2,
+                              }}
+                            >
+                              <Typography.Text strong style={{ fontSize: 12 }}>
+                                💽 {d.device_id} ({d.volume_name || d.mount_point})
+                              </Typography.Text>
+                              <Tag
+                                color={
+                                  d.percent > 85
+                                    ? 'error'
+                                    : d.percent > 70
+                                    ? 'warning'
+                                    : 'success'
+                                }
+                                style={{ margin: 0, fontSize: 11 }}
+                              >
+                                {d.percent}%
+                              </Tag>
+                            </div>
+                            <Progress
+                              percent={d.percent}
+                              size="small"
+                              status={d.percent > 85 ? 'exception' : 'normal'}
+                              strokeColor={
+                                d.percent > 85
+                                  ? '#ff4d4f'
+                                  : d.percent > 70
+                                  ? '#faad14'
+                                  : '#1677ff'
+                              }
+                              showInfo={false}
+                            />
+                            <div
+                              style={{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                marginTop: 2,
+                                fontSize: 11,
+                                color: token.colorTextSecondary,
+                              }}
+                            >
+                              <span>已用: {d.used_gb} GB</span>
+                              <span>总量: {d.total_gb} GB</span>
+                            </div>
+                          </div>
+                        </Col>
+                      ))}
+                    </Row>
+                  </Card>
+                )}
 
                 <Descriptions
                   column={{ xxl: 5, xl: 5, lg: 3, md: 2, sm: 1, xs: 1 }}

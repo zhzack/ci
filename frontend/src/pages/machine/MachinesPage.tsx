@@ -928,47 +928,33 @@ export function MachinesPage(): React.JSX.Element {
               重置 Token
             </Button>
           ) : null}
-          {record.connection_type === 'agent' && record.id !== 'master-local' ? (
-            <Tooltip title="Agent 轮询模式不支持在线终端与 SFTP 文件管理。如需 Web 控制台，请在「管理/详情」中将此机器切换为【SSH 直连模式】。">
-              <Button
-                type="primary"
-                ghost
-                size="small"
-                icon={<DesktopOutlined />}
-                disabled
-              >
-                控制台与监控
-              </Button>
-            </Tooltip>
-          ) : (
-            <Button
-              type="primary"
-              ghost
-              size="small"
-              icon={<DesktopOutlined />}
-              onClick={() => {
-                const tabId = `machine-console:${record.id}`;
-                openTab(tabId, {
-                  id: tabId,
-                  type: 'machine-console',
-                  title: `控制台: ${record.name}`,
-                  props: {
-                    machineId: record.id,
-                    machineName: record.name,
-                    connectionType: record.connection_type,
-                    hostname: record.hostname || record.labels?.hostname,
-                    platform: record.platform || record.labels?.platform,
-                    osRelease: record.os_release || record.labels?.os_release,
-                    arch: record.arch || record.labels?.arch,
-                    online: record.online,
-                    lastHeartbeat: record.last_heartbeat,
-                  },
-                });
-              }}
-            >
-              控制台与监控
-            </Button>
-          )}
+          <Button
+            type="primary"
+            ghost
+            size="small"
+            icon={<DesktopOutlined />}
+            onClick={() => {
+              const tabId = `machine-console:${record.id}`;
+              openTab(tabId, {
+                id: tabId,
+                type: 'machine-console',
+                title: `控制台: ${record.name}`,
+                props: {
+                  machineId: record.id,
+                  machineName: record.name,
+                  connectionType: record.connection_type,
+                  hostname: record.hostname || record.labels?.hostname,
+                  platform: record.platform || record.labels?.platform,
+                  osRelease: record.os_release || record.labels?.os_release,
+                  arch: record.arch || record.labels?.arch,
+                  online: record.online,
+                  lastHeartbeat: record.last_heartbeat,
+                },
+              });
+            }}
+          >
+            控制台与监控
+          </Button>
           <Button size="small" onClick={() => setDrawer(record)}>
             管理 / 详情
           </Button>

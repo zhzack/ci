@@ -17,6 +17,7 @@ from mini_pipeline.machine.diagnostics import (
     CommandExecRequest,
     CommandExecResult,
     DirectoryEntry,
+    DriveInfo,
     FileContentResult,
     NetworkDiagnostics,
     ProcessInfo,
@@ -65,6 +66,17 @@ def get_machine_network(
     """Get comprehensive network diagnostics including interfaces, traffic and active sockets."""
     _check_machine_access(services, principal, machine_id)
     return services.diagnostics.get_network(machine_id)
+
+
+@router.get("/{machine_id}/diagnostics/drives", response_model=list[DriveInfo])
+def get_machine_drives(
+    machine_id: str,
+    principal: PrincipalDep,
+    services: Annotated[Services, Depends(get_services)],
+) -> list[DriveInfo]:
+    """Get all mounted disks, logical drives, and storage partitions on target machine."""
+    _check_machine_access(services, principal, machine_id)
+    return services.diagnostics.list_drives(machine_id)
 
 
 @router.get("/{machine_id}/diagnostics/files", response_model=list[DirectoryEntry])
