@@ -14,13 +14,16 @@ from mini_pipeline.core.container import Services
 from mini_pipeline.domain.exceptions import PermissionDeniedError
 from mini_pipeline.machine.diagnostics import (
     BatchDeleteRequest,
+    ChmodPathRequest,
     CommandExecRequest,
     CommandExecResult,
+    CreatePathRequest,
     DirectoryEntry,
     DriveInfo,
     FileContentResult,
     NetworkDiagnostics,
     ProcessInfo,
+    RenamePathRequest,
     SaveFileRequest,
     SystemOverview,
 )
@@ -166,6 +169,66 @@ def batch_delete_machine_files(
         raise PermissionDeniedError("Only machine managers/admins can delete files")
     services.diagnostics.delete_paths(machine_id, payload.paths)
     return {"message": f"Deleted {len(payload.paths)} items successfully"}
+
+
+@router.post("/{machine_id}/diagnostics/files/mkdir")
+def create_machine_directory(
+    machine_id: str,
+    payload: CreatePathRequest,
+    principal: PrincipalDep,
+    services: Annotated[Services, Depends(get_services)],
+) -> dict[str, str]:
+    """Create a new folder on the target machine."""
+    machine = _check_machine_access(services, principal, machine_id)
+    if not services.machines.can_manage(principal, machine):
+        raise PermissionDeniedError("Only machine managers/admins can create folders")
+    services.diagnostics.create_directory(machine_id, payload.path)
+    return {"message": f"Directory '{payload.path}' created successfully"}
+
+
+@router.post("/{machine_id}/diagnostics/files/touch")
+def create_machine_file(
+    machine_id: str,
+    payload: CreatePathRequest,
+    principal: PrincipalDep,
+    services: Annotated[Services, Depends(get_services)],
+) -> dict[str, str]:
+    """Create a new blank file on the target machine."""
+    machine = _check_machine_access(services, principal, machine_id)
+    if not services.machines.can_manage(principal, machine):
+        raise PermissionDeniedError("Only machine managers/admins can create files")
+    services.diagnostics.create_file(machine_id, payload.path)
+    return {"message": f"File '{payload.path}' created successfully"}
+
+
+@router.post("/{machine_id}/diagnostics/files/rename")
+def rename_machine_path(
+    machine_id: str,
+    payload: RenamePathRequest,
+    principal: PrincipalDep,
+    services: Annotated[Services, Depends(get_services)],
+) -> dict[str, str]:
+    """Rename a remote file or directory."""
+    machine = _check_machine_access(services, principal, machine_id)
+    if not services.machines.can_manage(principal, machine):
+        raise PermissionDeniedError("Only machine managers/admins can rename files")
+    services.diagnostics.rename_path(machine_id, payload.old_path, payload.new_path)
+    return {"message": f"Renamed '{payload.old_path}' to '{payload.new_path}' successfully"}
+
+
+@router.post("/{machine_id}/diagnostics/files/chmod")
+def chmod_machine_path(
+    machine_id: str,
+    payload: ChmodPathRequest,
+    principal: PrincipalDep,
+    services: Annotated[Services, Depends(get_services)],
+) -> dict[str, str]:
+    """Change permissions of a remote file or directory."""
+    machine = _check_machine_access(services, principal, machine_id)
+    if not services.machines.can_manage(principal, machine):
+        raise PermissionDeniedError("Only machine managers/admins can change file permissions")
+    services.diagnostics.chmod_path(machine_id, payload.path, payload.mode)
+    return {"message": f"Changed permissions of '{payload.path}' to {payload.mode}"}
 
 
 @router.post("/{machine_id}/diagnostics/exec", response_model=CommandExecResult)

@@ -173,6 +173,20 @@ class CommandExecResult(BaseModel):
     new_working_dir: str | None = None
 
 
+class CreatePathRequest(BaseModel):
+    path: str = Field(..., min_length=1)
+
+
+class RenamePathRequest(BaseModel):
+    old_path: str = Field(..., min_length=1)
+    new_path: str = Field(..., min_length=1)
+
+
+class ChmodPathRequest(BaseModel):
+    path: str = Field(..., min_length=1)
+    mode: str = Field("0755", min_length=3, max_length=5)
+
+
 # -----------------------------------------------------------------------------
 # Diagnostics Service
 # -----------------------------------------------------------------------------
@@ -191,6 +205,7 @@ class MachineDiagnosticsService:
         self._agent_telemetry: dict[str, SystemOverview] = {}
         self._agent_processes: dict[str, list[ProcessInfo]] = {}
         self._agent_network: dict[str, NetworkDiagnostics] = {}
+        self._sftp_pool: dict[str, tuple[Any, Any, float]] = {}
 
     def update_agent_telemetry(self, machine_id: str, payload: dict[str, Any]) -> None:
         """Stores real-time telemetry reported by runner agent in heartbeat."""
@@ -791,6 +806,53 @@ class MachineDiagnosticsService:
                 f"Agent 模式节点【{machine.name}】不支持直接删除文件，请启用 SSH 直连模式。"
             )
 
+    def create_directory(self, machine_id: str, path: str) -> None:
+        machine = self.machines.get(machine_id)
+        if machine.connection_type == "ssh":
+            self._mkdir_ssh(machine, path)
+        elif self._is_builtin(machine):
+            os.makedirs(path, exist_ok=True)
+        else:
+            raise ValidationError(
+                f"Agent 模式节点【{machine.name}】不支持创建目录，请启用 SSH 直连模式。"
+            )
+
+    def create_file(self, machine_id: str, path: str) -> None:
+        machine = self.machines.get(machine_id)
+        if machine.connection_type == "ssh":
+            self._touch_ssh(machine, path)
+        elif self._is_builtin(machine):
+            Path(path).touch()
+        else:
+            raise ValidationError(
+                f"Agent 模式节点【{machine.name}】不支持创建文件，请启用 SSH 直连模式。"
+            )
+
+    def rename_path(self, machine_id: str, old_path: str, new_path: str) -> None:
+        machine = self.machines.get(machine_id)
+        if machine.connection_type == "ssh":
+            self._rename_ssh(machine, old_path, new_path)
+        elif self._is_builtin(machine):
+            os.rename(old_path, new_path)
+        else:
+            raise ValidationError(
+                f"Agent 模式节点【{machine.name}】不支持重命名，请启用 SSH 直连模式。"
+            )
+
+    def chmod_path(self, machine_id: str, path: str, mode: str) -> None:
+        machine = self.machines.get(machine_id)
+        if machine.connection_type == "ssh":
+            self._chmod_ssh(machine, path, mode)
+        elif self._is_builtin(machine):
+            try:
+                os.chmod(path, int(mode, 8))
+            except Exception as exc:
+                raise ValidationError(f"chmod failed: {exc}") from exc
+        else:
+            raise ValidationError(
+                f"Agent 模式节点【{machine.name}】不支持修改权限，请启用 SSH 直连模式。"
+            )
+
     def exec_command(self, machine_id: str, req: CommandExecRequest) -> CommandExecResult:
         machine = self.machines.get(machine_id)
         if machine.connection_type == "ssh":
@@ -877,7 +939,7 @@ class MachineDiagnosticsService:
 
     def _probe_ssh_overview(self, machine: Machine) -> SystemOverview:
         try:
-            client, _ = self._connect_ssh(machine)
+            client, _ = self._get_ssh_and_sftp_client(machine)
         except Exception as exc:
             logger.warning("SSH connection failed for %s: %s", machine.name, exc)
             return SystemOverview(
@@ -986,23 +1048,40 @@ class MachineDiagnosticsService:
                     _, ps_stdout, _ = client.exec_command(ps_cmd, timeout=8)
                     ps_raw = _safe_decode_bytes(ps_stdout.read())
                     ps_lines = [item.strip() for item in ps_raw.splitlines() if item.strip()]
-                    if len(ps_lines) >= 7:
+                    if len(ps_lines) >= 9:
                         hostname = ps_lines[0]
                         plat = "Windows"
                         os_pretty = ps_lines[2]
-                        arch = ps_lines[3] if len(ps_lines) > 3 else "x86_64"
-                        cpu_cnt = int(ps_lines[4]) if ps_lines[4].isdigit() else 1
-                        tot_kb = float(ps_lines[5]) if ps_lines[5].isdigit() else 1024.0
-                        free_kb = float(ps_lines[6]) if ps_lines[6].isdigit() else 0.0
-                        mem_total_mb = round(tot_kb / 1024.0, 1)
-                        mem_used_mb = round((tot_kb - free_kb) / 1024.0, 1)
-                        mem_pct = round((mem_used_mb / max(1.0, mem_total_mb)) * 100, 1)
-                        if len(ps_lines) >= 9 and ps_lines[7].isdigit() and ps_lines[8].isdigit():
-                            d_tot = float(ps_lines[7])
-                            d_free = float(ps_lines[8])
-                            disk_total_gb = round(d_tot / (1024 ** 3), 1)
-                            disk_used_gb = round((d_tot - d_free) / (1024 ** 3), 1)
-                            disk_pct = round((disk_used_gb / max(0.1, disk_total_gb)) * 100, 1)
+                        arch = ps_lines[3]
+                        cpu_cnt = int(ps_lines[4]) if ps_lines[4].isdigit() else cpu_cnt
+                        tot_kb = (
+                            float(ps_lines[5])
+                            if ps_lines[5].replace(".", "").isdigit()
+                            else 0.0
+                        )
+                        free_kb = (
+                            float(ps_lines[6])
+                            if ps_lines[6].replace(".", "").isdigit()
+                            else 0.0
+                        )
+                        if tot_kb > 0:
+                            mem_total_mb = round(tot_kb / 1024, 1)
+                            mem_used_mb = round((tot_kb - free_kb) / 1024, 1)
+                            mem_pct = round((mem_used_mb / mem_total_mb) * 100, 1)
+                        c_size = (
+                            float(ps_lines[7])
+                            if ps_lines[7].replace(".", "").isdigit()
+                            else 0.0
+                        )
+                        c_free = (
+                            float(ps_lines[8])
+                            if ps_lines[8].replace(".", "").isdigit()
+                            else 0.0
+                        )
+                        if c_size > 0:
+                            disk_total_gb = round(c_size / (1024**3), 1)
+                            disk_used_gb = round((c_size - c_free) / (1024**3), 1)
+                            disk_pct = round((disk_used_gb / disk_total_gb) * 100, 1)
                 except Exception:
                     pass
 
@@ -1025,11 +1104,21 @@ class MachineDiagnosticsService:
                 gpus=gpus,
                 collected_at=datetime.now(timezone.utc),
             )
-        finally:
-            client.close()
+        except Exception:
+            self._sftp_pool.pop(machine.id, None)
+            raise
 
     def _probe_ssh_processes(self, machine: Machine) -> list[ProcessInfo]:
-        client, _ = self._connect_ssh(machine)
+        try:
+            client, _ = self._get_ssh_and_sftp_client(machine)
+        except Exception as exc:
+            logger.warning(
+                "SSH connection failed in _probe_ssh_processes for %s: %s",
+                machine.name,
+                exc,
+            )
+            return []
+
         try:
             cmd = (
                 "ps -A -o pid,user,%cpu,%mem,stat,command 2>/dev/null || "
@@ -1042,69 +1131,53 @@ class MachineDiagnosticsService:
                 p = line.strip().split()
                 if not p:
                     continue
-                pid = None
-                user = "unknown"
-                cpu = 0.0
-                mem = 0.0
-                stat = "Running"
-                command_str = ""
-
-                if p[0].isdigit() and len(p) >= 5:
-                    # Format: PID USER %CPU %MEM STAT COMMAND...
+                try:
                     pid = int(p[0])
                     user = p[1]
-                    cpu = float(p[2]) if p[2].replace(".", "").isdigit() else 0.0
-                    mem = float(p[3]) if p[3].replace(".", "").isdigit() else 0.0
-                    stat = p[4]
-                    command_str = " ".join(p[5:]) if len(p) > 5 else p[0]
-                elif len(p) >= 6 and p[1].isdigit():
-                    # Format: USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND...
-                    user = p[0]
-                    pid = int(p[1])
-                    cpu = float(p[2]) if p[2].replace(".", "").isdigit() else 0.0
-                    mem = float(p[3]) if p[3].replace(".", "").isdigit() else 0.0
-                    stat = p[7] if len(p) >= 8 else "Running"
-                    command_str = " ".join(p[10:]) if len(p) >= 11 else " ".join(p[4:])
+                    cpu = float(p[2]) if len(p) > 2 and p[2].replace(".", "").isdigit() else 0.0
+                    mem = float(p[3]) if len(p) > 3 and p[3].replace(".", "").isdigit() else 0.0
+                    status = p[4] if len(p) > 4 else "Running"
+                    command = " ".join(p[5:]) if len(p) > 5 else " ".join(p[1:])
+                    processes.append(
+                        ProcessInfo(
+                            pid=pid,
+                            name=command.split()[0] if command else f"proc-{pid}",
+                            username=user,
+                            cpu_percent=cpu,
+                            memory_percent=min(100.0, max(0.0, mem)),
+                            status=status,
+                            started_at="",
+                            command=command,
+                        )
+                    )
+                except Exception:
+                    continue
 
-                if pid is not None:
-                    name = command_str.split()[0].split("/")[-1] if command_str else user
-                    processes.append(ProcessInfo(
-                        pid=pid,
-                        name=name,
-                        user=user,
-                        cpu_percent=min(100.0, max(0.0, cpu)),
-                        memory_percent=min(100.0, max(0.0, mem)),
-                        status=stat,
-                        started_at="",
-                        command=command_str,
-                    ))
-
-            if not processes:
-                # Windows tasklist / PowerShell fallback
+            # Fallback for Windows SSH nodes via PowerShell
+            if not processes or "not recognized" in raw.lower():
                 try:
-                    ps_cmd = "tasklist /FO CSV /NH"
-                    _, ps_stdout, _ = client.exec_command(ps_cmd, timeout=6)
+                    ps_cmd = (
+                        "powershell -NoProfile -Command \""
+                        "gps | select -First 60 Id, ProcessName, CPU, WorkingSet64 | "
+                        "% { \\\"$($_.Id)|$($_.ProcessName)|$([math]::Round($_.CPU, 1))|"
+                        "$([math]::Round(($_.WorkingSet64/1048576), 1))\\\" }\""
+                    )
+                    _, ps_stdout, _ = client.exec_command(ps_cmd, timeout=8)
                     ps_raw = _safe_decode_bytes(ps_stdout.read())
+                    processes = []
                     for line in ps_raw.splitlines():
-                        parts = [p.strip(' "') for p in line.split('","')]
-                        if len(parts) >= 2 and parts[1].isdigit():
-                            pid = int(parts[1])
-                            pname = parts[0]
-                            raw_mem = parts[4] if len(parts) >= 5 else "0"
-                            mem_str = raw_mem.replace(" K", "").replace(",", "")
-                            mem_mb = (
-                                round(float(mem_str) / 1024.0, 1)
-                                if mem_str.isdigit()
-                                else 0.0
-                            )
-                            # Convert to reasonable percent
-                            # (assume 16GB default baseline for percent calculation)
+                        parts = line.strip().split("|")
+                        if len(parts) >= 4 and parts[0].isdigit():
+                            pid = int(parts[0])
+                            pname = parts[1]
+                            cpu = float(parts[2]) if parts[2].replace(".", "").isdigit() else 0.0
+                            mem_mb = float(parts[3]) if parts[3].replace(".", "").isdigit() else 0.0
                             mem_pct = round((mem_mb / 16384.0) * 100, 1)
                             processes.append(ProcessInfo(
                                 pid=pid,
                                 name=pname,
-                                user=parts[2] if len(parts) >= 3 else "SYSTEM",
-                                cpu_percent=0.0,
+                                username="SYSTEM",
+                                cpu_percent=cpu,
                                 memory_percent=min(100.0, max(0.0, mem_pct)),
                                 status="Running",
                                 started_at="",
@@ -1114,11 +1187,26 @@ class MachineDiagnosticsService:
                     pass
 
             return processes
-        finally:
-            client.close()
+        except Exception:
+            self._sftp_pool.pop(machine.id, None)
+            raise
 
     def _probe_ssh_network(self, machine: Machine) -> NetworkDiagnostics:
-        client, _ = self._connect_ssh(machine)
+        try:
+            client, _ = self._get_ssh_and_sftp_client(machine)
+        except Exception as exc:
+            logger.warning(
+                "SSH connection failed in _probe_ssh_network for %s: %s",
+                machine.name,
+                exc,
+            )
+            return NetworkDiagnostics(
+                sent_total_mb=0,
+                recv_total_mb=0,
+                interfaces=[],
+                connections=[],
+            )
+
         try:
             # 1. Network traffic from /proc/net/dev
             _, stdout_dev, _ = client.exec_command("cat /proc/net/dev 2>/dev/null", timeout=5)
@@ -1146,9 +1234,7 @@ class MachineDiagnosticsService:
                     ))
 
             # 2. IP addresses from ip -br addr
-            _, stdout_ip, _ = client.exec_command(
-                "ip -br addr 2>/dev/null || ifconfig -a 2>/dev/null", timeout=5
-            )
+            _, stdout_ip, _ = client.exec_command("ip -br addr 2>/dev/null", timeout=5)
             ip_raw = stdout_ip.read().decode("utf-8", errors="replace")
             for line in ip_raw.splitlines():
                 p = line.split()
@@ -1186,36 +1272,89 @@ class MachineDiagnosticsService:
                 interfaces=interfaces,
                 connections=connections,
             )
-        finally:
-            client.close()
+        except Exception:
+            self._sftp_pool.pop(machine.id, None)
+            raise
 
-    def _probe_ssh_directory(self, machine: Machine, path: str) -> list[DirectoryEntry]:
+    def _get_ssh_and_sftp_client(self, machine: Machine) -> tuple[Any, Any]:
+        now = time.time()
+        # Evict connections idle for more than 90 seconds
+        stale_keys = [
+            k for k, (_, _, last_t) in self._sftp_pool.items()
+            if now - last_t > 90
+        ]
+        for k in stale_keys:
+            try:
+                c, s, _ = self._sftp_pool.pop(k)
+                if s is not None:
+                    s.close()
+                if c is not None:
+                    c.close()
+            except Exception:
+                pass
+
+        if machine.id in self._sftp_pool:
+            client, sftp, _ = self._sftp_pool[machine.id]
+            try:
+                t = client.get_transport()
+                if t and t.is_active():
+                    self._sftp_pool[machine.id] = (client, sftp, now)
+                    return client, sftp
+            except Exception:
+                pass
+            try:
+                if sftp is not None:
+                    sftp.close()
+                if client is not None:
+                    client.close()
+            except Exception:
+                pass
+            self._sftp_pool.pop(machine.id, None)
+
         client, _ = self._connect_ssh(machine)
         try:
             sftp = client.open_sftp()
+        except Exception:
+            sftp = None
+        self._sftp_pool[machine.id] = (client, sftp, now)
+        return client, sftp
+
+    def _get_sftp_client(self, machine: Machine) -> Any:
+        client, sftp = self._get_ssh_and_sftp_client(machine)
+        if sftp is None:
+            sftp = client.open_sftp()
+            self._sftp_pool[machine.id] = (client, sftp, time.time())
+        return sftp
+
+    def _probe_ssh_directory(self, machine: Machine, path: str) -> list[DirectoryEntry]:
+        try:
+            sftp = self._get_sftp_client(machine)
             entries = []
             target = path or "/"
             for attr in sftp.listdir_attr(target):
                 is_d = (attr.st_mode & 0o40000) != 0 if attr.st_mode else False
-                mtime_str = datetime.fromtimestamp(attr.st_mtime or 0).strftime("%Y-%m-%d %H:%M:%S")
-                entries.append(DirectoryEntry(
-                    name=attr.filename,
-                    path=str(Path(target) / attr.filename).replace("\\", "/"),
-                    is_dir=is_d,
-                    size_bytes=attr.st_size or 0,
-                    modified_at=mtime_str,
-                    permissions=oct(attr.st_mode)[-4:] if attr.st_mode else "0644",
-                ))
-            # Sort directories first, then alphabetically
+                mtime_str = datetime.fromtimestamp(
+                    attr.st_mtime or 0
+                ).strftime("%Y-%m-%d %H:%M:%S")
+                entries.append(
+                    DirectoryEntry(
+                        name=attr.filename,
+                        path=str(Path(target) / attr.filename).replace("\\", "/"),
+                        is_dir=is_d,
+                        size_bytes=attr.st_size or 0,
+                        modified_at=mtime_str,
+                        permissions=oct(attr.st_mode)[-4:] if attr.st_mode else "0644",
+                    )
+                )
             entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
             return entries
-        finally:
-            client.close()
+        except Exception:
+            self._sftp_pool.pop(machine.id, None)
+            raise
 
     def _read_ssh_file(self, machine: Machine, file_path: str) -> FileContentResult:
-        client, _ = self._connect_ssh(machine)
         try:
-            sftp = client.open_sftp()
+            sftp = self._get_sftp_client(machine)
             try:
                 stat = sftp.stat(file_path)
                 size_bytes = stat.st_size or 0
@@ -1228,7 +1367,6 @@ class MachineDiagnosticsService:
                     )
                 with sftp.open(file_path, "rb") as f:
                     raw_bytes = f.read(2 * 1024 * 1024)
-                # Try decoding as text
                 try:
                     text = raw_bytes.decode("utf-8")
                     encoding = "utf-8"
@@ -1252,36 +1390,37 @@ class MachineDiagnosticsService:
                 )
             except Exception as exc:
                 return FileContentResult(path=file_path, error=f"读取文件失败: {exc}")
-        finally:
-            client.close()
+        except Exception:
+            self._sftp_pool.pop(machine.id, None)
+            raise
 
     def _write_ssh_file(self, machine: Machine, file_path: str, content: str) -> None:
-        client, _ = self._connect_ssh(machine)
         try:
-            sftp = client.open_sftp()
+            sftp = self._get_sftp_client(machine)
             with sftp.open(file_path, "w") as f:
                 f.write(content)
-        finally:
-            client.close()
+        except Exception:
+            self._sftp_pool.pop(machine.id, None)
+            raise
 
     def _upload_ssh_file(
         self, machine: Machine, target_dir: str, filename: str, content: bytes
     ) -> None:
-        client, _ = self._connect_ssh(machine)
         try:
-            sftp = client.open_sftp()
+            sftp = self._get_sftp_client(machine)
             target_path = str(Path(target_dir) / filename).replace("\\", "/")
             with sftp.open(target_path, "wb") as f:
                 f.write(content)
-        finally:
-            client.close()
+        except Exception:
+            self._sftp_pool.pop(machine.id, None)
+            raise
 
     def _download_ssh_zip(self, machine: Machine, paths: list[str]) -> tuple[bytes, str]:
-        client, _ = self._connect_ssh(machine)
         try:
-            sftp = client.open_sftp()
+            sftp = self._get_sftp_client(machine)
             import io
             import zipfile
+
             buffer = io.BytesIO()
             with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
                 for p in paths:
@@ -1289,7 +1428,6 @@ class MachineDiagnosticsService:
                         stat = sftp.stat(p)
                         is_d = (stat.st_mode & 0o40000) != 0 if stat.st_mode else False
                         if is_d:
-                            # Recursively add folder
                             self._add_sftp_folder_to_zip(sftp, zf, p, Path(p).name)
                         else:
                             with sftp.open(p, "rb") as f:
@@ -1299,8 +1437,9 @@ class MachineDiagnosticsService:
             buffer.seek(0)
             zip_name = f"download_{int(time.time())}.zip"
             return buffer.getvalue(), zip_name
-        finally:
-            client.close()
+        except Exception:
+            self._sftp_pool.pop(machine.id, None)
+            raise
 
     def _add_sftp_folder_to_zip(self, sftp, zf, remote_dir: str, zip_prefix: str) -> None:
         for attr in sftp.listdir_attr(remote_dir):
@@ -1317,13 +1456,83 @@ class MachineDiagnosticsService:
                     pass
 
     def _delete_ssh_paths(self, machine: Machine, paths: list[str]) -> None:
-        client, _ = self._connect_ssh(machine)
         try:
+            sftp = self._get_sftp_client(machine)
             for p in paths:
-                # Use rm -rf via command for safe recursive deletion
-                client.exec_command(f"rm -rf '{p}'")
-        finally:
-            client.close()
+                try:
+                    stat = sftp.stat(p)
+                    is_d = (stat.st_mode & 0o40000) != 0 if stat.st_mode else False
+                    if is_d:
+                        self._rmdir_sftp_recursive(sftp, p)
+                    else:
+                        sftp.remove(p)
+                except Exception:
+                    pass
+        except Exception:
+            self._sftp_pool.pop(machine.id, None)
+            raise
+
+    def _rmdir_sftp_recursive(self, sftp, remote_dir: str) -> None:
+        for attr in sftp.listdir_attr(remote_dir):
+            r_path = f"{remote_dir.rstrip('/')}/{attr.filename}"
+            is_d = (attr.st_mode & 0o40000) != 0 if attr.st_mode else False
+            if is_d:
+                self._rmdir_sftp_recursive(sftp, r_path)
+            else:
+                try:
+                    sftp.remove(r_path)
+                except Exception:
+                    pass
+        try:
+            sftp.rmdir(remote_dir)
+        except Exception:
+            pass
+
+    def _mkdir_ssh(self, machine: Machine, path: str) -> None:
+        try:
+            sftp = self._get_sftp_client(machine)
+            parts = Path(path).parts
+            cur = ""
+            for part in parts:
+                if not cur and (":" in part or part == "/"):
+                    cur = part
+                    continue
+                cur = str(Path(cur) / part).replace("\\", "/")
+                try:
+                    sftp.stat(cur)
+                except Exception:
+                    try:
+                        sftp.mkdir(cur)
+                    except Exception:
+                        pass
+        except Exception:
+            self._sftp_pool.pop(machine.id, None)
+            raise
+
+    def _touch_ssh(self, machine: Machine, path: str) -> None:
+        try:
+            sftp = self._get_sftp_client(machine)
+            with sftp.open(path, "w") as f:
+                f.write("")
+        except Exception:
+            self._sftp_pool.pop(machine.id, None)
+            raise
+
+    def _rename_ssh(self, machine: Machine, old_path: str, new_path: str) -> None:
+        try:
+            sftp = self._get_sftp_client(machine)
+            sftp.rename(old_path, new_path)
+        except Exception:
+            self._sftp_pool.pop(machine.id, None)
+            raise
+
+    def _chmod_ssh(self, machine: Machine, path: str, mode: str) -> None:
+        try:
+            sftp = self._get_sftp_client(machine)
+            sftp.chmod(path, int(mode, 8))
+        except Exception:
+            self._sftp_pool.pop(machine.id, None)
+            raise
 
     def _exec_ssh_command(self, machine: Machine, req: CommandExecRequest) -> CommandExecResult:
         client, _ = self._connect_ssh(machine)
@@ -1434,7 +1643,7 @@ class MachineDiagnosticsService:
             or "win" in machine.name.lower()
         )
         try:
-            client, _ = self._connect_ssh(machine)
+            client, _ = self._get_ssh_and_sftp_client(machine)
         except Exception as exc:
             logger.warning(
                 "SSH connect failed in _probe_ssh_drives for %s: %s",
@@ -1469,32 +1678,36 @@ class MachineDiagnosticsService:
             # 1. Try Windows PowerShell probe first if machine is Windows
             if is_win:
                 ps_cmd = (
-                    "powershell -NoProfile -NonInteractive -Command \""
+                    "powershell -NoProfile -Command \""
                     "Get-CimInstance Win32_LogicalDisk | "
                     "Select-Object DeviceID, VolumeName, Size, FreeSpace, FileSystem | "
                     "ConvertTo-Json -Compress\""
                 )
-                _, stdout, _ = client.exec_command(ps_cmd, timeout=8)
-                raw = _safe_decode_bytes(stdout.read()).strip()
-                if raw.startswith("{") or raw.startswith("["):
+                _, ps_stdout, _ = client.exec_command(ps_cmd, timeout=8)
+                ps_raw = _safe_decode_bytes(ps_stdout.read()).strip()
+                if ps_raw:
                     try:
-                        data = json.loads(raw)
-                        items = data if isinstance(data, list) else [data]
-                        for item in items:
-                            dev = str(item.get("DeviceID") or "")
-                            if not dev:
-                                continue
-                            vol = str(item.get("VolumeName") or "")
-                            if not vol:
-                                vol = "系统盘" if "C" in dev.upper() else "本地磁盘"
-                            size_b = float(item.get("Size") or 0)
-                            free_b = float(item.get("FreeSpace") or 0)
-                            if size_b > 0:
-                                used_b = max(0.0, size_b - free_b)
-                                tot_gb = round(size_b / (1024 ** 3), 1)
-                                used_gb = round(used_b / (1024 ** 3), 1)
-                                free_gb = round(free_b / (1024 ** 3), 1)
-                                pct = round((used_b / max(1.0, size_b)) * 100, 1)
+                        parsed = json.loads(ps_raw)
+                        if isinstance(parsed, dict):
+                            parsed = [parsed]
+                        if isinstance(parsed, list):
+                            for item in parsed:
+                                dev = str(item.get("DeviceID") or "")
+                                if not dev:
+                                    continue
+                                vol = str(item.get("VolumeName") or "") or (
+                                    "系统盘" if dev.upper().startswith("C") else f"本地磁盘 ({dev})"
+                                )
+                                tot_b = float(item.get("Size") or 0)
+                                free_b = float(item.get("FreeSpace") or 0)
+                                tot_gb = round(tot_b / (1024**3), 1)
+                                free_gb = round(free_b / (1024**3), 1)
+                                used_gb = round((tot_b - free_b) / (1024**3), 1)
+                                pct = (
+                                    round((used_gb / max(0.1, tot_gb)) * 100, 1)
+                                    if tot_gb > 0
+                                    else 0.0
+                                )
                                 mount_p = f"{dev.rstrip(':')}:/"
                                 drives.append(DriveInfo(
                                     device_id=dev,
@@ -1546,8 +1759,8 @@ class MachineDiagnosticsService:
                             percent=min(100.0, max(0.0, pct)),
                             fs_type=fs_type,
                         ))
-        finally:
-            client.close()
+        except Exception:
+            self._sftp_pool.pop(machine.id, None)
 
         if not drives:
             drives = [

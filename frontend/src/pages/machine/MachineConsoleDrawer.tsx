@@ -10,6 +10,7 @@ import {
   Drawer,
   Dropdown,
   Input,
+  Modal,
   Popconfirm,
   Progress,
   Row,
@@ -31,32 +32,43 @@ import {
   AppstoreOutlined,
   ArrowUpOutlined,
   CheckOutlined,
+  CopyOutlined,
   DashboardOutlined,
   DeleteOutlined,
   DesktopOutlined,
   DownloadOutlined,
   EditOutlined,
+  EllipsisOutlined,
+  FileAddOutlined,
   FileTextOutlined,
+  FolderAddOutlined,
   FolderOpenOutlined,
   FolderOutlined,
   FundProjectionScreenOutlined,
   GlobalOutlined,
   HddOutlined,
+  InboxOutlined,
   LayoutOutlined,
+  LockOutlined,
   PlusOutlined,
   ReloadOutlined,
+  SearchOutlined,
   SortAscendingOutlined,
   SplitCellsOutlined,
   UploadOutlined,
 } from '@ant-design/icons';
 import {
   batchDeleteMachineFiles,
+  chmodMachinePath,
+  createMachineDirectory,
+  createMachineFile,
   getDownloadFilesUrl,
   getMachineDrives,
   getMachineNetwork,
   getMachineOverview,
   getMachineProcesses,
   listMachineDirectory,
+  renameMachinePath,
   uploadMachineFile,
   type DirectoryEntry,
   type DriveInfo,
@@ -239,6 +251,31 @@ export function MachineConsoleDrawer({
     return DEFAULT_IDE_LAYOUT;
   });
 
+  const handleLayoutChange = useCallback(
+    (newLayout: LayoutNode) => {
+      setLayout(newLayout);
+      try {
+        localStorage.setItem(storageKey, serializeLayout(newLayout));
+      } catch {
+        // ignore
+      }
+    },
+    [storageKey]
+  );
+
+  // Quick action: Open tab
+  const handleOpenTab = useCallback(
+    (tabId: string) => {
+      const openTabIds = getAllOpenTabIds(layout);
+      if (!openTabIds.includes(tabId)) {
+        const rootId = layout.id;
+        const updated = splitTab(layout, rootId, rootId, tabId, 'right');
+        handleLayoutChange(updated);
+      }
+    },
+    [layout, handleLayoutChange]
+  );
+
   const { token } = antdTheme.useToken();
   const [autoRefresh, setAutoRefresh] = useState(true);
 
@@ -264,6 +301,28 @@ export function MachineConsoleDrawer({
   const [treeData, setTreeData] = useState<TreeDataNode[]>([]);
   const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([]);
   const [treeSearch, setTreeSearch] = useState<string>('');
+
+  // In-directory instant search filter
+  const [fileFilter, setFileFilter] = useState<string>('');
+
+  // Modals for create / rename / chmod
+  const [createModalVisible, setCreateModalVisible] = useState(false);
+  const [createModalType, setCreateModalType] = useState<'file' | 'dir'>('file');
+  const [newItemName, setNewItemName] = useState('');
+  const [createLoading, setCreateLoading] = useState(false);
+
+  const [renameModalVisible, setRenameModalVisible] = useState(false);
+  const [targetRenamePath, setTargetRenamePath] = useState('');
+  const [newRenameName, setNewRenameName] = useState('');
+  const [renameLoading, setRenameLoading] = useState(false);
+
+  const [chmodModalVisible, setChmodModalVisible] = useState(false);
+  const [targetChmodPath, setTargetChmodPath] = useState('');
+  const [newChmodMode, setNewChmodMode] = useState('0755');
+  const [chmodLoading, setChmodLoading] = useState(false);
+
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const [pendingTerminalCmd, setPendingTerminalCmd] = useState<string | null>(null);
 
   const initTreeRoots = useCallback(() => {
     const isWin =
@@ -296,34 +355,6 @@ export function MachineConsoleDrawer({
     }
   }, [overview?.platform, currentPath, platform]);
 
-  const fetchDrives = useCallback(async () => {
-    if (!machineId) return;
-    try {
-      const driveList = await getMachineDrives(machineId);
-      setDrives(driveList);
-      if (driveList.length > 0) {
-        const roots: TreeDataNode[] = driveList.map((d) => {
-          const vol = d.volume_name ? ` [${d.volume_name}]` : '';
-          const cap = d.total_gb > 0 ? ` (${d.used_gb}G/${d.total_gb}G)` : '';
-          return {
-            title: `${d.device_id}${vol}${cap}`,
-            key: d.mount_point,
-            isLeaf: false,
-            icon: <HddOutlined style={{ color: '#1677ff' }} />,
-          };
-        });
-        setTreeData(roots);
-        if (driveList[0]?.mount_point) {
-          setExpandedKeys([driveList[0].mount_point]);
-        }
-      } else {
-        initTreeRoots();
-      }
-    } catch {
-      initTreeRoots();
-    }
-  }, [machineId, initTreeRoots]);
-
   // 3. Process state
   const [processes, setProcesses] = useState<ProcessInfo[]>([]);
   const [procLoading, setProcLoading] = useState(false);
@@ -331,16 +362,6 @@ export function MachineConsoleDrawer({
   // 4. Network state
   const [network, setNetwork] = useState<NetworkDiagnostics | null>(null);
   const [networkLoading, setNetworkLoading] = useState(false);
-
-  // Persist layout to localStorage
-  const handleLayoutChange = useCallback((newLayout: LayoutNode) => {
-    setLayout(newLayout);
-    try {
-      localStorage.setItem(storageKey, serializeLayout(newLayout));
-    } catch {
-      // Ignore localStorage write errors
-    }
-  }, [storageKey]);
 
   // Open file in Docking Editor Tab (in the same TabGroup as files by default)
   const handleOpenFileEditor = useCallback((filePath: string) => {
@@ -562,6 +583,43 @@ export function MachineConsoleDrawer({
     [machineId, dirCache]
   );
 
+  const fetchDrives = useCallback(async () => {
+    if (!machineId) return;
+    try {
+      const driveList = await getMachineDrives(machineId);
+      setDrives(driveList);
+      if (driveList.length > 0) {
+        const roots: TreeDataNode[] = driveList.map((d) => {
+          const vol = d.volume_name ? ` [${d.volume_name}]` : '';
+          const cap = d.total_gb > 0 ? ` (${d.used_gb}G/${d.total_gb}G)` : '';
+          const normMount = normalizePath(d.mount_point);
+          return {
+            title: `${d.device_id}${vol}${cap}`,
+            key: normMount,
+            isLeaf: false,
+            icon: <HddOutlined style={{ color: '#1677ff' }} />,
+          };
+        });
+        setTreeData(roots);
+        const firstMount = driveList[0]?.mount_point ? normalizePath(driveList[0].mount_point) : 'C:/';
+        const matchesDrive = driveList.some((d) =>
+          normalizePath(currentPath)
+            .toLowerCase()
+            .startsWith(normalizePath(d.mount_point).toLowerCase().slice(0, 2))
+        );
+        const targetPath = matchesDrive && currentPath !== '/' ? currentPath : firstMount;
+        setExpandedKeys((prev) => Array.from(new Set([...prev, targetPath])));
+        void fetchDirectory(targetPath);
+      } else {
+        initTreeRoots();
+        void fetchDirectory(currentPath);
+      }
+    } catch {
+      initTreeRoots();
+      void fetchDirectory(currentPath);
+    }
+  }, [machineId, currentPath, fetchDirectory, initTreeRoots]);
+
   // Dynamic tree load on expand
   const onLoadTreeData = useCallback(
     ({ key, children }: { key: React.Key; children?: TreeDataNode[] }) =>
@@ -676,6 +734,11 @@ export function MachineConsoleDrawer({
     try {
       await batchDeleteMachineFiles(machineId, selectedFilePaths);
       antdMessage.success(`已删除 ${selectedFilePaths.length} 个文件/文件夹`);
+      setDirCache((prev) => {
+        const next = new Map(prev);
+        next.delete(currentPath);
+        return next;
+      });
       void fetchDirectory(currentPath);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '未知错误';
@@ -683,30 +746,190 @@ export function MachineConsoleDrawer({
     }
   }, [machineId, selectedFilePaths, fetchDirectory, currentPath]);
 
+  // Single item delete
+  const handleDeleteSingle = useCallback(
+    async (path: string) => {
+      if (!machineId) return;
+      try {
+        await batchDeleteMachineFiles(machineId, [path]);
+        antdMessage.success('已成功删除');
+        setDirCache((prev) => {
+          const next = new Map(prev);
+          next.delete(currentPath);
+          return next;
+        });
+        void fetchDirectory(currentPath);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : '未知错误';
+        antdMessage.error(`删除失败: ${msg}`);
+      }
+    },
+    [machineId, currentPath, fetchDirectory]
+  );
+
   // Upload file
-  const handleUploadFile = useCallback(async (file: File) => {
-    if (!machineId) return false;
+  const handleUploadFile = useCallback(
+    async (file: File) => {
+      if (!machineId) return false;
+      try {
+        await uploadMachineFile(machineId, currentPath, file);
+        antdMessage.success(`文件 "${file.name}" 上传成功`);
+        setDirCache((prev) => {
+          const next = new Map(prev);
+          next.delete(currentPath);
+          return next;
+        });
+        void fetchDirectory(currentPath);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : '未知错误';
+        antdMessage.error(`上传失败: ${msg}`);
+      }
+      return false;
+    },
+    [machineId, currentPath, fetchDirectory]
+  );
+
+  // Handle Create File / Folder
+  const handleCreateSubmit = useCallback(async () => {
+    if (!machineId || !newItemName.trim()) {
+      antdMessage.warning('请输入名称');
+      return;
+    }
+    const cleanName = newItemName.trim();
+    const fullPath = (
+      currentPath.endsWith('/') ? currentPath + cleanName : `${currentPath}/${cleanName}`
+    ).replace('\\', '/');
+
+    setCreateLoading(true);
     try {
-      await uploadMachineFile(machineId, currentPath, file);
-      antdMessage.success(`文件 "${file.name}" 上传成功`);
+      if (createModalType === 'file') {
+        await createMachineFile(machineId, fullPath);
+        antdMessage.success(`文件 "${cleanName}" 创建成功`);
+      } else {
+        await createMachineDirectory(machineId, fullPath);
+        antdMessage.success(`文件夹 "${cleanName}" 创建成功`);
+      }
+      setCreateModalVisible(false);
+      setNewItemName('');
+      setDirCache((prev) => {
+        const next = new Map(prev);
+        next.delete(currentPath);
+        return next;
+      });
       void fetchDirectory(currentPath);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '未知错误';
-      antdMessage.error(`上传失败: ${msg}`);
+      antdMessage.error(`创建失败: ${msg}`);
+    } finally {
+      setCreateLoading(false);
     }
-    return false;
-  }, [machineId, currentPath, fetchDirectory]);
+  }, [machineId, currentPath, newItemName, createModalType, fetchDirectory]);
+
+  // Handle Rename
+  const handleRenameSubmit = useCallback(async () => {
+    if (!machineId || !targetRenamePath || !newRenameName.trim()) return;
+    const parentDir = targetRenamePath.substring(0, targetRenamePath.lastIndexOf('/')) || '/';
+    const newFullPath = (
+      parentDir.endsWith('/')
+        ? parentDir + newRenameName.trim()
+        : `${parentDir}/${newRenameName.trim()}`
+    ).replace('\\', '/');
+
+    setRenameLoading(true);
+    try {
+      await renameMachinePath(machineId, targetRenamePath, newFullPath);
+      antdMessage.success('重命名成功');
+      setRenameModalVisible(false);
+      setDirCache((prev) => {
+        const next = new Map(prev);
+        next.delete(currentPath);
+        next.delete(parentDir);
+        return next;
+      });
+      void fetchDirectory(currentPath);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '未知错误';
+      antdMessage.error(`重命名失败: ${msg}`);
+    } finally {
+      setRenameLoading(false);
+    }
+  }, [machineId, targetRenamePath, newRenameName, currentPath, fetchDirectory]);
+
+  // Handle Chmod
+  const handleChmodSubmit = useCallback(async () => {
+    if (!machineId || !targetChmodPath || !newChmodMode.trim()) return;
+    setChmodLoading(true);
+    try {
+      await chmodMachinePath(machineId, targetChmodPath, newChmodMode.trim());
+      antdMessage.success('权限修改成功');
+      setChmodModalVisible(false);
+      setDirCache((prev) => {
+        const next = new Map(prev);
+        next.delete(currentPath);
+        return next;
+      });
+      void fetchDirectory(currentPath);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '未知错误';
+      antdMessage.error(`权限修改失败: ${msg}`);
+    } finally {
+      setChmodLoading(false);
+    }
+  }, [machineId, targetChmodPath, newChmodMode, currentPath, fetchDirectory]);
+
+  // Handle Drop Upload
+  const handleDropUpload = useCallback(
+    async (e: React.DragEvent) => {
+      e.preventDefault();
+      setIsDraggingOver(false);
+      if (!machineId || !e.dataTransfer.files || e.dataTransfer.files.length === 0) return;
+      const droppedFiles = Array.from(e.dataTransfer.files);
+      antdMessage.loading({
+        content: `正在上传 ${droppedFiles.length} 个文件...`,
+        key: 'drop-upload',
+      });
+      try {
+        for (const file of droppedFiles) {
+          await uploadMachineFile(machineId, currentPath, file);
+        }
+        antdMessage.success({
+          content: `成功上传 ${droppedFiles.length} 个文件`,
+          key: 'drop-upload',
+        });
+        setDirCache((prev) => {
+          const next = new Map(prev);
+          next.delete(currentPath);
+          return next;
+        });
+        void fetchDirectory(currentPath);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : '未知错误';
+        antdMessage.error({ content: `上传失败: ${msg}`, key: 'drop-upload' });
+      }
+    },
+    [machineId, currentPath, fetchDirectory]
+  );
+
+  // Manual Refresh of current directory
+  const handleRefreshCurrentDir = useCallback(() => {
+    setDirCache((prev) => {
+      const next = new Map(prev);
+      next.delete(currentPath);
+      return next;
+    });
+    void fetchDirectory(currentPath);
+    antdMessage.success('已刷新当前目录');
+  }, [currentPath, fetchDirectory]);
 
   // On drawer open
   useEffect(() => {
     if (open && machineId) {
-      initTreeRoots();
+      void fetchDrives();
       void fetchOverview();
-      void fetchDirectory(currentPath);
       void fetchProcesses();
       void fetchNetwork();
     }
-  }, [open, machineId, initTreeRoots, fetchOverview, fetchDirectory, fetchProcesses, fetchNetwork, currentPath]);
+  }, [open, machineId, fetchDrives, fetchOverview, fetchProcesses, fetchNetwork]);
 
   // Auto refresh polling
   useEffect(() => {
@@ -740,16 +963,234 @@ export function MachineConsoleDrawer({
   }, [currentPath, fetchDirectory]);
 
   // File sorting
-  const sortedFiles = [...files].sort((a, b) => {
-    if (fileSortBy === 'name_asc') return a.name.localeCompare(b.name);
-    if (fileSortBy === 'name_desc') return b.name.localeCompare(a.name);
-    if (fileSortBy === 'size_desc') return b.size_bytes - a.size_bytes;
-    if (fileSortBy === 'size_asc') return a.size_bytes - b.size_bytes;
-    if (fileSortBy === 'time_desc') return b.modified_at.localeCompare(a.modified_at);
-    if (fileSortBy === 'time_asc') return a.modified_at.localeCompare(b.modified_at);
-    if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
-    return a.name.localeCompare(b.name);
-  });
+  const sortedFiles = useMemo(() => {
+    return [...files].sort((a, b) => {
+      if (fileSortBy === 'name_asc') return a.name.localeCompare(b.name);
+      if (fileSortBy === 'name_desc') return b.name.localeCompare(a.name);
+      if (fileSortBy === 'size_desc') return b.size_bytes - a.size_bytes;
+      if (fileSortBy === 'size_asc') return a.size_bytes - b.size_bytes;
+      if (fileSortBy === 'time_desc') return b.modified_at.localeCompare(a.modified_at);
+      if (fileSortBy === 'time_asc') return a.modified_at.localeCompare(b.modified_at);
+      if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+  }, [files, fileSortBy]);
+
+  // Filtered files in current directory
+  const filteredSortedFiles = useMemo(() => {
+    if (!fileFilter.trim()) return sortedFiles;
+    const term = fileFilter.trim().toLowerCase();
+    return sortedFiles.filter((f) => f.name.toLowerCase().includes(term));
+  }, [sortedFiles, fileFilter]);
+
+  // Open in terminal handler
+  const handleOpenInTerminal = useCallback(
+    (targetPath: string) => {
+      handleOpenTab('terminal');
+      const isWin =
+        overview?.platform?.toLowerCase().includes('win') ||
+        targetPath.includes(':') ||
+        platform?.toLowerCase().includes('win');
+      const cmd = isWin
+        ? `cd /d "${targetPath.replace(/\//g, '\\')}"\r`
+        : `cd "${targetPath}"\r`;
+      setPendingTerminalCmd(cmd);
+      antdMessage.success(`已切换控制台并进入目录: ${targetPath}`);
+    },
+    [handleOpenTab, overview, platform]
+  );
+
+  // Context menu builder for Tree nodes
+  const getTreeContextMenu = useCallback(
+    (node: TreeDataNode): MenuProps['items'] => {
+      const path = node.key as string;
+      return [
+        {
+          key: 'open_dir',
+          icon: <FolderOpenOutlined />,
+          label: '进入此目录',
+          onClick: () => void fetchDirectory(path),
+        },
+        {
+          key: 'open_in_term',
+          icon: <DesktopOutlined style={{ color: '#52c41a' }} />,
+          label: '在终端中打开此目录',
+          onClick: () => handleOpenInTerminal(path),
+        },
+        {
+          key: 'copy_path',
+          icon: <CopyOutlined />,
+          label: '复制路径',
+          onClick: () => {
+            void navigator.clipboard.writeText(path);
+            antdMessage.success('已复制绝对路径');
+          },
+        },
+        { type: 'divider' },
+        {
+          key: 'mkdir',
+          icon: <FolderAddOutlined />,
+          label: '在此新建子文件夹',
+          onClick: () => {
+            setCurrentPath(path);
+            setCreateModalType('dir');
+            setNewItemName('');
+            setCreateModalVisible(true);
+          },
+        },
+        {
+          key: 'touch',
+          icon: <FileAddOutlined />,
+          label: '在此新建文件',
+          onClick: () => {
+            setCurrentPath(path);
+            setCreateModalType('file');
+            setNewItemName('');
+            setCreateModalVisible(true);
+          },
+        },
+        {
+          key: 'chmod',
+          icon: <LockOutlined />,
+          label: '设置权限 (chmod)',
+          onClick: () => {
+            setTargetChmodPath(path);
+            setNewChmodMode('0755');
+            setChmodModalVisible(true);
+          },
+        },
+        { type: 'divider' },
+        {
+          key: 'delete',
+          icon: <DeleteOutlined />,
+          danger: true,
+          label: '删除此目录',
+          onClick: () => {
+            Modal.confirm({
+              title: `确认删除 "${node.title}" 及其内容？`,
+              content: '删除后不可恢复，请确认。',
+              okText: '确认删除',
+              okType: 'danger',
+              cancelText: '取消',
+              onOk: () => handleDeleteSingle(path),
+            });
+          },
+        },
+      ];
+    },
+    [fetchDirectory, handleOpenInTerminal, handleDeleteSingle]
+  );
+
+  // Context menu builder for files & folders
+  const getContextMenu = useCallback(
+    (record: DirectoryEntry): MenuProps['items'] => [
+      ...(!record.is_dir
+        ? [
+            {
+              key: 'edit',
+              icon: <EditOutlined />,
+              label: '在线编辑',
+              onClick: () => handleOpenFileEditor(record.path),
+            },
+          ]
+        : [
+            {
+              key: 'open',
+              icon: <FolderOpenOutlined />,
+              label: '打开文件夹',
+              onClick: () => void fetchDirectory(record.path),
+            },
+          ]),
+      {
+        key: 'download',
+        icon: <DownloadOutlined />,
+        label: '下载',
+        onClick: () => {
+          if (machineId) {
+            window.open(getDownloadFilesUrl(machineId, [record.path]), '_blank');
+          }
+        },
+      },
+      {
+        key: 'rename',
+        icon: <EditOutlined />,
+        label: '重命名',
+        onClick: () => {
+          setTargetRenamePath(record.path);
+          setNewRenameName(record.name);
+          setRenameModalVisible(true);
+        },
+      },
+      ...(record.is_dir
+        ? [
+            {
+              key: 'open_in_term',
+              icon: <DesktopOutlined style={{ color: '#52c41a' }} />,
+              label: '在终端中打开此目录',
+              onClick: () => handleOpenInTerminal(record.path),
+            },
+          ]
+        : []),
+      { type: 'divider' },
+      {
+        key: 'mkdir',
+        icon: <FolderAddOutlined />,
+        label: '新建子文件夹',
+        onClick: () => {
+          setCreateModalType('dir');
+          setNewItemName('');
+          setCreateModalVisible(true);
+        },
+      },
+      {
+        key: 'touch',
+        icon: <FileAddOutlined />,
+        label: '新建文件',
+        onClick: () => {
+          setCreateModalType('file');
+          setNewItemName('');
+          setCreateModalVisible(true);
+        },
+      },
+      {
+        key: 'copy_path',
+        icon: <CopyOutlined />,
+        label: '复制路径',
+        onClick: () => {
+          void navigator.clipboard.writeText(record.path);
+          antdMessage.success('已复制绝对路径');
+        },
+      },
+      {
+        key: 'chmod',
+        icon: <LockOutlined />,
+        label: '设置权限 (chmod)',
+        onClick: () => {
+          setTargetChmodPath(record.path);
+          setNewChmodMode(record.permissions || '0755');
+          setChmodModalVisible(true);
+        },
+      },
+      { type: 'divider' },
+      {
+        key: 'delete',
+        icon: <DeleteOutlined />,
+        danger: true,
+        label: '删除',
+        onClick: () => {
+          Modal.confirm({
+            title: `确认删除 "${record.name}"？`,
+            content: '删除后不可恢复，请确认。',
+            okText: '确认删除',
+            okType: 'danger',
+            cancelText: '取消',
+            onOk: () => handleDeleteSingle(record.path),
+          });
+        },
+      },
+    ],
+    [machineId, fetchDirectory, handleOpenFileEditor, handleDeleteSingle]
+  );
 
   // Columns for Directory table
   const fileColumns: TableColumnsType<DirectoryEntry> = useMemo(
@@ -759,26 +1200,28 @@ export function MachineConsoleDrawer({
         dataIndex: 'name',
         sorter: (a: DirectoryEntry, b: DirectoryEntry) => a.name.localeCompare(b.name),
         render: (name: string, record: DirectoryEntry) => (
-          <Space>
-            {record.is_dir ? (
-              <FolderOutlined style={{ color: '#faad14', fontSize: 16 }} />
-            ) : (
-              <FileTextOutlined style={{ color: '#1677ff', fontSize: 16 }} />
-            )}
-            {record.is_dir ? (
-              <Typography.Link
-                strong
-                onClick={() => fetchDirectory(record.path)}
-                style={{ cursor: 'pointer' }}
-              >
-                {name}
-              </Typography.Link>
-            ) : (
-              <Typography.Link strong onClick={() => handleOpenFileEditor(record.path)}>
-                {name}
-              </Typography.Link>
-            )}
-          </Space>
+          <Dropdown menu={{ items: getContextMenu(record) }} trigger={['contextMenu']}>
+            <Space style={{ width: '100%', cursor: 'pointer' }}>
+              {record.is_dir ? (
+                <FolderOutlined style={{ color: '#faad14', fontSize: 16 }} />
+              ) : (
+                <FileTextOutlined style={{ color: '#1677ff', fontSize: 16 }} />
+              )}
+              {record.is_dir ? (
+                <Typography.Link
+                  strong
+                  onClick={() => void fetchDirectory(record.path)}
+                  style={{ cursor: 'pointer' }}
+                >
+                  {name}
+                </Typography.Link>
+              ) : (
+                <Typography.Link strong onClick={() => handleOpenFileEditor(record.path)}>
+                  {name}
+                </Typography.Link>
+              )}
+            </Space>
+          </Dropdown>
         ),
       },
       {
@@ -810,7 +1253,7 @@ export function MachineConsoleDrawer({
       {
         title: '操作',
         key: 'actions',
-        width: 90,
+        width: 110,
         render: (_v: unknown, record: DirectoryEntry) => (
           <Space size={2}>
             {!record.is_dir && (
@@ -832,11 +1275,14 @@ export function MachineConsoleDrawer({
                 target="_blank"
               />
             </Tooltip>
+            <Dropdown menu={{ items: getContextMenu(record) }} trigger={['click']}>
+              <Button type="text" size="small" icon={<EllipsisOutlined />} />
+            </Dropdown>
           </Space>
         ),
       },
     ],
-    [fetchDirectory, handleOpenFileEditor, machineId],
+    [fetchDirectory, handleOpenFileEditor, machineId, getContextMenu],
   );
 
   const downloadSelectedUrl =
@@ -845,18 +1291,6 @@ export function MachineConsoleDrawer({
       : machineId && currentPath
       ? getDownloadFilesUrl(machineId, [currentPath])
       : '#';
-
-  // Open tabs
-  const openTabIds = getAllOpenTabIds(layout);
-
-  // Quick action: Open closed tab
-  const handleOpenTab = (tabId: string) => {
-    if (!openTabIds.includes(tabId)) {
-      const rootId = layout.id;
-      const updated = splitTab(layout, rootId, rootId, tabId, 'right');
-      handleLayoutChange(updated);
-    }
-  };
 
   type PresetKey = 'ide' | 'file-mode' | 'monitor-mode' | 'peer-tabs' | 'grid';
 
@@ -1036,6 +1470,16 @@ export function MachineConsoleDrawer({
                     expandedKeys={expandedKeys}
                     onExpand={(keys) => setExpandedKeys(keys)}
                     onSelect={onSelectTree}
+                    titleRender={(node) => (
+                      <Dropdown
+                        menu={{ items: getTreeContextMenu(node) }}
+                        trigger={['contextMenu']}
+                      >
+                        <span style={{ userSelect: 'none' }}>
+                          {node.title as React.ReactNode}
+                        </span>
+                      </Dropdown>
+                    )}
                   />
                 ) : (
                   <div
@@ -1208,7 +1652,16 @@ export function MachineConsoleDrawer({
                   )}
                 </div>
 
-                <Space size={4}>
+                <Space size={4} wrap>
+                  <Input
+                    size="small"
+                    placeholder="过滤当前目录..."
+                    prefix={<SearchOutlined style={{ opacity: 0.5 }} />}
+                    value={fileFilter}
+                    onChange={(e) => setFileFilter(e.target.value)}
+                    allowClear
+                    style={{ width: 130 }}
+                  />
                   <Select
                     size="small"
                     value={fileSortBy}
@@ -1225,6 +1678,32 @@ export function MachineConsoleDrawer({
                       { label: '修改时间 最旧', value: 'time_asc' },
                     ]}
                   />
+                  <Tooltip title="新建文件">
+                    <Button
+                      size="small"
+                      icon={<FileAddOutlined />}
+                      onClick={() => {
+                        setCreateModalType('file');
+                        setNewItemName('');
+                        setCreateModalVisible(true);
+                      }}
+                    >
+                      新建文件
+                    </Button>
+                  </Tooltip>
+                  <Tooltip title="新建文件夹">
+                    <Button
+                      size="small"
+                      icon={<FolderAddOutlined />}
+                      onClick={() => {
+                        setCreateModalType('dir');
+                        setNewItemName('');
+                        setCreateModalVisible(true);
+                      }}
+                    >
+                      新建文件夹
+                    </Button>
+                  </Tooltip>
                   <Upload beforeUpload={handleUploadFile} showUploadList={false} multiple>
                     <Button size="small" icon={<UploadOutlined />}>
                       上传
@@ -1238,6 +1717,13 @@ export function MachineConsoleDrawer({
                   >
                     {selectedFilePaths.length > 0 ? `下载(${selectedFilePaths.length})` : '打包下载'}
                   </Button>
+                  <Tooltip title="刷新当前目录">
+                    <Button
+                      size="small"
+                      icon={<ReloadOutlined />}
+                      onClick={handleRefreshCurrentDir}
+                    />
+                  </Tooltip>
                   {selectedFilePaths.length > 0 && (
                     <Popconfirm
                       title={`确定删除选中的 ${selectedFilePaths.length} 个文件？`}
@@ -1253,11 +1739,54 @@ export function MachineConsoleDrawer({
                 </Space>
               </div>
 
-              <div style={{ flex: 1, overflowY: 'auto' }}>
+              {/* Drag and Drop Zone Container */}
+              <div
+                style={{
+                  flex: 1,
+                  overflowY: 'auto',
+                  position: 'relative',
+                  border: isDraggingOver ? '2px dashed #1677ff' : 'none',
+                  background: isDraggingOver ? 'rgba(22, 119, 255, 0.05)' : undefined,
+                  transition: 'all 0.2s ease',
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setIsDraggingOver(true);
+                }}
+                onDragLeave={(e) => {
+                  e.preventDefault();
+                  setIsDraggingOver(false);
+                }}
+                onDrop={handleDropUpload}
+              >
+                {isDraggingOver && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: 'rgba(255, 255, 255, 0.85)',
+                      zIndex: 10,
+                      pointerEvents: 'none',
+                    }}
+                  >
+                    <Space direction="vertical" align="center">
+                      <InboxOutlined style={{ fontSize: 40, color: '#1677ff' }} />
+                      <Typography.Text strong style={{ fontSize: 16, color: '#1677ff' }}>
+                        释放鼠标将文件直接上传至当前目录
+                      </Typography.Text>
+                    </Space>
+                  </div>
+                )}
                 <Table<DirectoryEntry>
                   rowKey="path"
                   columns={fileColumns}
-                  dataSource={sortedFiles}
+                  dataSource={filteredSortedFiles}
                   loading={filesLoading}
                   size="small"
                   pagination={false}
@@ -1285,6 +1814,8 @@ export function MachineConsoleDrawer({
             currentCwd={currentPath}
             currentFiles={files}
             onDirectoryChange={(newDir) => fetchDirectory(newDir)}
+            pendingCommand={pendingTerminalCmd}
+            onClearPendingCommand={() => setPendingTerminalCmd(null)}
           />
         ),
       },
@@ -1692,6 +2223,7 @@ export function MachineConsoleDrawer({
   const isBuiltin = machineId === 'master-local' || connectionType === 'builtin';
   const isSSH = connectionType === 'ssh';
   const isOnline = online ?? (overview ? overview.uptime_seconds > 0 : false);
+  const openTabIds = getAllOpenTabIds(layout);
 
   const toolbar = (
     <div
@@ -1808,6 +2340,127 @@ export function MachineConsoleDrawer({
     </div>
   );
 
+  const modals = (
+    <>
+      {/* 1. Modal: Create File / Directory */}
+      <Modal
+        title={createModalType === 'file' ? '新建文件' : '新建文件夹'}
+        open={createModalVisible}
+        onOk={handleCreateSubmit}
+        onCancel={() => {
+          setCreateModalVisible(false);
+          setNewItemName('');
+        }}
+        confirmLoading={createLoading}
+        okText="创建"
+        cancelText="取消"
+        destroyOnClose
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%', marginTop: 12 }}>
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              创建位置:
+            </Typography.Text>
+            <div style={{ fontFamily: 'monospace', fontSize: 12, marginTop: 2 }}>{currentPath}</div>
+          </div>
+          <div>
+            <Typography.Text strong>
+              {createModalType === 'file' ? '文件名:' : '文件夹名:'}
+            </Typography.Text>
+            <Input
+              autoFocus
+              placeholder={createModalType === 'file' ? '例如: app.py, config.json' : '例如: src, logs'}
+              value={newItemName}
+              onChange={(e) => setNewItemName(e.target.value)}
+              onPressEnter={handleCreateSubmit}
+              style={{ marginTop: 6 }}
+            />
+          </div>
+        </Space>
+      </Modal>
+
+      {/* 2. Modal: Rename Path */}
+      <Modal
+        title="重命名"
+        open={renameModalVisible}
+        onOk={handleRenameSubmit}
+        onCancel={() => setRenameModalVisible(false)}
+        confirmLoading={renameLoading}
+        okText="确定"
+        cancelText="取消"
+        destroyOnClose
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%', marginTop: 12 }}>
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              原路径:
+            </Typography.Text>
+            <div style={{ fontFamily: 'monospace', fontSize: 12, marginTop: 2 }}>
+              {targetRenamePath}
+            </div>
+          </div>
+          <div>
+            <Typography.Text strong>新名称:</Typography.Text>
+            <Input
+              autoFocus
+              value={newRenameName}
+              onChange={(e) => setNewRenameName(e.target.value)}
+              onPressEnter={handleRenameSubmit}
+              style={{ marginTop: 6 }}
+            />
+          </div>
+        </Space>
+      </Modal>
+
+      {/* 3. Modal: Chmod Permissions */}
+      <Modal
+        title="设置权限 (chmod)"
+        open={chmodModalVisible}
+        onOk={handleChmodSubmit}
+        onCancel={() => setChmodModalVisible(false)}
+        confirmLoading={chmodLoading}
+        okText="保存权限"
+        cancelText="取消"
+        destroyOnClose
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%', marginTop: 12 }}>
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              目标文件/文件夹:
+            </Typography.Text>
+            <div style={{ fontFamily: 'monospace', fontSize: 12, marginTop: 2 }}>
+              {targetChmodPath}
+            </div>
+          </div>
+          <div>
+            <Typography.Text strong>八进制权限模式 (POSIX Mode):</Typography.Text>
+            <Input
+              autoFocus
+              value={newChmodMode}
+              onChange={(e) => setNewChmodMode(e.target.value)}
+              onPressEnter={handleChmodSubmit}
+              style={{ marginTop: 6, fontFamily: 'monospace' }}
+            />
+          </div>
+          <Space size={6} wrap>
+            <Tag style={{ cursor: 'pointer' }} onClick={() => setNewChmodMode('0755')}>
+              0755 (rwxr-xr-x 目录/可执行)
+            </Tag>
+            <Tag style={{ cursor: 'pointer' }} onClick={() => setNewChmodMode('0644')}>
+              0644 (rw-r--r-- 普通文件)
+            </Tag>
+            <Tag style={{ cursor: 'pointer' }} onClick={() => setNewChmodMode('0777')}>
+              0777 (rwxrwxrwx 全权)
+            </Tag>
+            <Tag style={{ cursor: 'pointer' }} onClick={() => setNewChmodMode('0600')}>
+              0600 (rw------- 私有密钥)
+            </Tag>
+          </Space>
+        </Space>
+      </Modal>
+    </>
+  );
+
   if (tabMode) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%', overflow: 'hidden' }}>
@@ -1817,6 +2470,7 @@ export function MachineConsoleDrawer({
         <div style={{ flex: 1, overflow: 'hidden', minHeight: 0 }}>
           <DockLayout layout={layout} tabRegistry={tabRegistry} onChange={handleLayoutChange} />
         </div>
+        {modals}
       </div>
     );
   }
@@ -1837,6 +2491,7 @@ export function MachineConsoleDrawer({
       destroyOnClose
     >
       <DockLayout layout={layout} tabRegistry={tabRegistry} onChange={handleLayoutChange} />
+      {modals}
     </Drawer>
   );
 }

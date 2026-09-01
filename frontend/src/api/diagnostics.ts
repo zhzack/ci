@@ -216,3 +216,49 @@ export async function execMachineCommand(
   );
   return data;
 }
+
+export async function createMachineDirectory(
+  machineId: string,
+  path: string
+): Promise<{ message: string }> {
+  const { data } = await http.post<{ message: string }>(
+    `/machines/${encodeURIComponent(machineId)}/diagnostics/files/mkdir`,
+    { path }
+  );
+  return data;
+}
+
+export async function createMachineFile(
+  machineId: string,
+  path: string
+): Promise<{ message: string }> {
+  const { data } = await http.post<{ message: string }>(
+    `/machines/${encodeURIComponent(machineId)}/diagnostics/files/touch`,
+    { path }
+  );
+  return data;
+}
+
+export async function renameMachinePath(
+  machineId: string,
+  oldPath: string,
+  newPath: string
+): Promise<{ message: string }> {
+  const { data } = await http.post<{ message: string }>(
+    `/machines/${encodeURIComponent(machineId)}/diagnostics/files/rename`,
+    { old_path: oldPath, new_path: newPath }
+  );
+  return data;
+}
+
+export async function chmodMachinePath(
+  machineId: string,
+  path: string,
+  mode: string
+): Promise<{ message: string }> {
+  const { data } = await http.post<{ message: string }>(
+    `/machines/${encodeURIComponent(machineId)}/diagnostics/files/chmod`,
+    { path, mode }
+  );
+  return data;
+}
