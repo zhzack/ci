@@ -44,6 +44,14 @@ def _own_task(services: Services, identity: MachineIdentity, task_id: str) -> Ta
     return task
 
 
+def _task_plugin(services: Services, task: TaskRun):
+    """Plugin version row for the task, or None when it can't be resolved."""
+    try:
+        return services.engine.plugins.get_version(task.plugin_name, task.plugin_version)
+    except Exception:
+        return None
+
+
 class HeartbeatRequest(BaseModel):
     agent_version: str | None = None
     active_task_ids: list[str] = Field(default_factory=list)
@@ -77,8 +85,8 @@ def claim_task(
     if task is None:
         return Response(status_code=204)
     engine = services.engine
-    remote = engine.remote_inputs.get(task.id)
-    plugin = remote.plugin if remote else None
+    remote = engine.remote_inputs_for(task.id)
+    plugin = remote.plugin if remote else _task_plugin(services, task)
     return _json_response({
         "task_id": task.id,
         "run_id": task.run_id,
@@ -127,7 +135,7 @@ def download_bundle(
     services: Annotated[Services, Depends(get_services)],
 ) -> FileResponse:
     task = _own_task(services, identity, task_id)
-    remote = services.engine.remote_inputs.get(task.id)
+    remote = services.engine.remote_inputs_for(task.id)
     if remote is None:
         raise HTTPException(
             status_code=404, detail="Task inputs are no longer available (expired)"

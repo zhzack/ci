@@ -12,6 +12,7 @@ dispatcher's task pool, and finalizes run/task states. It also:
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -656,7 +657,7 @@ class PipelineEngine:
     ):
         """Re-park a retried task in QUEUED so a runner can claim it again."""
         time.sleep(delay)
-        self.remote_inputs[task.id] = RemoteTaskInputs(
+        requeue = RemoteTaskInputs(
             run_id=task.run_id,
             task_id=task.id,
             step_name=task.step_name,
@@ -668,6 +669,8 @@ class PipelineEngine:
             timeout_seconds=self.task_timeout_seconds,
             machine_id=task.machine_id,
         )
+        self.remote_inputs[task.id] = requeue
+        self._persist_remote_inputs(requeue)
         self.runs.set_task_state(
             task.id,
             TaskStatus.QUEUED,
@@ -840,6 +843,7 @@ class PipelineEngine:
                     timeout_seconds=self.task_timeout_seconds,
                     machine_id=tasks[name].machine_id,
                 )
+                self._persist_remote_inputs(self.remote_inputs[tasks[name].id])
                 self._publish(
                     run_id, "task.status",
                     task_id=tasks[name].id, step_name=name,
@@ -882,6 +886,92 @@ class PipelineEngine:
         return progressed
 
     # ------------------------------------------------------------------
+    # Remote task state persistence (crash recovery)
+    # ------------------------------------------------------------------
+
+    def _remote_state_path(self, task_id: str) -> Path:
+        return self.storage.root / "remote_state" / f"{task_id}.json"
+
+    def _persist_remote_inputs(self, inputs: RemoteTaskInputs) -> None:
+        """Durably record resolved inputs so a restart can rebuild the bundle.
+
+        The in-memory dict is lost when the API process exits; without this
+        file a runner claiming the task afterwards would get empty params and
+        a 404 bundle. Upload paths point at server-local temp files, which is
+        acceptable: they live on the same host as this state directory.
+        """
+        payload = {
+            "run_id": inputs.run_id,
+            "step_name": inputs.step_name,
+            "params": inputs.params,
+            "run_params": inputs.run_params,
+            "dependencies": {
+                name: entry.model_dump() if hasattr(entry, "model_dump") else entry
+                for name, entry in (inputs.dependencies or {}).items()
+            },
+            "uploads": {
+                name: str(path) for name, path in (inputs.uploads or {}).items()
+            },
+            "timeout_seconds": inputs.timeout_seconds,
+            "machine_id": inputs.machine_id,
+        }
+        path = self._remote_state_path(inputs.task_id)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, ensure_ascii=False, default=str))
+        except OSError:
+            logger.exception(
+                "Failed to persist remote inputs for task %s", inputs.task_id
+            )
+
+    def _discard_remote_state(self, task_id: str) -> None:
+        try:
+            self._remote_state_path(task_id).unlink(missing_ok=True)
+        except OSError:
+            logger.exception("Failed to discard remote state for task %s", task_id)
+
+    def remote_inputs_for(self, task_id: str) -> RemoteTaskInputs | None:
+        """Resolved inputs for a remote task: memory first, then disk.
+
+        The disk fallback rebuilds from the JSON written when the task was
+        parked, so runners can still claim and download bundles after an API
+        restart.
+        """
+        remote = self.remote_inputs.get(task_id)
+        if remote is not None:
+            return remote
+        path = self._remote_state_path(task_id)
+        if not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            task = self.runs.get_task_by_id(task_id)
+            plugin = self.plugins.get_version(task.plugin_name, task.plugin_version)
+            uploads = {
+                name: Path(value)
+                for name, value in (payload.get("uploads") or {}).items()
+                if value
+            }
+            return RemoteTaskInputs(
+                run_id=task.run_id,
+                task_id=task.id,
+                step_name=task.step_name,
+                plugin=plugin,
+                params=payload.get("params") or {},
+                run_params=payload.get("run_params") or {},
+                dependencies=payload.get("dependencies") or {},
+                uploads=uploads,
+                timeout_seconds=payload.get("timeout_seconds")
+                or self.task_timeout_seconds,
+                machine_id=task.machine_id or "",
+            )
+        except Exception:
+            logger.exception(
+                "Failed to rebuild remote inputs for task %s after restart", task_id
+            )
+            return None
+
+    # ------------------------------------------------------------------
     # Remote task wait loop
     # ------------------------------------------------------------------
 
@@ -904,6 +994,7 @@ class PipelineEngine:
                 time.sleep(self.poll_interval_seconds)
         finally:
             self.remote_inputs.pop(task.id, None)
+            self._discard_remote_state(task.id)
 
     @staticmethod
     def _remote_result(task, status: TaskStatus) -> TaskExecutionResult:

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from mini_pipeline.artifact.local import LocalArtifactStore
+from mini_pipeline.artifact.base import ArtifactStore
 from mini_pipeline.core.config import ExecutionConfig, StorageConfig
 from mini_pipeline.database.models import PluginVersion, TaskRun
 from mini_pipeline.domain.exceptions import ExecutionError
@@ -51,7 +51,7 @@ class TaskExecutor:
         storage: StorageConfig,
         execution: ExecutionConfig,
         runtimes: RuntimeRegistry,
-        artifact_store: LocalArtifactStore | None = None,
+        artifact_store: ArtifactStore | None = None,
     ) -> None:
         self.storage = storage
         self.execution = execution

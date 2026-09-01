@@ -8,7 +8,9 @@ from mini_pipeline.account.service import (
     MachineService,
     PermissionService,
 )
+from mini_pipeline.artifact.base import ArtifactStore
 from mini_pipeline.artifact.local import LocalArtifactStore
+from mini_pipeline.artifact.s3 import S3ArtifactStore
 from mini_pipeline.core.config import Settings
 from mini_pipeline.core.events import EventBus
 from mini_pipeline.database.account_repositories import (
@@ -36,6 +38,7 @@ from mini_pipeline.machine.diagnostics import MachineDiagnosticsService
 from mini_pipeline.pipeline.service import PipelineService
 from mini_pipeline.plugin.service import PluginService
 from mini_pipeline.runner.ssh_executor import SshExecutor
+from mini_pipeline.runtime.docker import DockerRuntime
 from mini_pipeline.runtime.executable_runtime import ExecutableRuntime
 from mini_pipeline.runtime.node_runtime import NodeRuntime
 from mini_pipeline.runtime.python_runtime import PythonRuntime
@@ -54,6 +57,13 @@ from mini_pipeline.source.upload import UploadSource
 from mini_pipeline.storage.service import PackageStorageService
 
 
+def build_artifact_store(settings: Settings, run_repository: RunRepository) -> ArtifactStore:
+    """Select the artifact backend from configuration (local disk or S3)."""
+    if settings.artifact_storage.driver == "s3":
+        return S3ArtifactStore(settings.artifact_storage, run_repository)
+    return LocalArtifactStore(settings.storage, run_repository)
+
+
 @dataclass
 class Services:
     settings: Settings
@@ -61,7 +71,7 @@ class Services:
     plugins: PluginService
     pipelines: PipelineService
     runs: RunService
-    artifacts: LocalArtifactStore
+    artifacts: ArtifactStore
     dispatcher: Dispatcher
     events: EventBus
     plugin_repository: PluginRepository
@@ -172,12 +182,13 @@ class Services:
             teams=teams,
         )
 
-        artifacts = LocalArtifactStore(settings.storage, run_repository)
+        artifacts = build_artifact_store(settings, run_repository)
         runtimes = RuntimeRegistry()
         runtimes.register(ShellRuntime())
         runtimes.register(PythonRuntime())
         runtimes.register(NodeRuntime())
         runtimes.register(ExecutableRuntime())
+        runtimes.register(DockerRuntime())
         executor = TaskExecutor(
             storage=settings.storage,
             execution=settings.execution,

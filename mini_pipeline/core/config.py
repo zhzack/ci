@@ -138,6 +138,15 @@ class PackageStorageConfig(BaseModel):
     s3: S3PackageStorageConfig = Field(default_factory=S3PackageStorageConfig)
 
 
+class ArtifactStorageConfig(BaseModel):
+    """Storage backend for run artifacts (and remote task bundle state)."""
+
+    driver: str = Field(default="local", pattern="^(local|s3)$")
+    # S3 key prefix under which artifacts are stored.
+    prefix: str = "artifacts"
+    s3: S3PackageStorageConfig = Field(default_factory=S3PackageStorageConfig)
+
+
 class EmailConfig(BaseModel):
     enabled: bool = True
     host: str = "smtp.qq.com"
@@ -165,6 +174,7 @@ class Settings(BaseModel):
     retention: RetentionConfig = Field(default_factory=RetentionConfig)
     runner: RunnerConfig = Field(default_factory=RunnerConfig)
     packages: PackageStorageConfig = Field(default_factory=PackageStorageConfig)
+    artifact_storage: ArtifactStorageConfig = Field(default_factory=ArtifactStorageConfig)
     email: EmailConfig = Field(default_factory=EmailConfig)
 
     def prepare_directories(self) -> None:

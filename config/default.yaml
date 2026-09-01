@@ -97,4 +97,17 @@ email:
   use_ssl: true
   use_tls: false
 
+artifact_storage:
+  # Storage backend for pipeline run artifacts. Options: local | s3.
+  # With s3, artifacts live in the bucket below (S3/MinIO/OSS/COS/R2) and
+  # survive server restarts instead of being bound to local disk.
+  driver: local
+  prefix: artifacts
+  s3:
+    endpoint_url: null
+    bucket_name: mini-pipeline
+    access_key: null
+    secret_key: null
+    region: us-east-1
+
 

@@ -71,4 +71,14 @@ packages:
     secret_key: null
     region: us-east-1
 
+artifact_storage:
+  driver: ${ARTIFACT_STORAGE_DRIVER:-local}
+  prefix: artifacts
+  s3:
+    endpoint_url: null
+    bucket_name: mini-pipeline
+    access_key: null
+    secret_key: null
+    region: us-east-1
+
 
