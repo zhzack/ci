@@ -1068,10 +1068,10 @@ export default function PipelineVisualEditorPage(): React.JSX.Element {
                           <div
                             key={row.id}
                             style={{
-                              border: '1px solid #f0f0f0',
+                              border: '1px solid var(--mp-border-color, #f0f0f0)',
                               borderRadius: 6,
                               padding: 8,
-                              background: duplicate || empty ? '#fffbe6' : '#fafafa',
+                              background: duplicate || empty ? 'rgba(250, 173, 20, 0.15)' : 'var(--mp-bg-subtle, #fafafa)',
                             }}
                           >
                             <div
@@ -1858,13 +1858,13 @@ function InputField({
       ) : (
         <div
           style={{
-            background: '#f5f5f5',
-            border: '1px solid #d9d9d9',
+            background: 'var(--mp-bg-subtle, #f5f5f5)',
+            border: '1px solid var(--mp-border-color, #d9d9d9)',
             borderRadius: 6,
             padding: '4px 8px',
             fontFamily: 'JetBrains Mono, monospace',
             fontSize: 12,
-            color: '#555',
+            color: 'var(--mp-text-color, #555)',
             marginTop: 4,
           }}
         >

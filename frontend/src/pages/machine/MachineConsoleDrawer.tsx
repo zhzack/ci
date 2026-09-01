@@ -21,6 +21,7 @@ import {
   Typography,
   Upload,
   message as antdMessage,
+  theme as antdTheme,
 } from 'antd';
 import type { MenuProps, TableColumnsType } from 'antd';
 import {
@@ -203,6 +204,7 @@ export function MachineConsoleDrawer({
     return DEFAULT_IDE_LAYOUT;
   });
 
+  const { token } = antdTheme.useToken();
   const [autoRefresh, setAutoRefresh] = useState(true);
 
   // 1. Overview state
@@ -756,7 +758,14 @@ export function MachineConsoleDrawer({
               <Space direction="vertical" size={12} style={{ width: '100%' }}>
                 <Row gutter={[10, 10]}>
                   <Col span={6}>
-                    <Card size="small" style={{ borderRadius: 6, background: '#fafafa' }}>
+                    <Card
+                      size="small"
+                      style={{
+                        borderRadius: 6,
+                        background: token.colorFillQuaternary,
+                        border: `1px solid ${token.colorBorderSecondary}`,
+                      }}
+                    >
                       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                         CPU ({overview.cpu_count} 核心)
                       </Typography.Text>
@@ -773,7 +782,14 @@ export function MachineConsoleDrawer({
                   </Col>
 
                   <Col span={6}>
-                    <Card size="small" style={{ borderRadius: 6, background: '#fafafa' }}>
+                    <Card
+                      size="small"
+                      style={{
+                        borderRadius: 6,
+                        background: token.colorFillQuaternary,
+                        border: `1px solid ${token.colorBorderSecondary}`,
+                      }}
+                    >
                       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                         内存 (RAM)
                       </Typography.Text>
@@ -788,7 +804,14 @@ export function MachineConsoleDrawer({
                   </Col>
 
                   <Col span={6}>
-                    <Card size="small" style={{ borderRadius: 6, background: '#fafafa' }}>
+                    <Card
+                      size="small"
+                      style={{
+                        borderRadius: 6,
+                        background: token.colorFillQuaternary,
+                        border: `1px solid ${token.colorBorderSecondary}`,
+                      }}
+                    >
                       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                         根目录磁盘
                       </Typography.Text>
@@ -803,7 +826,14 @@ export function MachineConsoleDrawer({
                   </Col>
 
                   <Col span={6}>
-                    <Card size="small" style={{ borderRadius: 6, background: '#fafafa' }}>
+                    <Card
+                      size="small"
+                      style={{
+                        borderRadius: 6,
+                        background: token.colorFillQuaternary,
+                        border: `1px solid ${token.colorBorderSecondary}`,
+                      }}
+                    >
                       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                         网络实时流量
                       </Typography.Text>

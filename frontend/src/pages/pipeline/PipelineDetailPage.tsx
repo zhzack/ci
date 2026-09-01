@@ -247,17 +247,7 @@ export default function PipelineDetailPage(): React.JSX.Element {
               )}
             </Card>
             <Card title="Definition (YAML)" style={{ marginTop: 16 }}>
-              <pre
-                style={{
-                  background: '#f6f8fa',
-                  borderRadius: 6,
-                  padding: 12,
-                  fontFamily: 'JetBrains Mono, Menlo, Consolas, monospace',
-                  fontSize: 12,
-                  maxHeight: 360,
-                  overflow: 'auto',
-                }}
-              >
+              <pre className="json-viewer" style={{ margin: 0 }}>
                 {data}
               </pre>
             </Card>

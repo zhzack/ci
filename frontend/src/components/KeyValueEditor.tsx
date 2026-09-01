@@ -235,10 +235,10 @@ export function KeyValueEditor({
           <div
             key={row.id}
             style={{
-              border: '1px solid #f0f0f0',
+              border: '1px solid var(--mp-border-color, #f0f0f0)',
               borderRadius: 6,
               padding: 8,
-              background: warnings.length > 0 ? '#fffbe6' : '#fafafa',
+              background: warnings.length > 0 ? 'rgba(250, 173, 20, 0.15)' : 'var(--mp-bg-subtle, #fafafa)',
             }}
           >
             <div
@@ -412,7 +412,12 @@ function ValueEditor({
         <Input
           readOnly
           value={bindingLabel(binding)}
-          style={{ background: '#f5f5f5', fontFamily: 'JetBrains Mono, monospace', fontSize: 12 }}
+          style={{
+            background: 'var(--mp-bg-subtle, #f5f5f5)',
+            color: 'var(--mp-text-color, inherit)',
+            fontFamily: 'JetBrains Mono, monospace',
+            fontSize: 12,
+          }}
           addonAfter={
             <Select<string>
               size="small"

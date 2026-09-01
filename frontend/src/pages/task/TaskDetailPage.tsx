@@ -377,11 +377,16 @@ export default function TaskDetailPage(): React.JSX.Element {
                           {isEmptyObj(step.outputs) ? (
                             <Typography.Text type="secondary" style={{ fontSize: 12 }}>—</Typography.Text>
                           ) : (
-                            <pre style={{
-                              background: '#f6f8fa', borderRadius: 4, padding: '4px 6px',
-                              fontSize: 11, margin: '2px 0', maxHeight: 120, overflow: 'auto',
-                              fontFamily: 'JetBrains Mono, monospace',
-                            }}>
+                            <pre
+                              className="json-viewer"
+                              style={{
+                                padding: '4px 6px',
+                                fontSize: 11,
+                                margin: '2px 0',
+                                maxHeight: 120,
+                                overflow: 'auto',
+                              }}
+                            >
                               {JSON.stringify(step.outputs, null, 2)}
                             </pre>
                           )}

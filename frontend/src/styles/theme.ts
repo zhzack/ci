@@ -2,11 +2,11 @@ import { theme as antdThemeTokens } from 'antd';
 import type { ThemeConfig } from 'antd';
 
 const sharedToken = {
-  colorPrimary: '#4056f4',
+  colorPrimary: '#1677ff',
   borderRadius: 8,
   fontSize: 14,
   fontFamily:
-    "-apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', 'PingFang SC', 'Microsoft YaHei', sans-serif",
+    "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'PingFang SC', 'Microsoft YaHei', sans-serif",
 };
 
 const LIGHT: ThemeConfig = {
@@ -14,24 +14,29 @@ const LIGHT: ThemeConfig = {
   token: {
     ...sharedToken,
     colorBgLayout: '#f4f6fb',
+    colorBgContainer: '#ffffff',
+    colorBgElevated: '#ffffff',
   },
   components: {
     Layout: {
       headerBg: '#ffffff',
-      siderBg: '#101a3d',
+      siderBg: '#ffffff',
       bodyBg: '#f4f6fb',
     },
     Menu: {
-      darkItemBg: '#101a3d',
-      darkItemSelectedBg: '#4056f4',
-      darkItemColor: 'rgba(255,255,255,0.72)',
-      darkItemSelectedColor: '#ffffff',
+      itemBg: 'transparent',
+      itemSelectedBg: '#e6f4ff',
+      itemSelectedColor: '#1677ff',
+      itemHoverBg: '#f5f7fa',
+      itemColor: '#475569',
+      itemBorderRadius: 6,
+      itemMarginInline: 8,
     },
     Card: {
-      boxShadowTertiary: '0 1px 4px rgba(16,26,61,0.08)',
+      boxShadowTertiary: '0 1px 4px rgba(16,26,61,0.06)',
     },
     Table: {
-      headerBg: '#f7f8fd',
+      headerBg: '#f8fafc',
     },
   },
 };
@@ -41,16 +46,29 @@ const DARK: ThemeConfig = {
   token: {
     ...sharedToken,
     colorBgLayout: '#0e1220',
+    colorBgContainer: '#141414',
+    colorBgElevated: '#1a1f2c',
   },
   components: {
     Layout: {
-      headerBg: '#151b30',
-      siderBg: '#0d1226',
+      headerBg: '#141414',
+      siderBg: '#141414',
       bodyBg: '#0e1220',
     },
     Menu: {
-      darkItemBg: '#0d1226',
-      darkItemSelectedBg: '#4056f4',
+      itemBg: 'transparent',
+      itemSelectedBg: 'rgba(22, 119, 255, 0.18)',
+      itemSelectedColor: '#69b1ff',
+      itemHoverBg: '#1f2430',
+      itemColor: '#94a3b8',
+      itemBorderRadius: 6,
+      itemMarginInline: 8,
+    },
+    Card: {
+      boxShadowTertiary: '0 1px 4px rgba(0,0,0,0.25)',
+    },
+    Table: {
+      headerBg: '#1a1f2c',
     },
   },
 };
@@ -58,3 +76,4 @@ const DARK: ThemeConfig = {
 export function antdThemeFor(mode: 'light' | 'dark'): ThemeConfig {
   return mode === 'dark' ? DARK : LIGHT;
 }
+

@@ -498,3 +498,86 @@ export function deserializeLayout(
   }
   return fallback ?? null;
 }
+
+/** Finds the first TabGroup node in the layout tree. */
+export function findFirstTabGroup(
+  root: LayoutNode,
+  preferredGroupId?: string | null
+): TabGroupNode | null {
+  if (preferredGroupId) {
+    const found = findNode(root, preferredGroupId);
+    if (found && found.type === 'tabGroup') return found;
+  }
+  if (root.type === 'tabGroup') {
+    return root;
+  }
+  for (const child of root.children) {
+    const res = findFirstTabGroup(child);
+    if (res) return res;
+  }
+  return null;
+}
+
+/** Switches to the next tab in the target (or first) tab group. */
+export function switchNextTab(
+  root: LayoutNode,
+  targetGroupId?: string | null
+): LayoutNode {
+  const cloned = cloneTree(root);
+  const group = findFirstTabGroup(cloned, targetGroupId);
+  if (group && group.tabs.length > 1) {
+    const idx = group.tabs.indexOf(group.activeTab);
+    const nextIdx = idx === -1 ? 0 : (idx + 1) % group.tabs.length;
+    group.activeTab = group.tabs[nextIdx] ?? group.activeTab;
+  }
+  return cloned;
+}
+
+/** Switches to the previous tab in the target (or first) tab group. */
+export function switchPrevTab(
+  root: LayoutNode,
+  targetGroupId?: string | null
+): LayoutNode {
+  const cloned = cloneTree(root);
+  const group = findFirstTabGroup(cloned, targetGroupId);
+  if (group && group.tabs.length > 1) {
+    const idx = group.tabs.indexOf(group.activeTab);
+    const prevIdx =
+      idx === -1 ? 0 : (idx - 1 + group.tabs.length) % group.tabs.length;
+    group.activeTab = group.tabs[prevIdx] ?? group.activeTab;
+  }
+  return cloned;
+}
+
+/** Switches to a tab by index (0..8, or -1 for last tab). */
+export function switchToTabIndex(
+  root: LayoutNode,
+  index: number,
+  targetGroupId?: string | null
+): LayoutNode {
+  const cloned = cloneTree(root);
+  const group = findFirstTabGroup(cloned, targetGroupId);
+  if (group && group.tabs.length > 0) {
+    if (index === -1 || index >= group.tabs.length) {
+      group.activeTab = group.tabs[group.tabs.length - 1] ?? group.activeTab;
+    } else if (index >= 0 && index < group.tabs.length) {
+      group.activeTab = group.tabs[index] ?? group.activeTab;
+    }
+  }
+  return cloned;
+}
+
+/** Closes the active tab in the target (or first) tab group. */
+export function closeActiveTab(
+  root: LayoutNode,
+  targetGroupId?: string | null
+): { newLayout: LayoutNode | null; closedTabId: string | null } {
+  const group = findFirstTabGroup(root, targetGroupId);
+  if (!group || !group.activeTab) {
+    return { newLayout: root, closedTabId: null };
+  }
+  const closedId = group.activeTab;
+  const newTree = closeTab(root, group.id, closedId);
+  return { newLayout: newTree, closedTabId: closedId };
+}
+

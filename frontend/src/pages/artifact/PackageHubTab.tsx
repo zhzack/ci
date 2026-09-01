@@ -23,6 +23,7 @@ import {
   Typography,
   Upload,
   App as AntApp,
+  theme as antdTheme,
 } from 'antd';
 import type { TableColumnsType } from 'antd';
 import {
@@ -117,6 +118,7 @@ function getFileIcon(item: StorageItem) {
 
 export function PackageHubTab(): React.JSX.Element {
   const { message } = AntApp.useApp();
+  const { token } = antdTheme.useToken();
   const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
   const addUploadFiles = useUploadStore((state) => state.addFiles);
@@ -1021,8 +1023,8 @@ export function PackageHubTab(): React.JSX.Element {
           <div
             style={{
               padding: '10px 16px',
-              background: '#e6f4ff',
-              border: '1px solid #91caff',
+              background: token.colorInfoBg,
+              border: `1px solid ${token.colorInfoBorder}`,
               borderRadius: 6,
               marginBottom: 14,
               display: 'flex',
@@ -1167,10 +1169,10 @@ export function PackageHubTab(): React.JSX.Element {
             style={{
               maxHeight: 140,
               overflowY: 'auto',
-              background: '#fafafa',
+              background: token.colorFillQuaternary,
               padding: '8px 12px',
               borderRadius: 6,
-              border: '1px solid #f0f0f0',
+              border: `1px solid ${token.colorBorderSecondary}`,
               marginTop: 6,
             }}
           >
@@ -1765,7 +1767,14 @@ export function PackageHubTab(): React.JSX.Element {
           </Row>
 
           {/* Scope Indicator */}
-          <div style={{ padding: '6px 12px', background: '#fafafa', borderRadius: 6, border: '1px solid #f0f0f0' }}>
+          <div
+            style={{
+              padding: '6px 12px',
+              background: token.colorFillQuaternary,
+              borderRadius: 6,
+              border: `1px solid ${token.colorBorderSecondary}`,
+            }}
+          >
             <Typography.Text type="secondary">统计分析范围：</Typography.Text>
             <Typography.Text strong code style={{ marginLeft: 8 }}>
               {storageStats?.scope_path ? storageStats.scope_path : '全景根目录 (Root)'}
@@ -1777,7 +1786,15 @@ export function PackageHubTab(): React.JSX.Element {
             <Card size="small" title={<Space><BarChartOutlined /><span>存储分区容量分布 (Storage Zones)</span></Space>}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
                 {storageStats.zones.map((zone) => (
-                  <div key={zone.zone} style={{ padding: '8px 12px', background: '#fafafa', borderRadius: 6 }}>
+                  <div
+                    key={zone.zone}
+                    style={{
+                      padding: '8px 12px',
+                      background: token.colorFillQuaternary,
+                      borderRadius: 6,
+                      border: `1px solid ${token.colorBorderSecondary}`,
+                    }}
+                  >
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                       <Space>
                         <Typography.Text strong>{zone.name}</Typography.Text>

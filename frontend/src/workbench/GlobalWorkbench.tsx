@@ -1,7 +1,8 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Button,
   Dropdown,
+  Empty,
   Input,
   Modal,
   Space,
@@ -11,31 +12,28 @@ import {
   theme as antdTheme,
   message as antdMessage,
 } from 'antd';
-import type { MenuProps } from 'antd';
+import type { InputRef, MenuProps } from 'antd';
 import {
   AppstoreOutlined,
-  BlockOutlined,
-  BorderOutlined,
   BranchesOutlined,
   CheckOutlined,
+  CloseOutlined,
+  DeleteOutlined,
   DesktopOutlined,
   DownOutlined,
+  EnterOutlined,
   LayoutOutlined,
   PlusOutlined,
   ReloadOutlined,
+  SaveOutlined,
   SearchOutlined,
-  SplitCellsOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons';
 import {
   DockLayout,
-  createDualHorizontalLayout,
-  createDualVerticalLayout,
-  createSingleGroupLayout,
   getAllOpenTabIds,
 } from '@/components/dock';
 import {
-  DEFAULT_WORKBENCH_LAYOUT,
   useWorkbenchStore,
 } from './workbenchStore';
 import {
@@ -45,9 +43,32 @@ import {
 
 export function GlobalWorkbench(): React.JSX.Element {
   const { token } = antdTheme.useToken();
-  const { layout, setLayout, resetLayout, openTab, dynamicTabs } = useWorkbenchStore();
+  const {
+    layout,
+    setLayout,
+    resetLayout,
+    openTab,
+    dynamicTabs,
+    savedLayouts,
+    saveCurrentLayout,
+    applySavedLayout,
+    deleteSavedLayout,
+    closeActiveTab,
+    reopenLastClosedTab,
+    nextTab,
+    prevTab,
+    switchToTabIndex,
+  } = useWorkbenchStore();
+
+  // Search / Quick Open modal state
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const searchInputRef = useRef<InputRef>(null);
+
+  // Save layout modal state
+  const [saveModalOpen, setSaveModalOpen] = useState(false);
+  const [layoutName, setLayoutName] = useState('');
 
   const openTabIds = useMemo(() => getAllOpenTabIds(layout), [layout]);
   const tabRegistry = useMemo(
@@ -55,7 +76,161 @@ export function GlobalWorkbench(): React.JSX.Element {
     [openTabIds, dynamicTabs]
   );
 
-  // Quick Open Dropdown Menu
+  const filteredCatalog = useMemo(() => {
+    if (!searchQuery.trim()) return WORKBENCH_CATALOG;
+    const q = searchQuery.toLowerCase();
+    return WORKBENCH_CATALOG.filter(
+      (m) =>
+        m.title.toLowerCase().includes(q) || m.id.toLowerCase().includes(q)
+    );
+  }, [searchQuery]);
+
+  // Global Browser-Aligned Tab & Workbench Shortcuts (Silent background execution)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const isCtrlOrMeta = e.ctrlKey || e.metaKey;
+      const isAlt = e.altKey;
+      const isShift = e.shiftKey;
+      const targetTag = (e.target as HTMLElement)?.tagName?.toLowerCase();
+      const isEditable =
+        targetTag === 'input' ||
+        targetTag === 'textarea' ||
+        (e.target as HTMLElement)?.isContentEditable;
+
+      // 1. Quick Open / New Tab: Ctrl+T, Ctrl+K, Ctrl+P, Alt+T
+      if (
+        (isCtrlOrMeta && (e.key === 'k' || e.key === 'K' || e.key === 'p' || e.key === 'P' || e.key === 't' || e.key === 'T')) ||
+        (isAlt && (e.key === 't' || e.key === 'T'))
+      ) {
+        e.preventDefault();
+        setSearchOpen((prev) => !prev);
+        return;
+      }
+
+      // 2. Reopen Last Closed Tab: Ctrl+Shift+T, Alt+Shift+T
+      if (
+        (isCtrlOrMeta && isShift && (e.key === 't' || e.key === 'T')) ||
+        (isAlt && isShift && (e.key === 't' || e.key === 'T'))
+      ) {
+        e.preventDefault();
+        const reopened = reopenLastClosedTab();
+        if (reopened) {
+          antdMessage.success('已重新打开最近关闭的标签页');
+        }
+        return;
+      }
+
+      // 3. Close Active Tab: Ctrl+W, Alt+W
+      if (
+        (isCtrlOrMeta && (e.key === 'w' || e.key === 'W')) ||
+        (isAlt && (e.key === 'w' || e.key === 'W'))
+      ) {
+        e.preventDefault();
+        const closedId = closeActiveTab();
+        if (closedId) {
+          const tabTitle =
+            WORKBENCH_CATALOG.find((item) => item.id === closedId)?.title || closedId;
+          antdMessage.info(`已关闭「${tabTitle}」`);
+        }
+        return;
+      }
+
+      // 4. Switch Next Tab: Ctrl+Tab, Ctrl+PageDown, Alt+RightArrow, Ctrl+Shift+]
+      if (
+        (isCtrlOrMeta && (e.key === 'Tab' && !isShift)) ||
+        (isCtrlOrMeta && e.key === 'PageDown') ||
+        (isAlt && (e.key === 'ArrowRight' || e.key === 'Right')) ||
+        (isCtrlOrMeta && isShift && e.key === '}')
+      ) {
+        e.preventDefault();
+        nextTab();
+        return;
+      }
+
+      // 5. Switch Prev Tab: Ctrl+Shift+Tab, Ctrl+PageUp, Alt+LeftArrow, Ctrl+Shift+[
+      if (
+        (isCtrlOrMeta && e.key === 'Tab' && isShift) ||
+        (isCtrlOrMeta && e.key === 'PageUp') ||
+        (isAlt && (e.key === 'ArrowLeft' || e.key === 'Left')) ||
+        (isCtrlOrMeta && isShift && e.key === '{')
+      ) {
+        e.preventDefault();
+        prevTab();
+        return;
+      }
+
+      // 6. Direct Switch by Number (Ctrl+1..9, Alt+1..9)
+      if ((isAlt || (isCtrlOrMeta && !isShift && !isEditable)) && e.key >= '1' && e.key <= '9') {
+        const num = parseInt(e.key, 10);
+        e.preventDefault();
+        if (num === 9) {
+          switchToTabIndex(-1); // Last tab
+        } else {
+          switchToTabIndex(num - 1);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [closeActiveTab, reopenLastClosedTab, nextTab, prevTab, switchToTabIndex]);
+
+  // Reset selected index on query change
+  useEffect(() => {
+    setSelectedIndex(0);
+  }, [searchQuery]);
+
+  // Focus input on modal open
+  useEffect(() => {
+    if (searchOpen) {
+      setTimeout(() => {
+        searchInputRef.current?.focus();
+      }, 50);
+    }
+  }, [searchOpen]);
+
+  const handleOpenItem = (tabId: string) => {
+    openTab(tabId);
+    setSearchOpen(false);
+    setSearchQuery('');
+  };
+
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setSelectedIndex((prev) =>
+        prev < filteredCatalog.length - 1 ? prev + 1 : 0
+      );
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setSelectedIndex((prev) =>
+        prev > 0 ? prev - 1 : filteredCatalog.length - 1
+      );
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (filteredCatalog.length > 0) {
+        const item = filteredCatalog[selectedIndex] || filteredCatalog[0];
+        if (item) {
+          handleOpenItem(item.id);
+        }
+      }
+    } else if (e.key === 'Escape') {
+      setSearchOpen(false);
+    }
+  };
+
+  const handleConfirmSaveLayout = () => {
+    if (!layoutName.trim()) {
+      antdMessage.warning('请输入布局名称');
+      return;
+    }
+    const entry = saveCurrentLayout(layoutName.trim());
+    antdMessage.success(`工作台布局「${entry.name}」已保存`);
+    setSaveModalOpen(false);
+    setLayoutName('');
+  };
+
+  // Open Tab Dropdown Menu
   const openMenu: MenuProps = {
     items: [
       {
@@ -176,86 +351,103 @@ export function GlobalWorkbench(): React.JSX.Element {
     ],
   };
 
-  // Layout Presets Dropdown
-  const presetMenu: MenuProps = {
+  // Custom User Saved Layouts Menu
+  const layoutManagementMenu: MenuProps = {
     items: [
       {
-        key: 'preset-quad',
-        icon: <AppstoreOutlined />,
-        label: '经典四分屏 (左上注册/右上编写/左下节点/右下监控)',
+        key: 'action-save',
+        icon: <SaveOutlined style={{ color: '#1677ff' }} />,
+        label: (
+          <span style={{ fontWeight: 600, color: '#1677ff' }}>
+            保存当前分屏为新布局...
+          </span>
+        ),
         onClick: () => {
-          setLayout(DEFAULT_WORKBENCH_LAYOUT);
-          antdMessage.success('已切换为经典四分屏 IDE 工作台布局');
-        },
-      },
-      {
-        key: 'preset-dual-h',
-        icon: <SplitCellsOutlined />,
-        label: '左右双分栏 (左侧配置与列表 / 右侧编写与监控)',
-        onClick: () => {
-          setLayout(
-            createDualHorizontalLayout(
-              ['plugin-register', 'plugin-list', 'machines'],
-              ['pipeline-visual', 'task-running', 'dashboard'],
-              [45, 55]
-            )
-          );
-          antdMessage.success('已切换为左右双分栏布局');
-        },
-      },
-      {
-        key: 'preset-dual-v',
-        icon: <BlockOutlined />,
-        label: '上下双分栏 (上方设计编写 / 下方节点与日志)',
-        onClick: () => {
-          setLayout(
-            createDualVerticalLayout(
-              ['pipeline-visual', 'plugin-register'],
-              ['task-running', 'machines', 'dashboard'],
-              [55, 45]
-            )
-          );
-          antdMessage.success('已切换为上下双分栏布局');
-        },
-      },
-      {
-        key: 'preset-single',
-        icon: <BorderOutlined />,
-        label: '单窗口聚合标签页 (Single Group)',
-        onClick: () => {
-          setLayout(
-            createSingleGroupLayout([
-              'pipeline-visual',
-              'plugin-register',
-              'machines',
-              'task-running',
-              'dashboard',
-            ])
-          );
-          antdMessage.success('已切换为单窗口聚合标签页');
+          setLayoutName(`分屏布局 (${openTabIds.length} 个标签)`);
+          setSaveModalOpen(true);
         },
       },
       { type: 'divider' },
       {
-        key: 'reset',
+        key: 'grp-saved',
+        type: 'group',
+        label: `📁 我的已保存布局 (${savedLayouts.length})`,
+        children:
+          savedLayouts.length === 0
+            ? [
+                {
+                  key: 'empty-saved',
+                  disabled: true,
+                  label: (
+                    <span style={{ fontSize: 12, color: token.colorTextSecondary }}>
+                      暂无保存的布局
+                    </span>
+                  ),
+                },
+              ]
+            : savedLayouts.map((item) => ({
+                key: item.id,
+                icon: <LayoutOutlined style={{ color: token.colorPrimary }} />,
+                label: (
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      minWidth: 240,
+                      gap: 12,
+                    }}
+                  >
+                    <div style={{ display: 'flex', flexDirection: 'column' }}>
+                      <span style={{ fontWeight: 500 }}>{item.name}</span>
+                      <span style={{ fontSize: 11, color: token.colorTextSecondary }}>
+                        {new Date(item.createdAt).toLocaleDateString()}{' '}
+                        {new Date(item.createdAt).toLocaleTimeString([], {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </span>
+                    </div>
+                    <Space size={4} onClick={(e) => e.stopPropagation()}>
+                      <Tag color="blue" style={{ fontSize: 11, margin: 0 }}>
+                        {item.tabCount} 个标签
+                      </Tag>
+                      <Tooltip title="删除该模板">
+                        <Button
+                          type="text"
+                          size="small"
+                          danger
+                          icon={<DeleteOutlined style={{ fontSize: 12 }} />}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteSavedLayout(item.id);
+                            antdMessage.success(`已删除布局「${item.name}」`);
+                          }}
+                        />
+                      </Tooltip>
+                    </Space>
+                  </div>
+                ),
+                onClick: () => {
+                  const ok = applySavedLayout(item.id);
+                  if (ok) {
+                    antdMessage.success(`已加载自定义布局: ${item.name}`);
+                  }
+                },
+              })),
+      },
+      { type: 'divider' },
+      {
+        key: 'action-reset-default',
         icon: <ReloadOutlined />,
-        label: '恢复工作台默认布局',
+        label: '恢复默认主页',
         onClick: () => {
           resetLayout();
-          antdMessage.success('工作台布局已重置为默认');
+          antdMessage.success('工作台布局已重置');
         },
       },
     ],
   };
-
-  const filteredCatalog = useMemo(() => {
-    if (!searchQuery.trim()) return WORKBENCH_CATALOG;
-    const q = searchQuery.toLowerCase();
-    return WORKBENCH_CATALOG.filter(
-      (m) =>
-        m.title.toLowerCase().includes(q) || m.id.toLowerCase().includes(q)
-    );
-  }, [searchQuery]);
 
   return (
     <div
@@ -268,7 +460,7 @@ export function GlobalWorkbench(): React.JSX.Element {
         background: token.colorBgLayout,
       }}
     >
-      {/* Top IDE Workbench Control Bar */}
+      {/* Clean IDE Workbench Control Bar */}
       <div
         style={{
           display: 'flex',
@@ -281,7 +473,7 @@ export function GlobalWorkbench(): React.JSX.Element {
           userSelect: 'none',
         }}
       >
-        <Space size={12}>
+        <Space size={10}>
           <Dropdown menu={openMenu} trigger={['click']}>
             <Button
               type="primary"
@@ -293,21 +485,20 @@ export function GlobalWorkbench(): React.JSX.Element {
             </Button>
           </Dropdown>
 
-          <Dropdown menu={presetMenu} trigger={['click']}>
+          <Dropdown menu={layoutManagementMenu} trigger={['click']}>
             <Button size="small" icon={<LayoutOutlined />}>
-              工作台布局预设 <DownOutlined style={{ fontSize: 10 }} />
+              工作台布局模式 ({savedLayouts.length}){' '}
+              <DownOutlined style={{ fontSize: 10 }} />
             </Button>
           </Dropdown>
 
-          <Tooltip title="快速查找并打开工作区标签页 (Ctrl+K)">
-            <Button
-              size="small"
-              icon={<SearchOutlined />}
-              onClick={() => setSearchOpen(true)}
-            >
-              快速打开...
-            </Button>
-          </Tooltip>
+          <Button
+            size="small"
+            icon={<SearchOutlined />}
+            onClick={() => setSearchOpen(true)}
+          >
+            快速打开...
+          </Button>
 
           <Tag color="blue" style={{ margin: 0 }}>
             {openTabIds.length} 个活跃标签
@@ -315,16 +506,33 @@ export function GlobalWorkbench(): React.JSX.Element {
         </Space>
 
         <Space size={8}>
-          <Tooltip title="恢复工作台出厂默认布局">
+          <Tooltip title="关闭当前聚焦的标签页">
             <Button
               size="small"
-              icon={<ReloadOutlined />}
+              icon={<CloseOutlined />}
               onClick={() => {
-                resetLayout();
-                antdMessage.success('工作台布局已重置');
+                const closedId = closeActiveTab();
+                if (closedId) {
+                  const tabTitle =
+                    WORKBENCH_CATALOG.find((item) => item.id === closedId)?.title || closedId;
+                  antdMessage.info(`已关闭「${tabTitle}」`);
+                }
               }}
             >
-              重置布局
+              关闭标签
+            </Button>
+          </Tooltip>
+
+          <Tooltip title="保存当前分屏与打开的标签页为自定义模板">
+            <Button
+              size="small"
+              icon={<SaveOutlined />}
+              onClick={() => {
+                setLayoutName(`分屏布局 (${openTabIds.length} 个标签)`);
+                setSaveModalOpen(true);
+              }}
+            >
+              保存当前布局
             </Button>
           </Tooltip>
         </Space>
@@ -353,7 +561,7 @@ export function GlobalWorkbench(): React.JSX.Element {
               icon={<PlusOutlined />}
               onClick={() => resetLayout()}
             >
-              加载默认全功能工作台
+              加载默认主页
             </Button>
           </div>
         ) : (
@@ -365,66 +573,147 @@ export function GlobalWorkbench(): React.JSX.Element {
         )}
       </div>
 
+      {/* Save Layout Modal */}
+      <Modal
+        title={
+          <Space align="center">
+            <SaveOutlined style={{ color: '#1677ff' }} />
+            <span>保存当前工作台布局模板</span>
+          </Space>
+        }
+        open={saveModalOpen}
+        onOk={handleConfirmSaveLayout}
+        onCancel={() => {
+          setSaveModalOpen(false);
+          setLayoutName('');
+        }}
+        okText="确认保存"
+        cancelText="取消"
+        width={480}
+      >
+        <div style={{ marginTop: 12 }}>
+          <Typography.Paragraph type="secondary" style={{ fontSize: 13 }}>
+            为当前分屏布局命名。保存后，随时可以通过「工作台布局」下拉菜单一键切换与恢复。
+          </Typography.Paragraph>
+
+          <Input
+            placeholder="例如: 日常开发多栏视图、监控与节点控制台..."
+            value={layoutName}
+            onChange={(e) => setLayoutName(e.target.value)}
+            onPressEnter={handleConfirmSaveLayout}
+            autoFocus
+            style={{ marginTop: 8 }}
+          />
+
+          <div style={{ marginTop: 14 }}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              当前布局包含标签页 ({openTabIds.length})：
+            </Typography.Text>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+              {openTabIds.map((id) => (
+                <Tag key={id} style={{ margin: 0 }}>
+                  {WORKBENCH_CATALOG.find((item) => item.id === id)?.title || id}
+                </Tag>
+              ))}
+            </div>
+          </div>
+        </div>
+      </Modal>
+
       {/* Quick Search / Open Modal */}
       <Modal
-        title="快速打开工作台模块"
+        title={
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingRight: 24 }}>
+            <Space align="center">
+              <SearchOutlined style={{ color: '#1677ff' }} />
+              <span>快速打开工作台模块</span>
+            </Space>
+          </div>
+        }
         open={searchOpen}
         footer={null}
         onCancel={() => {
           setSearchOpen(false);
           setSearchQuery('');
         }}
-        width={560}
+        width={580}
+        destroyOnClose
       >
         <Input
-          prefix={<SearchOutlined />}
+          ref={searchInputRef}
+          prefix={<SearchOutlined style={{ color: token.colorTextSecondary }} />}
           placeholder="输入模块名称或拼音快速过滤 (例如: 注册插件、流水线、控制台)..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
+          onKeyDown={handleSearchKeyDown}
           autoFocus
-          style={{ marginBottom: 16 }}
+          style={{ marginBottom: 14 }}
         />
-        <div style={{ maxHeight: 360, overflowY: 'auto' }}>
-          {filteredCatalog.map((item) => {
-            const isOpen = openTabIds.includes(item.id);
-            return (
-              <div
-                key={item.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => {
-                  openTab(item.id);
-                  setSearchOpen(false);
-                  setSearchQuery('');
-                }}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  padding: '10px 14px',
-                  borderRadius: 6,
-                  cursor: 'pointer',
-                  marginBottom: 4,
-                  background: token.colorFillTertiary,
-                }}
-              >
-                <Space>
-                  {item.icon}
-                  <Typography.Text strong>{item.title}</Typography.Text>
-                </Space>
-                {isOpen ? (
-                  <Tag color="green" icon={<CheckOutlined />}>
-                    已在工作台
-                  </Tag>
-                ) : (
-                  <Tag>点击打开</Tag>
-                )}
-              </div>
-            );
-          })}
+
+        <div style={{ maxHeight: 380, overflowY: 'auto' }}>
+          {filteredCatalog.length === 0 ? (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description="未找到匹配的功能模块"
+            />
+          ) : (
+            filteredCatalog.map((item, index) => {
+              const isOpen = openTabIds.includes(item.id);
+              const isSelected = index === selectedIndex;
+              return (
+                <div
+                  key={item.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => handleOpenItem(item.id)}
+                  onMouseEnter={() => setSelectedIndex(index)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '10px 14px',
+                    borderRadius: 6,
+                    cursor: 'pointer',
+                    marginBottom: 4,
+                    background: isSelected
+                      ? token.colorFillSecondary
+                      : token.colorFillQuaternary,
+                    border: isSelected
+                      ? `1px solid ${token.colorPrimary}`
+                      : `1px solid transparent`,
+                    transition: 'all 0.1s ease',
+                  }}
+                >
+                  <Space size={10}>
+                    <span style={{ fontSize: 16 }}>{item.icon}</span>
+                    <Typography.Text strong>{item.title}</Typography.Text>
+                  </Space>
+                  <Space size={8}>
+                    {isOpen ? (
+                      <Tag color="green" icon={<CheckOutlined />}>
+                        已在工作台
+                      </Tag>
+                    ) : (
+                      <Tag>点击打开</Tag>
+                    )}
+                    {isSelected && (
+                      <Tag
+                        color="blue"
+                        icon={<EnterOutlined />}
+                        style={{ fontSize: 11, margin: 0 }}
+                      >
+                        Enter
+                      </Tag>
+                    )}
+                  </Space>
+                </div>
+              );
+            })
+          )}
         </div>
       </Modal>
     </div>
   );
 }
+
 export default GlobalWorkbench;

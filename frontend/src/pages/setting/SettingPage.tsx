@@ -18,14 +18,11 @@ import { useApiQuery, describeError } from '@/hooks/useApiQuery';
 import { getReadiness, getVersion } from '@/api/health';
 import { updateProfile, changePassword, me, sendEmailCode, bindEmailWithOtp } from '@/api/auth';
 import { useThemeStore } from '@/store/theme';
-import { useMenuStore } from '@/store/menu';
 import { useAuthStore } from '@/store/auth';
 
 export default function SettingPage(): React.JSX.Element {
   const mode = useThemeStore((state) => state.mode);
   const toggleTheme = useThemeStore((state) => state.toggle);
-  const collapsed = useMenuStore((state) => state.collapsed);
-  const setCollapsed = useMenuStore((state) => state.setCollapsed);
   const authUser = useAuthStore((state) => state.user);
   const setUser = useAuthStore((state) => state.setUser);
 
@@ -243,13 +240,15 @@ export default function SettingPage(): React.JSX.Element {
         </Form>
       </Card>
 
-      <Card title="外观与偏好" style={{ marginBottom: 16 }}>
+      <Card title="外观与主题偏好" style={{ marginBottom: 16 }}>
         <Descriptions column={1} size="middle">
-          <Descriptions.Item label="深色模式 (Dark mode)">
-            <Switch checked={mode === 'dark'} onChange={toggleTheme} />
-          </Descriptions.Item>
-          <Descriptions.Item label="折叠侧边栏">
-            <Switch checked={collapsed} onChange={setCollapsed} />
+          <Descriptions.Item label="深色暗黑主题 (Dark Mode)">
+            <Switch
+              checked={mode === 'dark'}
+              onChange={toggleTheme}
+              checkedChildren="🌙 暗黑"
+              unCheckedChildren="☀️ 亮白"
+            />
           </Descriptions.Item>
         </Descriptions>
       </Card>

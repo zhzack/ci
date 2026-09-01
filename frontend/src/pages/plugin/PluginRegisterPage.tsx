@@ -12,6 +12,7 @@ import {
   Typography,
   Upload,
   message as antdMessage,
+  theme as antdTheme,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
@@ -39,6 +40,7 @@ type FolderEntry = {
 };
 
 export default function PluginRegisterPage(): React.JSX.Element {
+  const { token } = antdTheme.useToken();
   const navigate = useNavigate();
   const [gitForm] = Form.useForm<GitForm>();
   const [httpForm] = Form.useForm<HttpForm>();
@@ -299,26 +301,26 @@ export default function PluginRegisterPage(): React.JSX.Element {
                     style={{
                       padding: '40px 16px',
                       borderRadius: 8,
-                      border: '2px dashed #d9d9d9',
+                      border: `2px dashed ${token.colorBorderSecondary}`,
                       textAlign: 'center',
                       cursor: 'pointer',
-                      background: '#fafafa',
+                      background: token.colorFillQuaternary,
                       transition: 'border-color 0.2s',
                     }}
                     onMouseEnter={(event) => {
-                      (event.currentTarget as HTMLDivElement).style.borderColor = '#1677ff';
+                      (event.currentTarget as HTMLDivElement).style.borderColor = token.colorPrimary;
                     }}
                     onMouseLeave={(event) => {
-                      (event.currentTarget as HTMLDivElement).style.borderColor = '#d9d9d9';
+                      (event.currentTarget as HTMLDivElement).style.borderColor = token.colorBorderSecondary;
                     }}
                   >
-                    <p style={{ fontSize: 48, color: '#1677ff', marginBottom: 8 }}>
+                    <p style={{ fontSize: 48, color: token.colorPrimary, marginBottom: 8 }}>
                       <FolderOpenOutlined />
                     </p>
                     <p style={{ fontSize: 16 }}>Click to pick a plugin folder</p>
-                    <p style={{ fontSize: 14, color: 'rgba(0,0,0,0.45)' }}>
+                    <Typography.Paragraph type="secondary" style={{ fontSize: 14, margin: 0 }}>
                       The folder must contain plugin.yaml at its root. File paths are preserved.
-                    </p>
+                    </Typography.Paragraph>
                   </div>
 
                   {folderFiles.length > 0 ? (

@@ -21,9 +21,10 @@ export function App(): React.JSX.Element {
   const mode = useThemeStore((state) => state.mode);
 
   useEffect(() => {
-    // The algorithm restyles AntD components; the page background itself
-    // lives on <body> and must be switched alongside the mode.
-    document.body.style.background = mode === 'dark' ? '#0f0f0f' : '';
+    // Synchronize data-theme attribute, background, and colorScheme with mode
+    document.documentElement.setAttribute('data-theme', mode);
+    document.body.style.background = mode === 'dark' ? '#0e1220' : '#f4f6fb';
+    document.body.style.color = mode === 'dark' ? '#e6edf3' : '#1e293b';
     document.body.style.colorScheme = mode;
   }, [mode]);
 

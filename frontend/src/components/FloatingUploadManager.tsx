@@ -8,6 +8,7 @@ import {
   Tag,
   Tooltip,
   Typography,
+  theme as antdTheme,
 } from 'antd';
 import {
   CheckCircleOutlined,
@@ -32,6 +33,7 @@ function formatSize(bytes: number): string {
 }
 
 export function FloatingUploadManager(): React.JSX.Element | null {
+  const { token } = antdTheme.useToken();
   const {
     tasks,
     isOpen,
@@ -94,11 +96,11 @@ export function FloatingUploadManager(): React.JSX.Element | null {
           bottom: 24,
           right: 24,
           zIndex: 1050,
-          background: '#fff',
+          background: token.colorBgElevated,
           borderRadius: 24,
           padding: '8px 16px',
-          boxShadow: '0 6px 20px rgba(0, 0, 0, 0.15)',
-          border: '1px solid #d9d9d9',
+          boxShadow: '0 6px 20px rgba(0, 0, 0, 0.25)',
+          border: `1px solid ${token.colorBorderSecondary}`,
           display: 'flex',
           alignItems: 'center',
           gap: 12,
@@ -162,10 +164,11 @@ export function FloatingUploadManager(): React.JSX.Element | null {
         right: 24,
         width: 480,
         zIndex: 1050,
-        boxShadow: '0 10px 32px rgba(0, 0, 0, 0.18)',
+        boxShadow: '0 10px 32px rgba(0, 0, 0, 0.28)',
         borderRadius: 10,
         overflow: 'hidden',
-        border: '1px solid #d9d9d9',
+        border: `1px solid ${token.colorBorderSecondary}`,
+        background: token.colorBgElevated,
       }}
       bodyStyle={{ padding: '12px 16px' }}
       title={

@@ -1,0 +1,16 @@
+{
+  "name": "Mini Pipeline IDE",
+  "short_name": "MiniPipeline",
+  "description": "轻量高性能 CI/CD 自动化流水线多任务工作台",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#141414",
+  "theme_color": "#1677ff",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

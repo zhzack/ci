@@ -246,7 +246,12 @@ export function EnvironmentTab({ machines }: Props): React.JSX.Element {
             readOnly
             value={unixUninstallCmd}
             autoSize
-            style={{ marginTop: 4, fontFamily: 'monospace', background: '#f5f5f5' }}
+            style={{
+              marginTop: 4,
+              fontFamily: 'JetBrains Mono, monospace',
+              background: 'var(--mp-bg-subtle, #f5f5f5)',
+              color: 'var(--mp-text-color, inherit)',
+            }}
           />
         </div>
 
@@ -256,7 +261,12 @@ export function EnvironmentTab({ machines }: Props): React.JSX.Element {
             readOnly
             value={winUninstallCmd}
             autoSize
-            style={{ marginTop: 4, fontFamily: 'monospace', background: '#f5f5f5' }}
+            style={{
+              marginTop: 4,
+              fontFamily: 'JetBrains Mono, monospace',
+              background: 'var(--mp-bg-subtle, #f5f5f5)',
+              color: 'var(--mp-text-color, inherit)',
+            }}
           />
         </div>
       </Modal>

@@ -17,6 +17,7 @@ import {
   Tag,
   Typography,
   message as antdMessage,
+  theme as antdTheme,
 } from 'antd';
 import type { TableColumnsType } from 'antd';
 import {
@@ -68,9 +69,10 @@ type RegisterFormValues = {
 };
 
 function TokenOnceModal({ token, onClose }: { token: string | null; onClose: () => void }) {
-  const serverUrl = window.location.origin.replace(':5173', ':8000');
-  const winCmd = `powershell -c "irm ${serverUrl}/install.ps1?token=${token ?? ''} | iex"`;
-  const unixCmd = `curl -fsSL "${serverUrl}/install.sh?token=${token ?? ''}" | bash`;
+  const { token: themeToken } = antdTheme.useToken();
+  const serverUrl = window.location.origin;
+  const winCmd = `powershell -c "irm ${serverUrl}/install?token=${token ?? ''} | iex"`;
+  const unixCmd = `curl -fsSL ${serverUrl}/install?token=${token ?? ''} | bash`;
   const universalCmd = `powershell -c "irm ${serverUrl}/install?token=${token ?? ''} | iex"`;
   const manualCmd = `mini-pipeline-runner --server ${serverUrl} --token ${token ?? ''}`;
 
@@ -98,7 +100,11 @@ function TokenOnceModal({ token, onClose }: { token: string | null; onClose: () 
           readOnly
           value={token ?? ''}
           autoSize
-          style={{ marginTop: 4, fontFamily: 'JetBrains Mono, monospace' }}
+          style={{
+            marginTop: 4,
+            fontFamily: 'JetBrains Mono, monospace',
+            background: themeToken.colorFillTertiary,
+          }}
         />
       </div>
 
@@ -120,7 +126,10 @@ function TokenOnceModal({ token, onClose }: { token: string | null; onClose: () 
                     readOnly
                     autoSize
                     value={winCmd}
-                    style={{ fontFamily: 'JetBrains Mono, monospace', background: '#fafafa' }}
+                    style={{
+                      fontFamily: 'JetBrains Mono, monospace',
+                      background: themeToken.colorFillTertiary,
+                    }}
                   />
                 </div>
               ),
@@ -137,7 +146,10 @@ function TokenOnceModal({ token, onClose }: { token: string | null; onClose: () 
                     readOnly
                     autoSize
                     value={unixCmd}
-                    style={{ fontFamily: 'JetBrains Mono, monospace', background: '#fafafa' }}
+                    style={{
+                      fontFamily: 'JetBrains Mono, monospace',
+                      background: themeToken.colorFillTertiary,
+                    }}
                   />
                 </div>
               ),
@@ -154,7 +166,10 @@ function TokenOnceModal({ token, onClose }: { token: string | null; onClose: () 
                     readOnly
                     autoSize
                     value={universalCmd}
-                    style={{ fontFamily: 'JetBrains Mono, monospace', background: '#fafafa' }}
+                    style={{
+                      fontFamily: 'JetBrains Mono, monospace',
+                      background: themeToken.colorFillTertiary,
+                    }}
                   />
                 </div>
               ),
@@ -171,7 +186,10 @@ function TokenOnceModal({ token, onClose }: { token: string | null; onClose: () 
                     readOnly
                     autoSize
                     value={manualCmd}
-                    style={{ fontFamily: 'JetBrains Mono, monospace', background: '#fafafa' }}
+                    style={{
+                      fontFamily: 'JetBrains Mono, monospace',
+                      background: themeToken.colorFillTertiary,
+                    }}
                   />
                 </div>
               ),
@@ -459,6 +477,7 @@ function MachineDrawer({
 }
 
 export function MachinesPage(): React.JSX.Element {
+  const { token: themeToken } = antdTheme.useToken();
   const { data, isLoading, error, refetch } = useApiQuery(['machines'], listMachines);
   const [drawer, setDrawer] = useState<Machine | null>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
@@ -755,7 +774,15 @@ export function MachinesPage(): React.JSX.Element {
           >
             {({ getFieldValue }) =>
               getFieldValue('connection_type') === 'ssh' ? (
-                <div style={{ background: '#fafafa', padding: 12, borderRadius: 6, marginBottom: 16 }}>
+                <div
+                  style={{
+                    background: themeToken.colorFillTertiary,
+                    border: `1px solid ${themeToken.colorBorderSecondary}`,
+                    padding: 12,
+                    borderRadius: 6,
+                    marginBottom: 16,
+                  }}
+                >
                   <Typography.Text strong style={{ display: 'block', marginBottom: 8 }}>
                     SSH Connection Details:
                   </Typography.Text>
