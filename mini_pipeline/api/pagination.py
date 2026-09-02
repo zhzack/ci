@@ -10,7 +10,7 @@ collections behave identically and stay cheap even as history grows.
 
 from __future__ import annotations
 
-from typing import Annotated, Generic, TypeVar
+from typing import Generic, TypeVar
 
 from fastapi import Query
 from pydantic import BaseModel
@@ -34,10 +34,13 @@ class PageParams:
 
     def __init__(
         self,
-        page: Annotated[int, Query(ge=1, description="1-based page number")] = 1,
-        page_size: Annotated[
-            int, Query(ge=1, le=MAX_PAGE_SIZE, description=f"Items per page (max {MAX_PAGE_SIZE})")
-        ] = DEFAULT_PAGE_SIZE,
+        page: int = Query(1, ge=1, description="1-based page number"),
+        page_size: int = Query(
+            DEFAULT_PAGE_SIZE,
+            ge=1,
+            le=MAX_PAGE_SIZE,
+            description=f"Items per page (max {MAX_PAGE_SIZE})",
+        ),
     ) -> None:
         self.page = page
         self.page_size = page_size

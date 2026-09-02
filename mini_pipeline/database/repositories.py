@@ -280,6 +280,7 @@ class RunRepository:
         pipeline_name: str,
         params: dict[str, Any],
         tasks: Sequence[tuple[str, str, str]],
+        uploads: dict[str, Any] | None = None,
         parent_run_id: str | None = None,
         branched_from_step: str | None = None,
         machine_id: str | None = None,
@@ -293,11 +294,13 @@ class RunRepository:
                     pipeline_id=pipeline_id,
                     pipeline_name=pipeline_name,
                     params=params,
+                    uploads=uploads or {},
                     parent_run_id=parent_run_id,
                     branched_from_step=branched_from_step,
                     machine_id=machine_id,
                     owner_id=owner_id,
                 )
+
                 session.add(run)
                 session.flush()
                 for position, (step_name, plugin_name, plugin_version) in enumerate(tasks):
@@ -382,6 +385,14 @@ class RunRepository:
                 run.started_at = started_at
             if finished_at is not None:
                 run.finished_at = finished_at
+
+    def update_uploads(self, run_id: str, uploads: dict[str, Any]) -> None:
+        with self.database.session() as session:
+            run = session.get(PipelineRun, run_id)
+            if run is None:
+                raise NotFoundError(f"Pipeline run {run_id!r} was not found")
+            run.uploads = uploads
+
 
     def set_task_state(
         self,

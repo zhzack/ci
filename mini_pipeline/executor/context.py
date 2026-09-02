@@ -108,22 +108,47 @@ def resolve_inputs(
                 # file / directory → no type-level resolution, just note
                 resolved[resource.name] = str(target)
         elif source == ResourceSource.UPLOAD:
-            # Try exact match first, then fall back to any available upload.
-            src = uploads.get(resource.name)
+            # Try exact match, prefix/suffix match, or target filename match
+            src = (
+                uploads.get(resource.name)
+                or uploads.get(f"file_{resource.name}")
+                or uploads.get(f"{resource.name}_file")
+            )
+            if src is None and rel_target:
+                target_filename = Path(rel_target).name
+                src = uploads.get(target_filename)
             if src is None or not src.exists():
-                # Fall back: the uploader may have sent the file with a
-                # different field name or filename. Take the first upload
-                # that exists or the one matching the target name.
+                # Fuzzy match: key contains resource.name or vice versa
+                for _name, _path in uploads.items():
+                    if _path.exists() and (
+                        _name.lower() == resource.name.lower()
+                        or _name.lower() in resource.name.lower()
+                        or resource.name.lower() in _name.lower()
+                    ):
+                        src = _path
+                        break
+            if src is None or not src.exists():
+                # Fall back: take first available upload
                 for _name, _path in uploads.items():
                     if _path.exists():
                         src = _path
                         break
             if src is not None and src.exists():
-                if src.is_dir():
-                    shutil.copytree(src, target, dirs_exist_ok=True)
+                if target.is_dir() or str(rel_target).endswith("/"):
+                    target.mkdir(parents=True, exist_ok=True)
+                    dest = target / src.name
+                    if src.is_dir():
+                        shutil.copytree(src, dest, dirs_exist_ok=True)
+                    else:
+                        shutil.copy2(src, dest)
                 else:
-                    shutil.copy2(src, target)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    if src.is_dir():
+                        shutil.copytree(src, target, dirs_exist_ok=True)
+                    else:
+                        shutil.copy2(src, target)
             resolved[resource.name] = str(target)
+
         elif source == ResourceSource.URL:
             # URL resources are downloaded by the caller before create_workspace.
             # Here we only record the target for the plugin to consume.

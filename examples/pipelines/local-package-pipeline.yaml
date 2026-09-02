@@ -1,0 +1,15 @@
+name: local-package-pipeline
+description: 打包交付对外整包流水线
+params:
+  full_package_name: "Lcsuvcar_L3_IPD_SoC-SW100-RP12-hotfix1_Orin-X_20260421"
+steps:
+  - name: build-package
+    plugin: local-package-tool@1.0.0
+    with:
+      full_package_name: "${{ params.full_package_name }}"
+      im_package:
+        source: upload
+      m_package:
+        source: upload
+      modules_package:
+        source: upload

@@ -1,5 +1,7 @@
 """Plugin registration and catalog operations."""
 
+from __future__ import annotations
+
 import os
 import shutil
 import tempfile

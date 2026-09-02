@@ -1,0 +1,51 @@
+name: local-package-tool
+version: 1.0.0
+description: "合并 SOC 自研 IM 包、M 包及可选第三方模块包为对外整包，并生成 MD5 校验文件、部署说明 Readme 及绑核元数据可视化报表"
+runtime:
+  type: shell
+  entry: run.sh
+contract:
+  inputs:
+    - name: full_package_name
+      type: string
+      source: parameter
+      required: true
+      description: "对外整包名称（不含 .tar.gz 后缀，例如：Lcsuvcar_L3_IPD_SoC-SW100-RP12-hotfix1_Orin-X_20260421）"
+      target: full_package_name.txt
+    - name: im_package
+      type: file
+      source: upload
+      required: true
+      description: "SOC 自研 IM 包（.tar.gz 格式，必填）"
+      target: im/im_package.tar.gz
+    - name: m_package
+      type: file
+      source: upload
+      required: true
+      description: "M 侧产物包（.tar.gz 格式，必填，有且仅有 1 个）"
+      target: m/m_package.tar.gz
+    - name: modules_package
+      type: file
+      source: upload
+      required: false
+      description: "可选的第三方模块压缩包（支持 .tar.gz 或 .zip 格式，选填）"
+      target: modules/modules_package.tar.gz
+  outputs:
+    - name: packages
+      type: directory
+      path: output
+    - name: full_package
+      type: file
+      path: output/**/*.tar.gz
+    - name: checksum
+      type: file
+      path: output/**/*.checksum.txt
+    - name: readme
+      type: file
+      path: output/**/*.readme.txt
+    - name: affinity_json
+      type: file
+      path: output/**/module_affinity.json
+    - name: affinity_html
+      type: file
+      path: output/**/module_affinity.html

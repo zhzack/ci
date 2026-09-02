@@ -229,11 +229,48 @@ class PipelineEngine:
             task_machines=task_machines,
             owner_id=owner_id,
         )
+
+        persisted_uploads: dict[str, Path] = {}
+        uploads_meta: dict[str, Any] = {}
+        if uploads:
+            for k, p in uploads.items():
+                if isinstance(p, (str, Path)):
+                    p_path = Path(p)
+                    if p_path.exists():
+                        if self.storage and getattr(self.storage, "artifacts", None):
+                            run_upload_dir = Path(self.storage.artifacts) / run.id / "uploads"
+                            run_upload_dir.mkdir(parents=True, exist_ok=True)
+                            dest_file = run_upload_dir / p_path.name
+                            if not dest_file.exists() or dest_file.resolve() != p_path.resolve():
+                                shutil.copy2(p_path, dest_file)
+                            persisted_uploads[k] = dest_file
+                            uploads_meta[k] = {
+                                "filename": p_path.name,
+                                "size": dest_file.stat().st_size,
+                                "path": str(dest_file),
+                            }
+                        else:
+                            persisted_uploads[k] = p_path
+                            uploads_meta[k] = {
+                                "filename": p_path.name,
+                                "size": p_path.stat().st_size,
+                                "path": str(p_path),
+                            }
+            if uploads_meta:
+                self.runs.update_uploads(run.id, uploads_meta)
+                run.uploads = uploads_meta
+
+
         self.dispatcher.submit_run(
-            lambda run_id, defn, prms: self._coordinate(run_id, defn, prms, uploads=uploads),
-            run.id, definition, merged_params,
+            lambda run_id, defn, prms: self._coordinate(
+                run_id, defn, prms, uploads=persisted_uploads or uploads
+            ),
+            run.id,
+            definition,
+            merged_params,
         )
         return run
+
 
     # ------------------------------------------------------------------
     # Pre-flight validation
@@ -689,13 +726,20 @@ class PipelineEngine:
         definition: PipelineDefinition,
         from_step: str,
         params: dict[str, Any],
+        uploads: dict[str, Path] | None = None,
     ) -> None:
         """Schedule execution of just the from_step subgraph for a branch run.
 
         Upstream tasks must already be marked SUCCESS (or SKIPPED) by the
         caller; this method only progresses tasks that are still PENDING.
         """
-        self.dispatcher.submit_run(self._coordinate, run_id, definition, params)
+        self.dispatcher.submit_run(
+            lambda r_id, defn, prms: self._coordinate(r_id, defn, prms, uploads=uploads),
+            run_id,
+            definition,
+            params,
+        )
+
 
     def _execute_ssh_task(self, *, run_id: str, task, plugin, params, dependencies,
                           uploads, run_params, cancel_event=None):

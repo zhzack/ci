@@ -10,8 +10,10 @@ import {
   Input,
   InputNumber,
   Modal,
+  Progress,
   Row,
   Select,
+
   Space,
   Switch,
   Table,
@@ -31,7 +33,8 @@ import { ErrorAlert } from '@/components/ErrorAlert';
 import { useApiQuery, describeError } from '@/hooks/useApiQuery';
 import { useApiMutation } from '@/hooks/useApiMutation';
 import { getPipelineParamsSchema, getPipelineYaml, listPipelines } from '@/api/pipeline';
-import { submitRun } from '@/api/run';
+import { submitRun, submitRunWithFiles } from '@/api/run';
+
 import { listMachines, listGrants, createGrant, deleteGrant, listTeams, type Machine, type Grant, type Team } from '@/api/machine';
 import { adminListUsers, type AdminUser } from '@/api/admin';
 import type {
@@ -70,6 +73,8 @@ export default function PipelineDetailPage(): React.JSX.Element {
   const [targetMachine, setTargetMachine] = useState<string | undefined>(undefined);
   const machinesQuery = useApiQuery(['machines'], listMachines, { enabled: Boolean(identifier) });
   const [runModalOpen, setRunModalOpen] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState({ percent: 0, loaded: 0, total: 0, speedMBs: 0 });
   const [shareDrawerOpen, setShareDrawerOpen] = useState(false);
   const [paramsForm] = Form.useForm<{ params: string }>();
   const [runMode, setRunMode] = useState<'form' | 'json'>('form');
@@ -157,18 +162,73 @@ export default function PipelineDetailPage(): React.JSX.Element {
         return;
       }
     }
+
+    const uploadFiles: Record<string, File> = {};
+    const cleanParams: Record<string, unknown> = {};
+
+    for (const [k, v] of Object.entries(params)) {
+      if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
+        const stepMap: Record<string, unknown> = {};
+        for (const [sk, sv] of Object.entries(v as Record<string, unknown>)) {
+          if (sk.endsWith('_file') && sv instanceof File) {
+            const fieldKey = sk.slice(0, -5);
+            uploadFiles[fieldKey] = sv;
+          } else if (sv instanceof File) {
+            uploadFiles[sk] = sv;
+            stepMap[sk] = sv.name;
+          } else {
+            stepMap[sk] = sv;
+          }
+        }
+        cleanParams[k] = stepMap;
+      } else if (k.endsWith('_file') && v instanceof File) {
+        const fieldKey = k.slice(0, -5);
+        uploadFiles[fieldKey] = v;
+      } else if (v instanceof File) {
+        uploadFiles[k] = v;
+        cleanParams[k] = v.name;
+      } else {
+        cleanParams[k] = v;
+      }
+    }
+
+    const hasFiles = Object.keys(uploadFiles).length > 0;
     try {
-      const run = await submitRunMutation.mutateAsync({
-        pipeline: identifier ?? '',
-        params,
-        machine: targetMachine || undefined,
-      });
+      let run: PipelineRun;
+      if (hasFiles) {
+        setUploading(true);
+        const startTime = Date.now();
+        setUploadProgress({ percent: 0, loaded: 0, total: 0, speedMBs: 0 });
+        run = await submitRunWithFiles(
+          identifier ?? '',
+          cleanParams,
+          uploadFiles,
+          targetMachine || undefined,
+          undefined,
+          true,
+          (percent, loaded, total) => {
+            const elapsed = Math.max((Date.now() - startTime) / 1000, 0.1);
+            const speed = loaded / (1024 * 1024) / elapsed;
+            setUploadProgress({ percent, loaded, total, speedMBs: speed });
+          },
+        );
+      } else {
+        run = await submitRunMutation.mutateAsync({
+          pipeline: identifier ?? '',
+          params: cleanParams,
+          machine: targetMachine || undefined,
+        });
+      }
       setRunModalOpen(false);
-      navigate(`/task/${(run as PipelineRun).id}`);
+      navigate(`/task/${run.id}`);
     } catch (err) {
       antdMessage.error(describeError(err));
+    } finally {
+      setUploading(false);
     }
   };
+
+
 
   const columns: TableColumnsType<StepRow> = [
     { title: 'Step', dataIndex: 'name' },
@@ -280,66 +340,101 @@ export default function PipelineDetailPage(): React.JSX.Element {
       <Modal
         title={`Run ${record?.name ?? 'pipeline'}`}
         open={runModalOpen}
-        confirmLoading={submitRunMutation.isPending}
-        onCancel={() => setRunModalOpen(false)}
+        confirmLoading={submitRunMutation.isPending || uploading}
+        onCancel={() => !uploading && setRunModalOpen(false)}
         onOk={handleRun}
-        okText="Run"
+        okText={uploading ? 'Uploading...' : 'Run'}
+        okButtonProps={{ disabled: uploading, loading: uploading }}
+        cancelButtonProps={{ disabled: uploading }}
         width={640}
       >
-        <Form layout="vertical" style={{ marginBottom: 12 }}>
-          <Form.Item label="Run on" style={{ marginBottom: 0 }}>
-            <Select
-              allowClear
-              placeholder="Built-in runner (this host)"
-              style={{ width: '100%' }}
-              value={targetMachine ?? null}
-              onChange={(value: string | undefined) => setTargetMachine(value ?? undefined)}
-              options={(machinesQuery.data ?? [])
-                .filter((m: Machine) => m.can_use && m.online)
-                .map((m: Machine) => ({
-                  value: m.id,
-                  label: `${m.name} (${m.kind === 'admin' ? 'assigned' : 'personal'})`,
-                }))}
+        {uploading ? (
+          <div style={{ padding: '28px 16px', textAlign: 'center' }}>
+            <Typography.Title level={5} style={{ marginBottom: 16 }}>
+              {uploadProgress.percent >= 100
+                ? 'Files uploaded. Initializing pipeline...'
+                : 'Uploading assets to pipeline runner...'}
+            </Typography.Title>
+            <Progress
+              percent={uploadProgress.percent}
+              status={uploadProgress.percent >= 100 ? 'success' : 'active'}
+              strokeColor={{ '0%': '#1890ff', '100%': '#52c41a' }}
             />
-          </Form.Item>
-        </Form>
-        <Tabs
-          activeKey={runMode}
-          onChange={(key) => setRunMode(key as 'form' | 'json')}
-          items={[
-            {
-              key: 'form',
-              label: 'Form',
-              children: (
-                <RunForm
-                  schema={schema}
-                  definition={definition}
-                  value={formParams}
-                  onChange={setFormParams}
+            <div style={{ marginTop: 12, color: '#8c8c8c', fontSize: 13 }}>
+              {uploadProgress.total > 0 ? (
+                <>
+                  <span>
+                    {(uploadProgress.loaded / (1024 * 1024)).toFixed(1)} MB /{' '}
+                    {(uploadProgress.total / (1024 * 1024)).toFixed(1)} MB
+                  </span>
+                  <span style={{ marginLeft: 16 }}>
+                    Speed: {uploadProgress.speedMBs.toFixed(2)} MB/s
+                  </span>
+                </>
+              ) : (
+                'Preparing upload...'
+              )}
+            </div>
+          </div>
+        ) : (
+          <>
+            <Form layout="vertical" style={{ marginBottom: 12 }}>
+              <Form.Item label="Run on" style={{ marginBottom: 0 }}>
+                <Select
+                  allowClear
+                  placeholder="Built-in runner (this host)"
+                  style={{ width: '100%' }}
+                  value={targetMachine ?? null}
+                  onChange={(value: string | undefined) => setTargetMachine(value ?? undefined)}
+                  options={(machinesQuery.data ?? [])
+                    .filter((m: Machine) => m.can_use && m.online)
+                    .map((m: Machine) => ({
+                      value: m.id,
+                      label: `${m.name} (${m.kind === 'admin' ? 'assigned' : 'personal'})`,
+                    }))}
                 />
-              ),
-            },
-            {
-              key: 'json',
-              label: 'JSON',
-              children: (
-                <Form layout="vertical" form={paramsForm}>
-                  <Form.Item
-                    name="params"
-                    label="Parameters (JSON)"
-                    initialValue={paramsText}
-                  >
-                    <Input.TextArea
-                      rows={10}
-                      style={{ fontFamily: 'JetBrains Mono, Menlo, Consolas, monospace' }}
+              </Form.Item>
+            </Form>
+            <Tabs
+              activeKey={runMode}
+              onChange={(key) => setRunMode(key as 'form' | 'json')}
+              items={[
+                {
+                  key: 'form',
+                  label: 'Form',
+                  children: (
+                    <RunForm
+                      schema={schema}
+                      definition={definition}
+                      value={formParams}
+                      onChange={setFormParams}
                     />
-                  </Form.Item>
-                </Form>
-              ),
-            },
-          ]}
-        />
+                  ),
+                },
+                {
+                  key: 'json',
+                  label: 'JSON',
+                  children: (
+                    <Form layout="vertical" form={paramsForm}>
+                      <Form.Item
+                        name="params"
+                        label="Parameters (JSON)"
+                        initialValue={paramsText}
+                      >
+                        <Input.TextArea
+                          rows={10}
+                          style={{ fontFamily: 'JetBrains Mono, Menlo, Consolas, monospace' }}
+                        />
+                      </Form.Item>
+                    </Form>
+                  ),
+                },
+              ]}
+            />
+          </>
+        )}
       </Modal>
+
       {record?.id ? (
         <PipelineShareDrawer
           pipelineId={record.id}
@@ -415,7 +510,8 @@ function StepRunForm({ step, rawWith, value, onChange }: StepRunFormProps): Reac
   return (
     <Card type="inner" size="small" title={<Space><Tag color="blue">{step.name}</Tag><Typography.Text type="secondary">{step.plugin}</Typography.Text></Space>} style={{marginBottom:12}}>
       {wiredFields.length>0?<div style={{marginBottom:inputFields.length>0?12:0}}><Typography.Text type="secondary" style={{fontSize:12}}>Auto-wired:</Typography.Text>{wiredFields.map((f)=>{const raw=(rawWith[f.key]??'')as string;const m1=_STEP_OUT_RE.exec(raw);const m2=_ALL_DEPS_RE.exec(raw);const lbl=m1?`${m1[1]}.outputs.${m1[2]}`:m2?`all.deps.outputs.${m2[1]}`:String(raw);return<div key={f.key} style={{background:'#f0f5ff',border:'1px solid #d6e4ff',borderRadius:6,padding:'4px 8px',marginTop:4,fontFamily:'JetBrains Mono,monospace',fontSize:12}}><Tag color="green">{f.type}</Tag><span style={{marginRight:8}}>{f.key}</span>← <code>{lbl}</code></div>})}</div>:null}
-      {inputFields.length>0?<div>{wiredFields.length>0?<Typography.Text type="secondary" style={{fontSize:12,display:'block',marginBottom:8}}>Needs your input:</Typography.Text>:null}{inputFields.map((f)=>{const k=inferKind(f);const src=f.source||'';return<Form.Item key={f.key} label={<Space size={4}><span>{f.key}</span>{f.required?<Tag color="red">required</Tag>:null}<Tag>{k}</Tag>{src?<Tag color="orange">{src}</Tag>:null}</Space>} tooltip={f.description||undefined} required={f.required} style={{marginBottom:8}}>{src==='upload'?<Upload.Dragger multiple={false} beforeUpload={(file)=>{const reader=new FileReader();reader.onload=()=>{setVal(f.key,reader.result as string);setVal(f.key+'_file',file)};reader.readAsDataURL(file);return false}} showUploadList={true}><p className="ant-upload-drag-icon"><InboxOutlined/></p><p className="ant-upload-text">{f.description||'Upload file for '+f.key}</p></Upload.Dragger>:src==='url'?<Input value={(stepValue[f.key]as string|undefined)??(f.default as string|undefined)??''} placeholder={f.description||'https://...'} onChange={(e)=>setVal(f.key,e.target.value)}/>:k==='boolean'?<Switch checked={Boolean(stepValue[f.key]??f.default??false)} onChange={(v)=>setVal(f.key,v)}/>:k==='integer'||k==='number'?<InputNumber style={{width:'100%'}} value={(stepValue[f.key]as number|undefined)??(f.default as number|undefined)} onChange={(v)=>setVal(f.key,v)}/>:k==='list'?<Input.TextArea rows={2} placeholder='["a","b"]' defaultValue={JSON.stringify(stepValue[f.key]??f.default??[])} onChange={(e)=>{try{setVal(f.key,JSON.parse(e.target.value)as unknown)}catch{/* user is mid-edit; keep last valid */}}}/>:<Input value={(stepValue[f.key]as string|undefined)??(f.default as string|undefined)??''} placeholder={f.default!==undefined?String(f.default):''} onChange={(e)=>setVal(f.key,e.target.value)}/>}</Form.Item>})}</div>:<Typography.Text type="success">Everything is auto-wired — just click Run!</Typography.Text>}
+      {inputFields.length>0?<div>{wiredFields.length>0?<Typography.Text type="secondary" style={{fontSize:12,display:'block',marginBottom:8}}>Needs your input:</Typography.Text>:null}{inputFields.map((f)=>{const k=inferKind(f);const src=f.source||'';const uploadedFile=stepValue[f.key+'_file']as File|undefined;const uploadedFileName=(stepValue[f.key]as string|undefined);return<Form.Item key={f.key} label={<Space size={4}><span>{f.key}</span>{f.required?<Tag color="red">required</Tag>:null}<Tag>{k}</Tag>{src?<Tag color="orange">{src}</Tag>:null}</Space>} tooltip={f.description||undefined} required={f.required} style={{marginBottom:8}}>{src==='upload'?<Upload.Dragger multiple={false} maxCount={1} fileList={uploadedFile||uploadedFileName?[{uid:'-1',name:uploadedFile?.name||uploadedFileName||f.key,status:'done'}]:[]} beforeUpload={(file)=>{setVal(f.key,file.name);setVal(f.key+'_file',file);return false}} onRemove={()=>{setVal(f.key,undefined);setVal(f.key+'_file',undefined)}}><p className="ant-upload-drag-icon"><InboxOutlined/></p><p className="ant-upload-text">{uploadedFile?.name||uploadedFileName||(f.description||'Click or drag file to upload for '+f.key)}</p></Upload.Dragger>:src==='url'?<Input value={(stepValue[f.key]as string|undefined)??(f.default as string|undefined)??''} placeholder={f.description||'https://...'} onChange={(e)=>setVal(f.key,e.target.value)}/>:k==='boolean'?<Switch checked={Boolean(stepValue[f.key]??f.default??false)} onChange={(v)=>setVal(f.key,v)}/>:k==='integer'||k==='number'?<InputNumber style={{width:'100%'}} value={(stepValue[f.key]as number|undefined)??(f.default as number|undefined)} onChange={(v)=>setVal(f.key,v)}/>:k==='list'?<Input.TextArea rows={2} placeholder='["a","b"]' defaultValue={JSON.stringify(stepValue[f.key]??f.default??[])} onChange={(e)=>{try{setVal(f.key,JSON.parse(e.target.value)as unknown)}catch{/* user is mid-edit; keep last valid */}}}/>:<Input value={(stepValue[f.key]as string|undefined)??(f.default as string|undefined)??''} placeholder={f.default!==undefined?String(f.default):''} onChange={(e)=>setVal(f.key,e.target.value)}/>}</Form.Item>})}</div>:<Typography.Text type="success">Everything is auto-wired — just click Run!</Typography.Text>}
+
     </Card>
   );
 }

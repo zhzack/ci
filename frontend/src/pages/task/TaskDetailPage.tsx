@@ -1,5 +1,4 @@
-import React from "react";
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Button,
   Card,
@@ -8,6 +7,8 @@ import {
   Drawer,
   Form,
   Input,
+  Modal,
+  Radio,
   Row,
   Select,
   Space,
@@ -17,6 +18,9 @@ import {
   Typography,
   message as antdMessage,
 } from 'antd';
+
+
+
 import type { TableColumnsType } from 'antd';
 import {
   BranchesOutlined,
@@ -77,6 +81,8 @@ export default function TaskDetailPage(): React.JSX.Element {
 
   const [branchDrawer, setBranchDrawer] = useState(false);
   const [branchParams, setBranchParams] = useState('{}');
+  const [rerunModalOpen, setRerunModalOpen] = useState(false);
+  const [rerunMode, setRerunMode] = useState<'fast' | 'custom'>('fast');
 
   const steps = useMemo(() => data?.tasks ?? [], [data?.tasks]);
   const runActive = Boolean(data?.status && ACTIVE.has(data.status));
@@ -84,7 +90,7 @@ export default function TaskDetailPage(): React.JSX.Element {
   const branchMutation = useApiMutation(
     {
       mutationFn: ({ fromStep, params }: { fromStep: string; params: Record<string, unknown> }) =>
-        branchRunApi(runId ?? '', fromStep, params),
+        branchRunApi(runId ?? '', fromStep, params, true),
     },
     [['runs'], ['recent-runs'], ['dashboard', 'summary']],
   );
@@ -96,8 +102,12 @@ export default function TaskDetailPage(): React.JSX.Element {
 
   const submitRunMutation = useApiMutation(
     {
-      mutationFn: (payload: { pipeline: string; params: Record<string, unknown> }) =>
-        submitRun(payload),
+      mutationFn: (payload: {
+        pipeline: string;
+        params: Record<string, unknown>;
+        parent_run_id?: string;
+        reuse_uploads?: boolean;
+      }) => submitRun(payload),
     },
     [['runs'], ['recent-runs'], ['dashboard', 'summary']],
   );
@@ -117,6 +127,29 @@ export default function TaskDetailPage(): React.JSX.Element {
     } catch (err) {
       console.error(describeError(err));
     }
+  };
+
+  const handleFastRerun = async () => {
+    if (!data) return;
+    try {
+      const run = await submitRunMutation.mutateAsync({
+        pipeline: data.pipeline_id,
+        params: data.params as Record<string, unknown>,
+        parent_run_id: data.id,
+        reuse_uploads: true,
+      });
+      setRerunModalOpen(false);
+      antdMessage.success('Fast Re-run submitted (reusing uploaded assets & params)');
+      navigate(`/task/${(run as PipelineRun).id}`);
+    } catch (err) {
+      antdMessage.error(describeError(err));
+    }
+  };
+
+  const handleCustomRerun = () => {
+    if (!data) return;
+    setRerunModalOpen(false);
+    navigate(`/pipeline/${encodeURIComponent(data.pipeline_id)}`);
   };
 
   const handleBranch = async () => {
@@ -141,6 +174,7 @@ export default function TaskDetailPage(): React.JSX.Element {
       antdMessage.error(describeError(err));
     }
   };
+
 
   useEffect(() => {
     if (selectedStep === null && steps.length > 0) {
@@ -223,18 +257,7 @@ export default function TaskDetailPage(): React.JSX.Element {
                 <Button
                   type="primary"
                   icon={<ReloadOutlined />}
-                  onClick={() => {
-                    if (!data) return;
-                    submitRunMutation.mutateAsync({
-                      pipeline: data.pipeline_id,
-                      params: data.params as Record<string, unknown>,
-                    }).then((run) => {
-                      antdMessage.success('Re-run submitted');
-                      navigate(`/task/${(run as PipelineRun).id}`);
-                    }).catch((err) => {
-                      antdMessage.error(describeError(err));
-                    });
-                  }}
+                  onClick={() => setRerunModalOpen(true)}
                   loading={submitRunMutation.isPending}
                 >
                   Re-run
@@ -247,6 +270,7 @@ export default function TaskDetailPage(): React.JSX.Element {
                 </Button>
               </>
             ) : null}
+
             <Button icon={<ReloadOutlined />} onClick={() => refetch()}>
               Refresh
             </Button>
@@ -336,7 +360,23 @@ export default function TaskDetailPage(): React.JSX.Element {
                 <Descriptions.Item label="Params">
                   <JsonViewer value={data.params} />
                 </Descriptions.Item>
+                {data.uploads && Object.keys(data.uploads).length > 0 ? (
+                  <Descriptions.Item label="Uploaded Assets">
+                    <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                      {Object.entries(data.uploads).map(([key, asset]) => (
+                        <div key={key} style={{ fontSize: 12 }}>
+                          <Tag color="cyan">{key}</Tag>
+                          <span>{asset.filename}</span>{' '}
+                          <Typography.Text type="secondary">
+                            ({(asset.size / (1024 * 1024)).toFixed(1)} MB)
+                          </Typography.Text>
+                        </div>
+                      ))}
+                    </Space>
+                  </Descriptions.Item>
+                ) : null}
               </Descriptions>
+
             </Card>
           </Col>
           {/* ── All Outputs · every step ── */}
@@ -466,6 +506,79 @@ export default function TaskDetailPage(): React.JSX.Element {
           </Button>
         </Form>
       </Drawer>
+
+      <Modal
+        title="Re-run Pipeline"
+        open={rerunModalOpen}
+        onCancel={() => setRerunModalOpen(false)}
+        footer={[
+          <Button key="cancel" onClick={() => setRerunModalOpen(false)}>
+            Cancel
+          </Button>,
+          <Button
+            key="submit"
+            type="primary"
+            loading={submitRunMutation.isPending}
+            onClick={rerunMode === 'fast' ? handleFastRerun : handleCustomRerun}
+          >
+            {rerunMode === 'fast' ? '⚡ Execute Fast Re-run' : '✏️ Proceed to Launcher'}
+          </Button>,
+        ]}
+        width={560}
+      >
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
+          Choose how you would like to re-run pipeline <strong>{data?.pipeline_name}</strong>:
+        </Typography.Paragraph>
+
+        <Radio.Group
+          value={rerunMode}
+          onChange={(e) => setRerunMode(e.target.value as 'fast' | 'custom')}
+          style={{ width: '100%' }}
+        >
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Card
+              size="small"
+              style={{
+                cursor: 'pointer',
+                borderColor: rerunMode === 'fast' ? '#1890ff' : undefined,
+                background: rerunMode === 'fast' ? '#f0f5ff' : undefined,
+              }}
+              onClick={() => setRerunMode('fast')}
+            >
+              <Radio value="fast" style={{ width: '100%' }}>
+                <Typography.Text strong>⚡ Fast Re-run (快速重跑)</Typography.Text>
+                <div style={{ marginLeft: 24, fontSize: 13, color: '#595959', marginTop: 4 }}>
+                  Immediately triggers execution, reusing all previous parameters and uploaded packages.
+                  {data?.uploads && Object.keys(data.uploads).length > 0 ? (
+                    <div style={{ marginTop: 6, color: '#096dd9' }}>
+                      Reusing {Object.keys(data.uploads).length} uploaded package(s) from this run.
+                    </div>
+                  ) : null}
+                </div>
+              </Radio>
+            </Card>
+
+            <Card
+              size="small"
+              style={{
+                cursor: 'pointer',
+                borderColor: rerunMode === 'custom' ? '#1890ff' : undefined,
+                background: rerunMode === 'custom' ? '#f0f5ff' : undefined,
+                marginTop: 8,
+              }}
+              onClick={() => setRerunMode('custom')}
+            >
+              <Radio value="custom" style={{ width: '100%' }}>
+                <Typography.Text strong>✏️ Custom Re-run (自定义重跑 / 修改参数与文件)</Typography.Text>
+                <div style={{ marginLeft: 24, fontSize: 13, color: '#595959', marginTop: 4 }}>
+                  Opens pipeline trigger form to adjust parameters or upload replacement packages.
+                </div>
+              </Radio>
+            </Card>
+          </Space>
+        </Radio.Group>
+      </Modal>
     </>
   );
 }
+

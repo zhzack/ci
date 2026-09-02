@@ -21,12 +21,20 @@ export type TaskRun = {
   artifacts: ArtifactResponse[];
 };
 
+export type UploadedAsset = {
+  filename: string;
+  size: number;
+  sha256?: string;
+  path?: string;
+};
+
 export type PipelineRun = {
   id: string;
   pipeline_id: string;
   pipeline_name: string;
   status: StatusValue;
   params: Record<string, unknown>;
+  uploads?: Record<string, UploadedAsset>;
   message: string | null;
   started_at: string | null;
   finished_at: string | null;
@@ -45,7 +53,10 @@ export type RunRequest = {
   params: Record<string, unknown>;
   /** Execution target: machine id (built-in runner if omitted). */
   machine?: string;
+  parent_run_id?: string;
+  reuse_uploads?: boolean;
 };
+
 
 export type RunListParams = {
   page?: number;

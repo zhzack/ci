@@ -47,14 +47,19 @@ def test_machine_terminal_ws_ssh_mock(tmp_path, monkeypatch):
 
         # Mock diagnostics._connect_ssh
         mock_channel = MagicMock()
-        mock_channel.recv.side_effect = [
-            b"mock shell prompt> ",
-            TimeoutError(),
-            TimeoutError(),
-            TimeoutError(),
-            TimeoutError(),
-        ]
+        mock_channel.closed = False
+        recv_ready_calls = [True]
+
+        def _mock_recv_ready():
+            if recv_ready_calls:
+                return recv_ready_calls.pop(0)
+            return False
+
+        mock_channel.recv_ready.side_effect = _mock_recv_ready
+        mock_channel.recv_stderr_ready.return_value = False
+        mock_channel.recv.return_value = b"mock shell prompt> "
         mock_client = MagicMock()
+        mock_client.get_transport.return_value.is_active.return_value = True
         mock_client.invoke_shell.return_value = mock_channel
 
         services = app.state.services

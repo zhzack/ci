@@ -16,6 +16,46 @@ export async function submitRun(payload: RunRequest): Promise<PipelineRun> {
   return data;
 }
 
+export type UploadProgressCallback = (percent: number, loaded: number, total: number) => void;
+
+export async function submitRunWithFiles(
+  pipeline: string,
+  params: Record<string, unknown>,
+  files: Record<string, File>,
+  machine?: string,
+  parentRunId?: string,
+  reuseUploads: boolean = true,
+  onProgress?: UploadProgressCallback,
+): Promise<PipelineRun> {
+  const formData = new FormData();
+  formData.append('pipeline', pipeline);
+  formData.append('params_json', JSON.stringify(params));
+  if (machine) {
+    formData.append('machine', machine);
+  }
+  if (parentRunId) {
+    formData.append('parent_run_id', parentRunId);
+  }
+  formData.append('reuse_uploads', String(reuseUploads));
+  for (const [key, file] of Object.entries(files)) {
+    if (file instanceof File) {
+      formData.append(key, file);
+    }
+  }
+  const { data } = await http.post<PipelineRun>('/runs/upload', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    onUploadProgress: (progressEvent) => {
+      if (progressEvent.total && onProgress) {
+        const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+        onProgress(percent, progressEvent.loaded, progressEvent.total);
+      }
+    },
+  });
+  return data;
+}
+
+
+
 export async function getRun(runId: string): Promise<PipelineRun> {
   const { data } = await http.get<PipelineRun>(`/runs/${encodeURIComponent(runId)}`);
   return data;
@@ -123,13 +163,15 @@ export async function branchRun(
   parentRunId: string,
   fromStep: string,
   params: Record<string, unknown>,
+  reuseUploads: boolean = true,
 ): Promise<PipelineRun> {
   const { data } = await http.post<PipelineRun>(
     `/runs/${encodeURIComponent(parentRunId)}/branches`,
-    { from_step: fromStep, params },
+    { from_step: fromStep, params, reuse_uploads: reuseUploads },
   );
   return data;
 }
+
 
 export function downloadArtifactUrl(runId: string, artifactId: string): string {
   return `/api/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}`;

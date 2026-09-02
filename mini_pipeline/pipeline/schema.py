@@ -1,5 +1,7 @@
 """Pipeline definition schema."""
 
+from __future__ import annotations
+
 import re
 from typing import Any
 
@@ -92,7 +94,7 @@ class PipelineDefinition(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def validate_steps(self) -> "PipelineDefinition":
+    def validate_steps(self) -> PipelineDefinition:
         names = [step.name for step in self.steps]
         if len(names) != len(set(names)):
             raise ValueError("step names must be unique")

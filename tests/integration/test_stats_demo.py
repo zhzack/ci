@@ -1,4 +1,7 @@
 """End-to-end test for the stats-demo pipeline: fan-out → fan-in → report."""
+
+from __future__ import annotations
+
 import io
 import time
 import zipfile

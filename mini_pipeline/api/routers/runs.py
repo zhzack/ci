@@ -32,11 +32,15 @@ class RunRequest(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     # Optional execution target: machine id or name (built-in runner if omitted).
     machine: str | None = None
+    parent_run_id: str | None = None
+    reuse_uploads: bool = True
 
 
 class BranchRequest(BaseModel):
     from_step: str
     params: dict[str, Any] = Field(default_factory=dict)
+    reuse_uploads: bool = True
+
 
 
 class ArtifactResponse(BaseModel):
@@ -111,6 +115,7 @@ class RunSummary(BaseModel):
 
 class RunResponse(RunSummary):
     params: dict[str, Any]
+    uploads: dict[str, Any] = Field(default_factory=dict)
     tasks: list[TaskResponse]
 
     @classmethod
@@ -119,6 +124,7 @@ class RunResponse(RunSummary):
         return cls(
             **base.model_dump(),
             params=entity.params or {},
+            uploads=entity.uploads or {},
             tasks=[TaskResponse.from_entity(item) for item in entity.tasks],
         )
 
@@ -130,7 +136,12 @@ def submit_run(
     services: Annotated[Services, Depends(get_services)],
 ) -> RunResponse:
     run = services.runs.submit(
-        payload.pipeline, payload.params, principal=principal, machine=payload.machine
+        payload.pipeline,
+        payload.params,
+        principal=principal,
+        machine=payload.machine,
+        parent_run_id=payload.parent_run_id,
+        reuse_uploads=payload.reuse_uploads,
     )
     services.audit.record(
         principal, "run.submit", resource_type="run", resource_id=run.id,
@@ -141,36 +152,57 @@ def submit_run(
 
 @router.post("/upload", response_model=RunResponse, status_code=status.HTTP_202_ACCEPTED)
 async def submit_run_with_files(
-    pipeline: Annotated[str, Form()],
-    params_json: Annotated[str, Form()] = "{}",
-    files: Annotated[list[UploadFile] | None, File()] = None,
-    machine: Annotated[str | None, Form()] = None,
+    request: Request,
     principal: PrincipalDep = None,
     services: Annotated[Services, Depends(get_services)] = None,
 ) -> RunResponse:
+    form = await request.form()
+    pipeline = str(form.get("pipeline", ""))
+    params_json = str(form.get("params_json", "{}"))
+    machine_val = form.get("machine")
+    machine = str(machine_val) if machine_val else None
+    parent_run_id_val = form.get("parent_run_id")
+    parent_run_id = str(parent_run_id_val) if parent_run_id_val else None
+    reuse_uploads_val = form.get("reuse_uploads")
+    reuse_uploads = str(reuse_uploads_val).lower() != "false" if reuse_uploads_val else True
+
     try:
         params: dict[str, Any] = json.loads(params_json)
     except json.JSONDecodeError:
         params = {}
+
     uploads: dict[str, Path] = {}
-    for f in files or []:
-        if not f.filename:
-            continue
-        # field name format: "file_<input_name>" → input_name
-        input_name = f.filename
-        tmp = Path(tempfile.mkdtemp(prefix="mp_upload_")) / input_name
-        tmp.parent.mkdir(parents=True, exist_ok=True)
-        with tmp.open("wb") as dest:
-            shutil.copyfileobj(f.file, dest)
-        uploads[input_name] = tmp
+    for key, value in form.multi_items():
+        if isinstance(value, UploadFile) and value.filename:
+            input_name = key
+            if input_name.startswith("file_"):
+                input_name = input_name[5:]
+            if input_name.endswith("_file"):
+                input_name = input_name[:-5]
+            tmp_dir = Path(tempfile.mkdtemp(prefix="mp_upload_"))
+            tmp_file = tmp_dir / value.filename
+            with tmp_file.open("wb") as dest:
+                shutil.copyfileobj(value.file, dest)
+            uploads[input_name] = tmp_file
+            uploads[value.filename] = tmp_file
+            uploads[key] = tmp_file
+
     run = services.runs.submit_with_uploads(
-        pipeline, params, uploads, principal=principal, machine=machine
+        pipeline,
+        params,
+        uploads,
+        principal=principal,
+        machine=machine,
+        parent_run_id=parent_run_id,
+        reuse_uploads=reuse_uploads,
     )
     services.audit.record(
         principal, "run.submit", resource_type="run", resource_id=run.id,
         detail={"pipeline": run.pipeline_name, "machine": machine},
     )
+
     return RunResponse.from_entity(run)
+
 
 
 @router.get("", response_model=Page[RunSummary])
@@ -279,8 +311,11 @@ def branch_run(
     payload: BranchRequest,
     services: Annotated[Services, Depends(get_services)],
 ) -> RunResponse:
-    new_run = services.runs.branch_from_step(run_id, payload.from_step, payload.params)
+    new_run = services.runs.branch_from_step(
+        run_id, payload.from_step, payload.params, reuse_uploads=payload.reuse_uploads
+    )
     return RunResponse.from_entity(new_run)
+
 
 
 @router.get("/{run_id}/aggregated-log", response_class=Response)

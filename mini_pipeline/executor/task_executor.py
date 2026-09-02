@@ -126,7 +126,15 @@ class TaskExecutor:
         runtime = self.runtimes.get(runtime_type)
         cmd = [str(entry)]
         with log_path.open("a", encoding="utf-8", buffering=1) as log_stream:
+            if uploads:
+                log_stream.write("[INPUT] Ingested uploaded assets:\n")
+                for uname, upath in uploads.items():
+                    if isinstance(upath, Path) and upath.exists():
+                        sz_mb = upath.stat().st_size / (1024 * 1024)
+                        log_stream.write(f"  - {uname}: {upath.name} ({sz_mb:.2f} MB)\n")
+                log_stream.write("\n")
             result = runtime.execute(
+
                 RuntimeRequest(
                     command=cmd,
                     cwd=workspace,

@@ -1,5 +1,7 @@
 """SQLAlchemy persistence models."""
 
+from __future__ import annotations
+
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -51,7 +53,7 @@ class Plugin(Base):
         DateTime, default=utcnow, onupdate=utcnow, nullable=False
     )
 
-    versions: Mapped[list["PluginVersion"]] = relationship(
+    versions: Mapped[list[PluginVersion]] = relationship(
         back_populates="plugin", cascade="all, delete-orphan"
     )
 
@@ -100,7 +102,7 @@ class PipelineDefinition(Base):
         DateTime, default=utcnow, onupdate=utcnow, nullable=False
     )
 
-    runs: Mapped[list["PipelineRun"]] = relationship(back_populates="pipeline")
+    runs: Mapped[list[PipelineRun]] = relationship(back_populates="pipeline")
 
 
 class Machine(Base):
@@ -157,6 +159,7 @@ class PipelineRun(Base):
         String(32), default=PipelineStatus.PENDING.value, nullable=False, index=True
     )
     params: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    uploads: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     # Run submitter; NULL = legacy/anonymous.
     owner_id: Mapped[Optional[str]] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
@@ -178,7 +181,7 @@ class PipelineRun(Base):
     branched_from_step: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
     pipeline: Mapped[Optional[PipelineDefinition]] = relationship(back_populates="runs")
-    tasks: Mapped[list["TaskRun"]] = relationship(
+    tasks: Mapped[list[TaskRun]] = relationship(
         back_populates="run", cascade="all, delete-orphan", order_by="TaskRun.position"
     )
 
@@ -214,7 +217,7 @@ class TaskRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
     run: Mapped[PipelineRun] = relationship(back_populates="tasks")
-    artifacts: Mapped[list["Artifact"]] = relationship(
+    artifacts: Mapped[list[Artifact]] = relationship(
         back_populates="task", cascade="all, delete-orphan"
     )
 
@@ -254,7 +257,7 @@ class User(Base):
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
-    sessions: Mapped[list["AuthSession"]] = relationship(
+    sessions: Mapped[list[AuthSession]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
 
@@ -285,7 +288,7 @@ class Team(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
-    members: Mapped[list["TeamMember"]] = relationship(
+    members: Mapped[list[TeamMember]] = relationship(
         back_populates="team", cascade="all, delete-orphan"
     )
 
@@ -416,7 +419,7 @@ class RuntimeEnvironment(Base):
         DateTime, default=utcnow, onupdate=utcnow, nullable=False
     )
 
-    deploy_tasks: Mapped[list["EnvironmentDeployTask"]] = relationship(
+    deploy_tasks: Mapped[list[EnvironmentDeployTask]] = relationship(
         back_populates="environment", cascade="all, delete-orphan"
     )
 

@@ -1,5 +1,7 @@
 """Run submission and status query application service."""
 
+from __future__ import annotations
+
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -157,15 +159,32 @@ class RunService:
         *,
         principal: Principal | None = None,
         machine: str | None = None,
+        parent_run_id: str | None = None,
+        reuse_uploads: bool = True,
     ) -> PipelineRun:
         entity, definition = self.pipelines.get_parsed(pipeline_identifier)
         self._ensure_can_run_pipeline(principal, entity)
         self._check_plugins_usable(principal, definition, entity)
         machine_id = self._resolve_machine_id(principal, machine)
+
+        inherited_uploads: dict[str, Path] = {}
+        if parent_run_id and reuse_uploads:
+            try:
+                parent = self.repository.get(parent_run_id)
+                for ukey, uinfo in (parent.uploads or {}).items():
+                    upath_str = uinfo.get("path") if isinstance(uinfo, dict) else str(uinfo)
+                    if upath_str:
+                        upath = Path(upath_str)
+                        if upath.exists():
+                            inherited_uploads[ukey] = upath
+            except Exception:
+                pass
+
         return self.engine.submit(
             pipeline_id=entity.id,
             definition=definition,
             params=params,
+            uploads=inherited_uploads or None,
             machine_id=machine_id,
             task_machines=self._task_machines(principal, definition, machine_id),
             owner_id=principal.user_id if principal else None,
@@ -179,20 +198,38 @@ class RunService:
         *,
         principal: Principal | None = None,
         machine: str | None = None,
+        parent_run_id: str | None = None,
+        reuse_uploads: bool = True,
     ) -> PipelineRun:
         entity, definition = self.pipelines.get_parsed(pipeline_identifier)
         self._ensure_can_run_pipeline(principal, entity)
         self._check_plugins_usable(principal, definition, entity)
         machine_id = self._resolve_machine_id(principal, machine)
+
+        final_uploads: dict[str, Path] = dict(uploads or {})
+        if parent_run_id and reuse_uploads:
+            try:
+                parent = self.repository.get(parent_run_id)
+                for ukey, uinfo in (parent.uploads or {}).items():
+                    if ukey not in final_uploads:
+                        upath_str = uinfo.get("path") if isinstance(uinfo, dict) else str(uinfo)
+                        if upath_str:
+                            upath = Path(upath_str)
+                            if upath.exists():
+                                final_uploads[ukey] = upath
+            except Exception:
+                pass
+
         return self.engine.submit(
             pipeline_id=entity.id,
             definition=definition,
             params=params,
-            uploads=uploads,
+            uploads=final_uploads or None,
             machine_id=machine_id,
             task_machines=self._task_machines(principal, definition, machine_id),
             owner_id=principal.user_id if principal else None,
         )
+
 
     def get(self, run_id: str) -> PipelineRun:
         return self.repository.get(run_id)
@@ -298,6 +335,8 @@ class RunService:
         parent_run_id: str,
         from_step: str,
         params: dict[str, Any],
+        *,
+        reuse_uploads: bool = True,
     ) -> PipelineRun:
         """Create a new run that reuses the parent's outputs for steps before
         `from_step` (inclusive of the chain reaching it) and re-executes the
@@ -347,12 +386,22 @@ class RunService:
                     f"原流水线使用的计算节点已被删除（{exc}），请重新选择可用节点发起新运行。"
                 ) from exc
 
+        parent_uploads: dict[str, Path] = {}
+        if reuse_uploads and parent.uploads:
+            for ukey, uinfo in parent.uploads.items():
+                upath_str = uinfo.get("path") if isinstance(uinfo, dict) else str(uinfo)
+                if upath_str:
+                    upath = Path(upath_str)
+                    if upath.exists():
+                        parent_uploads[ukey] = upath
+
         ordered_task_specs = [(name, *steps[name].plugin_reference) for name in ordered]
         new_run = self.repository.create(
             pipeline_id=parent_entity.id,
             pipeline_name=parent_entity.name,
             params=merged_params,
             tasks=ordered_task_specs,
+            uploads=parent.uploads if reuse_uploads else {},
             parent_run_id=parent.id,
             branched_from_step=from_step,
             machine_id=parent.machine_id,
@@ -381,13 +430,13 @@ class RunService:
                     finished_at=source.finished_at,
                 )
 
-        # Schedule the engine to actually run the from_step subgraph
-
         # Coordinates the live execution (downstream of from_step)
         self.engine.execute_subgraph(
             run_id=new_run.id,
             definition=definition,
             from_step=from_step,
             params=merged_params,
+            uploads=parent_uploads or None,
         )
         return new_run
+
