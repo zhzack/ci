@@ -237,11 +237,14 @@ class RunService:
     def get_task(self, run_id: str, step_name: str) -> TaskRun:
         return self.repository.get_task(run_id, step_name)
 
+    def _resolve_task_log_path(self, run_id: str, task: TaskRun) -> Path:
+        if task.log_path:
+            return Path(task.log_path)
+        return self.storage.logs / run_id / f"{task.id}.log"
+
     def read_log(self, run_id: str, step_name: str) -> str:
         task = self.get_task(run_id, step_name)
-        if not task.log_path:
-            return ""
-        path = Path(task.log_path)
+        path = self._resolve_task_log_path(run_id, task)
         if not path.is_file():
             return ""
         return path.read_text(encoding="utf-8", errors="replace")
@@ -252,9 +255,7 @@ class RunService:
         tasks = sorted(run.tasks, key=lambda t: (t.started_at or datetime.max, t.position))
         chunks: list[str] = []
         for task in tasks:
-            if not task.log_path:
-                continue
-            path = Path(task.log_path)
+            path = self._resolve_task_log_path(run_id, task)
             if not path.is_file():
                 continue
             try:

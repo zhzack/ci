@@ -47,6 +47,7 @@ class LocalArtifactStore:
                 run_id=run_id,
                 task_id=task_id,
                 name=name,
+                filename=source.name,
                 storage_path=str(destination),
                 size=size,
                 sha256=digest.hexdigest(),

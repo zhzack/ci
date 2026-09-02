@@ -58,6 +58,14 @@ function isEmptyObj(v: unknown): boolean {
   return false;
 }
 
+function formatFileSize(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
+}
+
 export default function TaskDetailPage(): React.JSX.Element {
   const { runId } = useParams<{ runId: string }>();
   const navigate = useNavigate();
@@ -434,23 +442,33 @@ export default function TaskDetailPage(): React.JSX.Element {
                         {step.artifacts.length > 0 ? (
                           <>
                             <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                              Artifacts
+                              Artifacts ({step.artifacts.length})
                             </Typography.Text>
-                            {step.artifacts.map((a) => (
-                              <div key={a.id} style={{ fontSize: 12, marginTop: 2 }}>
-                                <a
-                                  href={downloadArtifactUrl(runId ?? '', a.id)}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                >
-                                  <DownloadOutlined style={{ marginRight: 4 }} />
-                                  {a.name}
-                                </a>
-                                <span style={{ color: '#999', marginLeft: 6 }}>
-                                  {(a.size / 1024).toFixed(2)} KiB
-                                </span>
-                              </div>
-                            ))}
+                            {step.artifacts.map((a) => {
+                              const displayName = a.filename && a.filename !== a.name ? a.filename : a.name;
+                              return (
+                                <div key={a.id} style={{ fontSize: 12, marginTop: 4, display: 'flex', alignItems: 'center', flexWrap: 'wrap' }}>
+                                  <a
+                                    href={downloadArtifactUrl(runId ?? '', a.id)}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    style={{ fontWeight: 500, wordBreak: 'break-all' }}
+                                    title={displayName}
+                                  >
+                                    <DownloadOutlined style={{ marginRight: 4 }} />
+                                    {displayName}
+                                  </a>
+                                  {a.filename && a.filename !== a.name && (
+                                    <Tag color="blue" style={{ marginLeft: 6, fontSize: 10, lineHeight: '16px', padding: '0 4px' }}>
+                                      {a.name}
+                                    </Tag>
+                                  )}
+                                  <span style={{ color: '#8c8c8c', marginLeft: 6, fontSize: 11 }}>
+                                    ({formatFileSize(a.size)})
+                                  </span>
+                                </div>
+                              );
+                            })}
                           </>
                         ) : null}
                       </Card>

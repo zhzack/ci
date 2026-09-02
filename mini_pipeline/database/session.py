@@ -62,6 +62,18 @@ class Database:
                         "ALTER TABLE credentials ADD COLUMN IF NOT EXISTS "
                         "domain_patterns JSON NOT NULL DEFAULT '[]';"
                     )
+                    conn.exec_driver_sql(
+                        "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS "
+                        "uploads JSON NOT NULL DEFAULT '{}';"
+                    )
+                    conn.exec_driver_sql(
+                        "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS "
+                        "parent_run_id VARCHAR(36);"
+                    )
+                    conn.exec_driver_sql(
+                        "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS "
+                        "branched_from_step VARCHAR(128);"
+                    )
                 elif is_sqlite:
                     cursor = conn.connection.cursor()
                     try:
@@ -82,6 +94,34 @@ class Database:
                             "ALTER TABLE credentials ADD COLUMN domain_patterns "
                             "JSON NOT NULL DEFAULT '[]'"
                         )
+                    try:
+                        cursor.execute("SELECT uploads FROM pipeline_runs LIMIT 1")
+                    except Exception:
+                        cursor.execute(
+                            "ALTER TABLE pipeline_runs ADD COLUMN uploads "
+                            "JSON NOT NULL DEFAULT '{}'"
+                        )
+                    try:
+                        cursor.execute("SELECT parent_run_id FROM pipeline_runs LIMIT 1")
+                    except Exception:
+                        cursor.execute(
+                            "ALTER TABLE pipeline_runs ADD COLUMN parent_run_id VARCHAR(36)"
+                        )
+                    try:
+                        cursor.execute("SELECT branched_from_step FROM pipeline_runs LIMIT 1")
+                    except Exception:
+                        cursor.execute(
+                            "ALTER TABLE pipeline_runs ADD COLUMN branched_from_step VARCHAR(128)"
+                        )
+                    try:
+                        cursor.execute("SELECT filename FROM artifacts LIMIT 1")
+                    except Exception:
+                        cursor.execute("ALTER TABLE artifacts ADD COLUMN filename VARCHAR(255) NOT NULL DEFAULT ''")
+                    try:
+                        if is_postgres:
+                            cursor.execute("ALTER TABLE artifacts ALTER COLUMN size TYPE BIGINT")
+                    except Exception:
+                        pass
                     cursor.close()
         except Exception:
             pass

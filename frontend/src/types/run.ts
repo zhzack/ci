@@ -3,6 +3,7 @@ import type { StatusValue } from './common';
 export type ArtifactResponse = {
   id: string;
   name: string;
+  filename?: string;
   size: number;
   sha256: string;
 };

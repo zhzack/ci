@@ -41,6 +41,7 @@ class ArtifactRecord(BaseModel):
     run_id: str
     task_id: str
     name: str
+    filename: str = ""
     storage_path: Path
     size: int
     sha256: str

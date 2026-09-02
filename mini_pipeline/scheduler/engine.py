@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, wait
@@ -923,9 +924,11 @@ class PipelineEngine:
             if is_ssh:
                 # SSH push machine: execute directly on a task worker thread.
                 states[name] = TaskStatus.RUNNING
+                ssh_log_file = self.storage.logs / run_id / f"{tasks[name].id}.log"
                 self.runs.set_task_state(
                     tasks[name].id,
                     TaskStatus.RUNNING,
+                    log_path=str(ssh_log_file),
                     started_at=utcnow(),
                     attempt=1,
                 )
@@ -1038,9 +1041,11 @@ class PipelineEngine:
                     continue
 
             states[name] = TaskStatus.RUNNING
+            task_log_file = self.storage.logs / run_id / f"{tasks[name].id}.log"
             self.runs.set_task_state(
                 tasks[name].id,
                 TaskStatus.RUNNING,
+                log_path=str(task_log_file),
                 started_at=utcnow(),
                 attempt=1,
             )

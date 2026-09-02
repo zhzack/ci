@@ -155,6 +155,7 @@ def _persist_artifact(
             return {
                 "id": record.id,
                 "name": record.name,
+                "filename": getattr(record, "filename", None) or source.name,
                 "size": record.size,
                 "sha256": record.sha256,
                 "storage_path": str(record.storage_path),
@@ -179,6 +180,7 @@ def _persist_artifact(
     return {
         "id": artifact_id,
         "name": name,
+        "filename": source.name,
         "size": size,
         "sha256": digest.hexdigest(),
         "storage_path": str(dest.resolve()),

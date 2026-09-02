@@ -65,6 +65,7 @@ class PipelineDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
+    description: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
     steps: list[PipelineStep] = Field(min_length=1)
 

@@ -11,9 +11,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile, status
+from fastapi import APIRouter, Depends, Query, Request, Response, UploadFile, status
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from mini_pipeline.api.auth import PrincipalDep
 from mini_pipeline.api.dependencies import get_services
@@ -46,12 +47,14 @@ class BranchRequest(BaseModel):
 class ArtifactResponse(BaseModel):
     id: str
     name: str
+    filename: str = ""
     size: int
     sha256: str
 
     @classmethod
     def from_entity(cls, entity) -> ArtifactResponse:
-        return cls(id=entity.id, name=entity.name, size=entity.size, sha256=entity.sha256)
+        fname = getattr(entity, "filename", "") or entity.name
+        return cls(id=entity.id, name=entity.name, filename=fname, size=entity.size, sha256=entity.sha256)
 
 
 class TaskResponse(BaseModel):
@@ -173,7 +176,10 @@ async def submit_run_with_files(
 
     uploads: dict[str, Path] = {}
     for key, value in form.multi_items():
-        if isinstance(value, UploadFile) and value.filename:
+        if (
+            isinstance(value, (UploadFile, StarletteUploadFile))
+            or hasattr(value, "file")
+        ) and getattr(value, "filename", None):
             input_name = key
             if input_name.startswith("file_"):
                 input_name = input_name[5:]
@@ -406,12 +412,18 @@ async def stream_task_log(
 
     async def generator() -> AsyncIterator[str]:
         task = services.runs.get_task(run_id, step_name)
-        path = Path(task.log_path) if task.log_path else None
+        path = (
+            Path(task.log_path)
+            if task.log_path
+            else (services.storage.logs / run_id / f"{task.id}.log")
+        )
         offset = 0
         while True:
             fresh = services.runs.get_task(run_id, step_name)
             terminal = fresh.status in {"SUCCESS", "FAILED", "SKIPPED", "CANCELLED"}
-            if path is None or not path.is_file():
+            if not path.is_file() and fresh.log_path:
+                path = Path(fresh.log_path)
+            if not path.is_file():
                 if terminal:
                     return
                 await asyncio.sleep(LOG_STREAM_POLL_INTERVAL)

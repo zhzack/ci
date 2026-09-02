@@ -36,7 +36,10 @@ contract:
       path: output
     - name: full_package
       type: file
-      path: output/**/*.tar.gz
+      path: output/**/Lcsuvcar_*.tar.gz
+    - name: im_package
+      type: file
+      path: output/**/im_package.tar.gz
     - name: checksum
       type: file
       path: output/**/*.checksum.txt
