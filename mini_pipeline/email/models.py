@@ -15,6 +15,9 @@ class SmtpSettings(BaseModel):
     sender_name: str = "Mini Pipeline CI/CD"
     use_ssl: bool = True
     use_tls: bool = False
+    # Optional SOCKS5 proxy for SMTP delivery, e.g. "socks5://127.0.0.1:7897"
+    # (useful when the server network blocks outbound SMTP ports).
+    proxy: str | None = None
 
 
 class SmtpSettingsOut(BaseModel):
@@ -26,6 +29,7 @@ class SmtpSettingsOut(BaseModel):
     sender_name: str
     use_ssl: bool
     use_tls: bool
+    proxy: str | None = None
     has_password: bool = True
 
 
@@ -39,6 +43,7 @@ class UpdateSmtpSettingsRequest(BaseModel):
     sender_name: str = "Mini Pipeline CI/CD"
     use_ssl: bool = True
     use_tls: bool = False
+    proxy: str | None = None  # None = keep existing proxy
 
 
 class SendEmailTask(BaseModel):

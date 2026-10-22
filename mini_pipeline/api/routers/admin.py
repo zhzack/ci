@@ -265,6 +265,7 @@ def get_email_config(
         "sender_name": cfg.sender_name,
         "use_ssl": cfg.use_ssl,
         "use_tls": cfg.use_tls,
+        "proxy": cfg.proxy,
         "has_password": bool(cfg.password),
     }
 
@@ -290,6 +291,7 @@ def update_email_config(
         sender_name=payload.sender_name,
         use_ssl=payload.use_ssl,
         use_tls=payload.use_tls,
+        proxy=payload.proxy if payload.proxy is not None else services.email_service.settings.proxy,
     )
     services.email_service.update_settings(new_cfg)
     # Persist in DB

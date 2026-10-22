@@ -22,6 +22,7 @@ dependencies = [
     "alembic>=1.13,<2",
     "cryptography>=42,<46",
     "paramiko>=3.4,<4",
+    "PySocks>=1.28,<2",
 ]
 
 [project.optional-dependencies]

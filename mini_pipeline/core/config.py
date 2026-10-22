@@ -157,6 +157,7 @@ class EmailConfig(BaseModel):
     sender_name: str = "Mini Pipeline CI/CD"
     use_ssl: bool = True
     use_tls: bool = False
+    proxy: Optional[str] = None
 
 
 class Settings(BaseModel):
