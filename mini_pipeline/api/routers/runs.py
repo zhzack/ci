@@ -317,6 +317,31 @@ def download_artifact(
     )
 
 
+@router.get("/{run_id}/artifacts/{artifact_id}/url")
+def artifact_download_url(
+    run_id: str,
+    artifact_id: str,
+    principal: PrincipalDep,
+    services: Annotated[Services, Depends(get_services)],
+) -> dict:
+    """Presigned direct-download URL when the backend is object storage.
+
+    Returns `{url: null, direct: false}` for local-disk backends — clients
+    fall back to the proxied download endpoint.
+    """
+    artifact = services.runs.get_artifact(artifact_id)
+    if artifact.run_id != run_id:
+        raise NotFoundError(f"Artifact {artifact_id!r} was not found in run {run_id!r}")
+    run = services.runs.get(run_id)
+    _require_run_visible(services, principal, run)
+    url = services.artifacts.presign_download(artifact)
+    return {
+        "url": url,
+        "direct": url is not None,
+        "expires_in": 3600 if url else 0,
+    }
+
+
 @router.post("/{run_id}/branches", response_model=RunResponse, status_code=status.HTTP_202_ACCEPTED)
 def branch_run(
     run_id: str,

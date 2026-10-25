@@ -100,6 +100,20 @@ class S3StorageDriver(StorageDriver):
             f"{payload_hash}"
         )
 
+        signature = self._sign_canonical(canonical_request, amz_date, date_stamp)
+        algorithm = "AWS4-HMAC-SHA256"
+        credential_scope = f"{date_stamp}/{self.region}/s3/aws4_request"
+
+        headers["Authorization"] = (
+            f"{algorithm} Credential={self.access_key}/{credential_scope}, "
+            f"SignedHeaders={signed_headers}, Signature={signature}"
+        )
+        return headers
+
+    def _sign_canonical(
+        self, canonical_request: str, amz_date: str, date_stamp: str
+    ) -> str:
+        """SigV4 signature over a canonical request (header + query auth)."""
         algorithm = "AWS4-HMAC-SHA256"
         credential_scope = f"{date_stamp}/{self.region}/s3/aws4_request"
         string_to_sign = (
@@ -116,13 +130,56 @@ class S3StorageDriver(StorageDriver):
         k_region = sign(k_date, self.region)
         k_service = sign(k_region, "s3")
         k_signing = sign(k_service, "aws4_request")
-        signature = hmac.new(k_signing, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+        return hmac.new(
+            k_signing, string_to_sign.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
 
-        headers["Authorization"] = (
-            f"{algorithm} Credential={self.access_key}/{credential_scope}, "
-            f"SignedHeaders={signed_headers}, Signature={signature}"
+    def presign(self, method: str, key: str, *, expires_seconds: int = 3600) -> str:
+        """Presigned URL (SigV4 query auth) for a direct GET/PUT on `key`.
+
+        The client needs no credentials: auth travels in the query string
+        (X-Amz-Signature over UNSIGNED-PAYLOAD), letting browsers and runner
+        agents move bytes straight to/from object storage without proxying
+        through the API server.
+        """
+        if not self.access_key or not self.secret_key:
+            raise ConfigurationError(
+                "Presigned URLs require S3 access/secret keys"
+            )
+        if method.upper() not in ("GET", "PUT"):
+            raise ValidationError(
+                f"Unsupported presign method {method!r} (GET or PUT)"
+            )
+        now = datetime.now(timezone.utc)
+        amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+        date_stamp = now.strftime("%Y%m%d")
+        credential = f"{self.access_key}/{date_stamp}/{self.region}/s3/aws4_request"
+
+        norm = self._normalize_key(key)
+        canonical_uri = f"/{self.bucket_name}/{norm}"
+        parsed = urllib.parse.urlparse(self.endpoint_url)
+        host = parsed.netloc or parsed.path
+        query = {
+            "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+            "X-Amz-Credential": credential,
+            "X-Amz-Date": amz_date,
+            "X-Amz-Expires": str(int(expires_seconds)),
+            "X-Amz-SignedHeaders": "host",
+        }
+        canonical_querystring = urllib.parse.urlencode(sorted(query.items()))
+        canonical_request = (
+            f"{method.upper()}\n"
+            f"{canonical_uri}\n"
+            f"{canonical_querystring}\n"
+            f"host:{host}\n\n"
+            f"host\n"
+            f"UNSIGNED-PAYLOAD"
         )
-        return headers
+        query["X-Amz-Signature"] = self._sign_canonical(
+            canonical_request, amz_date, date_stamp
+        )
+        full_query = urllib.parse.urlencode(sorted(query.items()))
+        return f"{self.endpoint_url}{canonical_uri}?{full_query}"
 
     def _request(
         self,

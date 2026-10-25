@@ -17,6 +17,7 @@ The agent only needs *outbound* HTTPS to the server:
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import platform
 import shutil
@@ -40,6 +41,8 @@ from mini_pipeline.runtime.node_runtime import NodeRuntime
 from mini_pipeline.runtime.python_runtime import PythonRuntime
 from mini_pipeline.runtime.registry import RuntimeRegistry
 from mini_pipeline.runtime.shell import ShellRuntime
+
+logger = logging.getLogger(__name__)
 
 LOG_FLUSH_INTERVAL = 0.5
 
@@ -399,9 +402,15 @@ class RunnerClient:
         self._http.post(f"/api/runner/tasks/{task_id}/logs", json={"chunk": chunk})
 
     def upload_artifacts(self, task_id: str, artifacts: list[tuple[str, Path]]) -> None:
-        """Upload (display_name, path) pairs; the multipart filename is the
-        display name so the server catalog shows plugin-declared names."""
+        """Upload (display_name, path) pairs to the server.
+
+        Prefers presigned direct PUTs (S3 artifact backend) so bytes skip the
+        API server entirely; any failure falls back to the multipart proxy
+        upload, which every server version supports.
+        """
         if not artifacts:
+            return
+        if self._try_presigned_upload(task_id, artifacts):
             return
         opened = []
         try:
@@ -419,6 +428,64 @@ class RunnerClient:
         finally:
             for handle in opened:
                 handle.close()
+
+    def _try_presigned_upload(
+        self, task_id: str, artifacts: list[tuple[str, Path]]
+    ) -> bool:
+        """Attempt the direct-upload session; False means 'use the proxy'."""
+        import hashlib
+
+        try:
+            session = self._http.post(
+                f"/api/runner/tasks/{task_id}/upload-session",
+                json={"names": [name for name, _ in artifacts]},
+            )
+            if session.status_code != 200:
+                return False
+            info = session.json()
+            if info.get("mode") != "presigned":
+                return False
+            targets = {u["name"]: u for u in info.get("uploads", [])}
+            if not targets:
+                return False
+
+            records = []
+            for display_name, path in artifacts:
+                target = targets.get(display_name)
+                if target is None:
+                    return False
+                digest = hashlib.sha256()
+                size = 0
+                with path.open("rb") as handle:
+                    while chunk := handle.read(1024 * 1024):
+                        digest.update(chunk)
+                        size += len(chunk)
+                with path.open("rb") as handle:
+                    put = self._http.put(
+                        target["url"],
+                        content=handle,
+                        headers={"Content-Type": "application/octet-stream"},
+                    )
+                put.raise_for_status()
+                records.append({
+                    "artifact_id": target["artifact_id"],
+                    "name": display_name,
+                    "size": size,
+                    "sha256": digest.hexdigest(),
+                })
+
+            complete = self._http.post(
+                f"/api/runner/tasks/{task_id}/upload-complete",
+                json={"artifacts": records},
+            )
+            complete.raise_for_status()
+            return True
+        except Exception:
+            logger.warning(
+                "Presigned artifact upload failed; falling back to proxy",
+                exc_info=True,
+            )
+            return False
 
     def report_status(
         self,

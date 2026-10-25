@@ -213,6 +213,85 @@ def report_status(
     return {"status": "accepted"}
 
 
+class UploadSessionRequest(BaseModel):
+    names: list[str] = Field(default_factory=list)
+
+
+@router.post("/tasks/{task_id}/upload-session")
+def create_upload_session(
+    task_id: str,
+    payload: UploadSessionRequest,
+    identity: Annotated[MachineIdentity, Depends(require_machine)],
+    services: Annotated[Services, Depends(get_services)],
+) -> dict[str, Any]:
+    """Presigned PUT targets for runner direct uploads (S3 backends only).
+
+    Falls back to `mode: "proxied"` so agents on older flows keep working
+    with the multipart endpoint.
+    """
+    task = _own_task(services, identity, task_id)
+    presign = getattr(services.artifacts, "presign_upload_key", None)
+    if presign is None:
+        return {"mode": "proxied", "uploads": []}
+    import uuid as _uuid
+
+    uploads = []
+    for name in payload.names:
+        artifact_id = str(_uuid.uuid4())
+        uploads.append({
+            "name": name,
+            "artifact_id": artifact_id,
+            "url": presign(
+                run_id=task.run_id, task_id=task.id, artifact_id=artifact_id
+            ),
+        })
+    return {"mode": "presigned", "uploads": uploads}
+
+
+class RemoteArtifactRecord(BaseModel):
+    artifact_id: str
+    name: str
+    size: int = Field(ge=0)
+    sha256: str
+
+
+class CompleteUploadRequest(BaseModel):
+    artifacts: list[RemoteArtifactRecord] = Field(default_factory=list)
+
+
+@router.post("/tasks/{task_id}/upload-complete", status_code=201)
+def complete_upload_session(
+    task_id: str,
+    payload: CompleteUploadRequest,
+    identity: Annotated[MachineIdentity, Depends(require_machine)],
+    services: Annotated[Services, Depends(get_services)],
+) -> dict[str, Any]:
+    """Register objects the runner uploaded via presigned PUTs."""
+    task = _own_task(services, identity, task_id)
+    record = getattr(services.artifacts, "record_remote", None)
+    if record is None:
+        raise HTTPException(
+            status_code=404, detail="Direct uploads are not available"
+        )
+    stored = []
+    for item in payload.artifacts:
+        record_meta = record(
+            run_id=task.run_id,
+            task_id=task.id,
+            name=item.name,
+            artifact_id=item.artifact_id,
+            size=item.size,
+            sha256=item.sha256,
+        )
+        stored.append({
+            "id": record_meta.id,
+            "name": record_meta.name,
+            "size": record_meta.size,
+            "sha256": record_meta.sha256,
+        })
+    return {"artifacts": stored}
+
+
 @router.post("/tasks/{task_id}/artifacts", status_code=201)
 def upload_artifacts(
     task_id: str,

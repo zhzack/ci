@@ -89,6 +89,45 @@ class S3ArtifactStore:
             raise ExecutionError("Stored artifact file is unavailable")
         self._driver.delete(key)
 
+    def presign_download(
+        self, artifact: ArtifactRecord, *, expires_seconds: int = 3600
+    ) -> str | None:
+        """Presigned GET so clients fetch bytes straight from the bucket."""
+        key = str(artifact.storage_path).replace("\\", "/").lstrip("/")
+        if not key.startswith(f"{self.prefix}/"):
+            raise ExecutionError("Stored artifact file is unavailable")
+        return self._driver.presign("GET", key, expires_seconds=expires_seconds)
+
+    def presign_upload_key(
+        self, *, run_id: str, task_id: str, artifact_id: str
+    ) -> str:
+        """Presigned PUT for a runner direct upload to the artifact layout."""
+        key = self._object_key(run_id, task_id, artifact_id)
+        return self._driver.presign("PUT", key, expires_seconds=900)
+
+    def record_remote(
+        self,
+        *,
+        run_id: str,
+        task_id: str,
+        name: str,
+        artifact_id: str,
+        size: int,
+        sha256: str,
+    ) -> ArtifactRecord:
+        """Register an object a runner already uploaded via presigned PUT."""
+        key = self._object_key(run_id, task_id, artifact_id)
+        entity = self.repository.add_artifact(
+            artifact_id=artifact_id,
+            run_id=run_id,
+            task_id=task_id,
+            name=name,
+            storage_path=key,
+            size=size,
+            sha256=sha256,
+        )
+        return ArtifactRecord.model_validate(entity)
+
 
 # Re-exported so callers can keep a single import site for both backends.
 __all__ = ["LocalArtifactStore", "S3ArtifactStore"]

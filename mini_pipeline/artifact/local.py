@@ -63,6 +63,12 @@ class LocalArtifactStore:
             raise ExecutionError("Stored artifact file is unavailable")
         return path.open("rb")
 
+    def presign_download(
+        self, artifact: ArtifactRecord, *, expires_seconds: int = 3600
+    ) -> str | None:
+        # Local disk artifacts are always served through the API server.
+        return None
+
     def delete(self, artifact: ArtifactRecord) -> None:
         """Unlink the artifact content and prune now-empty parent dirs."""
         path = artifact.storage_path.resolve()

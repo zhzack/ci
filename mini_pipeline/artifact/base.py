@@ -28,3 +28,13 @@ class ArtifactStore(Protocol):
 
     def delete(self, artifact: ArtifactRecord) -> None:
         """Remove the stored content of one artifact (best effort)."""
+
+    def presign_download(
+        self, artifact: ArtifactRecord, *, expires_seconds: int = 3600
+    ) -> str | None:
+        """Direct-download URL bypassing the API server, if supported.
+
+        Object-storage backends return a presigned URL; local-disk backends
+        return None and callers fall back to the proxied download endpoint.
+        """
+        return None
