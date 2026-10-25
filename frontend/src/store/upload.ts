@@ -19,11 +19,9 @@ type UploadStore = {
   tasks: UploadTask[];
   isMinimized: boolean;
   isOpen: boolean;
-  addFiles: (
-    files: (File & { webkitRelativePath?: string })[],
-    targetDir: string,
-    onSuccessCallback?: () => void,
-  ) => void;
+  /** Monotonic counter bumped each time any task lands; pages subscribe. */
+  successTick: number;
+  addFiles: (files: (File & { webkitRelativePath?: string })[], targetDir: string) => void;
   setMinimized: (minimized: boolean) => void;
   setOpen: (open: boolean) => void;
   cancelTask: (id: string) => void;
@@ -36,7 +34,6 @@ const MAX_CONCURRENT = 3;
 
 export const useUploadStore = create<UploadStore>((set, get) => {
   let activeCount = 0;
-  let onSuccessCb: (() => void) | undefined;
 
   const processQueue = () => {
     const { tasks } = get();
@@ -77,8 +74,8 @@ export const useUploadStore = create<UploadStore>((set, get) => {
                 ? { ...t, status: 'success', progress: 100, loadedBytes: t.size }
                 : t,
             ),
+            successTick: state.successTick + 1,
           }));
-          onSuccessCb?.();
         })
         .catch((err) => {
           // If cancelled by AbortController, mark as cancelled instead of error
@@ -116,8 +113,8 @@ export const useUploadStore = create<UploadStore>((set, get) => {
     tasks: [],
     isMinimized: false,
     isOpen: false,
-    addFiles: (files, targetDir, cb) => {
-      if (cb) onSuccessCb = cb;
+    successTick: 0,
+    addFiles: (files, targetDir) => {
       const newTasks: UploadTask[] = files.map((f, idx) => ({
         id: `${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 7)}`,
         file: f,

@@ -8,6 +8,7 @@ import { Loading } from '@/components/Loading';
 import { ErrorAlert } from '@/components/ErrorAlert';
 import { EmptyState } from '@/components/EmptyState';
 import { StatusTag } from '@/components/StatusTag';
+import type { StatusValue } from '@/types/common';
 import { useApiQuery, describeError } from '@/hooks/useApiQuery';
 import { listStorePlugins, reviewPlugin } from '@/api/store';
 import type { PluginVersion } from '@/types/plugin';
@@ -70,7 +71,7 @@ export function StorePage(): React.JSX.Element {
     {
       title: 'Status',
       dataIndex: 'status',
-      render: (value: string) => <StatusTag status={value} />,
+      render: (value: StatusValue) => <StatusTag status={value} />,
     },
   ];
 

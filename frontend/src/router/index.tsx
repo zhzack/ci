@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react';
+import { Suspense } from 'react';
 import { createBrowserRouter, Navigate, type RouteObject } from 'react-router-dom';
 import { Loading } from '@/components/Loading';
 import { MainLayout } from '@/layouts/MainLayout';
@@ -6,31 +6,31 @@ import { RouterErrorElement } from '@/components/RouteErrorBoundary';
 import { AuthGate } from '@/router/AuthGate';
 import React from 'react';
 
-const LoginPage = lazy(() => import('@/pages/auth/LoginPage'));
-const RegisterPage = lazy(() => import('@/pages/auth/RegisterPage'));
-const DashboardPage = lazy(() => import('@/pages/dashboard'));
-const PluginListPage = lazy(() => import('@/pages/plugin/PluginListPage'));
-const PluginRegisterPage = lazy(() => import('@/pages/plugin/PluginRegisterPage'));
-const PluginDetailPage = lazy(() => import('@/pages/plugin/PluginDetailPage'));
-const PipelineListPage = lazy(() => import('@/pages/pipeline/PipelineListPage'));
-const PipelineCreatePage = lazy(() => import('@/pages/pipeline/PipelineCreatePage'));
-const PipelineVisualEditorPage = lazy(
-  () => import('@/pages/pipeline/PipelineVisualEditorPage'),
-);
-const PipelineDetailPage = lazy(() => import('@/pages/pipeline/PipelineDetailPage'));
-const PipelineHistoryPage = lazy(() => import('@/pages/pipeline/PipelineHistoryPage'));
-const TaskRunningPage = lazy(() => import('@/pages/task/TaskRunningPage'));
-const TaskHistoryPage = lazy(() => import('@/pages/task/TaskHistoryPage'));
-const TaskDetailPage = lazy(() => import('@/pages/task/TaskDetailPage'));
-const MachinePage = lazy(() => import('@/pages/machine/MachinesPage'));
-const StorePage = lazy(() => import('@/pages/store/StorePage'));
-const AdminPage = lazy(() => import('@/pages/admin/AdminPage'));
-const ArtifactPage = lazy(() => import('@/pages/artifact/ArtifactPage'));
-const CredentialPage = lazy(() => import('@/pages/credential/CredentialPage'));
-const ShareImportPage = lazy(() =>
-  import('@/pages/artifact/ShareImportPage').then((m) => ({ default: m.ShareImportPage })),
-);
-const SettingPage = lazy(() => import('@/pages/setting/SettingPage'));
+import { lazyPages } from '@/pages/lazyPages';
+
+const {
+  LoginPage,
+  RegisterPage,
+  DashboardPage,
+  PluginListPage,
+  PluginRegisterPage,
+  PluginDetailPage,
+  PipelineListPage,
+  PipelineCreatePage,
+  PipelineVisualEditorPage,
+  PipelineDetailPage,
+  PipelineHistoryPage,
+  TaskRunningPage,
+  TaskHistoryPage,
+  TaskDetailPage,
+  MachinesPage: MachinePage,
+  StorePage,
+  AdminPage,
+  ArtifactPage,
+  CredentialPage,
+  ShareImportPage,
+  SettingPage,
+} = lazyPages;
 
 const withSuspense = (element: React.JSX.Element): React.JSX.Element => (
   <Suspense fallback={<Loading rows={6} />}>{element}</Suspense>

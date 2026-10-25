@@ -22,7 +22,6 @@ import { MailOutlined, PlusOutlined, SendOutlined, TeamOutlined, UserAddOutlined
 import { PageHeader } from '@/components/PageHeader';
 import { Loading } from '@/components/Loading';
 import { ErrorAlert } from '@/components/ErrorAlert';
-import { StatusTag } from '@/components/StatusTag';
 import { useApiQuery, describeError } from '@/hooks/useApiQuery';
 import {
   adminListUsers,
@@ -136,7 +135,12 @@ function UsersTab(): React.JSX.Element {
     {
       title: '账号状态',
       dataIndex: 'status',
-      render: (value: string) => <StatusTag status={value.toUpperCase()} />,
+      render: (value: 'active' | 'disabled') =>
+        value === 'active' ? (
+          <Tag color="success">启用</Tag>
+        ) : (
+          <Tag color="default">停用</Tag>
+        ),
     },
     {
       title: '操作',

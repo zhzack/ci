@@ -3,16 +3,27 @@ export type ApiError = {
   status?: number;
 };
 
-export type StatusValue =
-  | 'PENDING'
-  | 'READY'
-  | 'RUNNING'
-  | 'SUCCESS'
-  | 'FAILED'
-  | 'SKIPPED'
-  | 'CANCELLED'
-  | 'INSTALLING'
-  | string;
+/** Known pipeline/task lifecycle states, single source for type + guard. */
+export const STATUS_VALUES = [
+  'PENDING',
+  'READY',
+  'RUNNING',
+  'SUCCESS',
+  'FAILED',
+  'SKIPPED',
+  'CANCELLED',
+  'INSTALLING',
+] as const;
+
+export type StatusValue = (typeof STATUS_VALUES)[number];
+
+/** Runtime check for statuses arriving over untyped JSON (SSE/REST). */
+export function isStatusValue(value: unknown): value is StatusValue {
+  return (
+    typeof value === 'string' &&
+    (STATUS_VALUES as readonly string[]).includes(value)
+  );
+}
 
 export type Id = string;
 

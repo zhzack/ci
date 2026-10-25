@@ -9,6 +9,7 @@ import { StatusTag } from '@/components/StatusTag';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { dashboardSummary } from '@/api/dashboard';
 import type { PipelineRun } from '@/types/run';
+import type { StatusValue } from '@/types/common';
 
 const columns: TableColumnsType<PipelineRun> = [
   {
@@ -22,7 +23,7 @@ const columns: TableColumnsType<PipelineRun> = [
   {
     title: 'Status',
     dataIndex: 'status',
-    render: (value: string) => <StatusTag status={value} />,
+    render: (value: StatusValue) => <StatusTag status={value} />,
   },
   { title: 'Created', dataIndex: 'created_at' },
 ];

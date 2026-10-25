@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import { openRunEventStream } from '@/api/run';
 import type { PipelineRun, RunEventMessage } from '@/types/run';
+import { isStatusValue } from '@/types/common';
 
 export type RunLiveState = {
   /** Latest run snapshot; refreshed by SSE snapshots and task events. */
@@ -52,7 +53,7 @@ export function useRunEventStream(
         const current = runRef.current;
         if (!current) return;
         const status = event.data.status;
-        if (event.type === 'run.status' && typeof status === 'string') {
+        if (event.type === 'run.status' && isStatusValue(status)) {
           applySnapshot({ ...current, status });
           return;
         }

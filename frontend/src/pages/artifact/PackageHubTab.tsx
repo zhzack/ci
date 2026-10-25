@@ -90,15 +90,8 @@ import { CredentialSelect } from '@/components/credential/CredentialSelect';
 import { adminListUsers, adminListTeams } from '@/api/admin';
 import { useAuthStore } from '@/store/auth';
 import { useUploadStore } from '@/store/upload';
+import { formatSize } from '@/utils/format';
 import { scanDataTransfer } from '@/utils/fileDrop';
-
-function formatSize(bytes: number): string {
-  if (bytes <= 0) return '0 B';
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MiB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
-}
 
 function getFileIcon(item: StorageItem) {
   if (item.is_dir) {
@@ -126,6 +119,7 @@ export function PackageHubTab(): React.JSX.Element {
   const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
   const addUploadFiles = useUploadStore((state) => state.addFiles);
+  const uploadSuccessTick = useUploadStore((state) => state.successTick);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
@@ -144,13 +138,19 @@ export function PackageHubTab(): React.JSX.Element {
   const [dragTargetFolderPath, setDragTargetFolderPath] = useState<string | null>(null);
   const dragCounterRef = useRef(0);
 
+  // Upload completions arrive from the shared background queue; refresh
+  // the directory listing whenever any task lands.
+  useEffect(() => {
+    if (uploadSuccessTick > 0) {
+      void queryClient.invalidateQueries({ queryKey: ['packages'] });
+    }
+  }, [uploadSuccessTick, queryClient]);
+
   const handleDropFiles = async (dataTransfer: DataTransfer, targetDir: string) => {
     try {
       const files = await scanDataTransfer(dataTransfer);
       if (files.length > 0) {
-        addUploadFiles(files, targetDir, () => {
-          void queryClient.invalidateQueries({ queryKey: ['packages', currentPath] });
-        });
+        addUploadFiles(files, targetDir);
         message.success(
           `已将 ${files.length} 个文件推入上传队列 -> 目标: ${targetDir || '根目录'}`,
         );
@@ -163,9 +163,7 @@ export function PackageHubTab(): React.JSX.Element {
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files && files.length > 0) {
-      addUploadFiles(Array.from(files), currentPath, () => {
-        void queryClient.invalidateQueries({ queryKey: ['packages', currentPath] });
-      });
+      addUploadFiles(Array.from(files), currentPath);
       message.info(`已加入上传队列 (${files.length} 个文件)，可在右下角查看进度`);
       e.target.value = '';
     }
@@ -174,9 +172,7 @@ export function PackageHubTab(): React.JSX.Element {
   const handleFolderInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files && files.length > 0) {
-      addUploadFiles(Array.from(files), currentPath, () => {
-        void queryClient.invalidateQueries({ queryKey: ['packages', currentPath] });
-      });
+      addUploadFiles(Array.from(files), currentPath);
       message.info(`已加入文件夹上传队列 (${files.length} 个文件)，可在右下角查看进度`);
       e.target.value = '';
     }
@@ -1492,9 +1488,7 @@ export function PackageHubTab(): React.JSX.Element {
           directory
           showUploadList={false}
           beforeUpload={(_file, fileList) => {
-            addUploadFiles(fileList, currentPath, () => {
-              void queryClient.invalidateQueries({ queryKey: ['packages', currentPath] });
-            });
+            addUploadFiles(fileList, currentPath);
             setIsUploadModalOpen(false);
             message.info(`已加入后台上传队列 (${fileList.length} 个文件)，可在右下角查看详情`);
             return false;

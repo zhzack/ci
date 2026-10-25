@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+
+import { formatBytes } from '@/utils/format';
 import {
   Alert,
   Breadcrumb,
@@ -111,14 +113,6 @@ interface Props extends MachineConsoleProps {
   onClose: () => void;
   /** When true, renders inline (for workbench tab); when false renders as a Drawer */
   tabMode?: boolean;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
 }
 
 function formatUptime(seconds: number): string {

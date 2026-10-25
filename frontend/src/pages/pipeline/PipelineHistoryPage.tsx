@@ -8,6 +8,7 @@ import { Loading } from '@/components/Loading';
 import { ErrorAlert } from '@/components/ErrorAlert';
 import { EmptyState } from '@/components/EmptyState';
 import { StatusTag } from '@/components/StatusTag';
+import type { StatusValue } from '@/types/common';
 import { TableToolbar } from '@/components/TableToolbar';
 import { SearchBar } from '@/components/SearchBar';
 import { useApiQuery } from '@/hooks/useApiQuery';
@@ -50,7 +51,7 @@ export default function PipelineHistoryPage(): React.JSX.Element {
     {
       title: 'Status',
       dataIndex: 'status',
-      render: (value: string) => <StatusTag status={value} />,
+      render: (value: StatusValue) => <StatusTag status={value} />,
     },
     {
       title: 'Created',

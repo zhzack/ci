@@ -1,4 +1,6 @@
 import React, { useState } from 'react';
+
+import { formatSize } from '@/utils/format';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Card,
@@ -33,13 +35,6 @@ import {
 } from '@/api/packages';
 import { useAuthStore } from '@/store/auth';
 
-function formatSize(bytes: number): string {
-  if (bytes <= 0) return '0 B';
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MiB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
-}
 
 function getFileIcon(item: StorageItem) {
   if (item.is_dir) return <FolderOutlined style={{ color: '#faad14', fontSize: 18 }} />;

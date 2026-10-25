@@ -34,6 +34,7 @@ import { Loading } from '@/components/Loading';
 import { ErrorAlert } from '@/components/ErrorAlert';
 import { LogViewer } from '@/components/LogViewer';
 import { StatusTag } from '@/components/StatusTag';
+import type { StatusValue } from '@/types/common';
 import { JsonViewer } from '@/components/JsonViewer';
 import { confirmDanger } from '@/components/Confirm';
 import { useApiQuery, describeError } from '@/hooks/useApiQuery';
@@ -232,7 +233,7 @@ export default function TaskDetailPage(): React.JSX.Element {
     {
       title: 'Status',
       dataIndex: 'status',
-      render: (value: string) => <StatusTag status={value} />,
+      render: (value: StatusValue) => <StatusTag status={value} />,
     },
     {
       title: 'Attempt',

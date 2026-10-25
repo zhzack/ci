@@ -10,6 +10,7 @@ import { EmptyState } from '@/components/EmptyState';
 import { TableToolbar } from '@/components/TableToolbar';
 import { SearchBar } from '@/components/SearchBar';
 import { StatusTag } from '@/components/StatusTag';
+import type { StatusValue } from '@/types/common';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useDebounce } from '@/hooks/useDebounce';
 import { listRuns } from '@/api/run';
@@ -50,7 +51,7 @@ export default function TaskHistoryPage(): React.JSX.Element {
     {
       title: 'Status',
       dataIndex: 'status',
-      render: (value: string) => <StatusTag status={value} />,
+      render: (value: StatusValue) => <StatusTag status={value} />,
     },
     {
       title: 'Tasks',

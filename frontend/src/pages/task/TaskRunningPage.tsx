@@ -6,6 +6,7 @@ import { Loading } from '@/components/Loading';
 import { ErrorAlert } from '@/components/ErrorAlert';
 import { EmptyState } from '@/components/EmptyState';
 import { StatusTag } from '@/components/StatusTag';
+import type { StatusValue } from '@/types/common';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { listRuns } from '@/api/run';
 import type { RunSummary } from '@/types/run';
@@ -31,7 +32,7 @@ export default function TaskRunningPage(): React.JSX.Element {
     {
       title: 'Status',
       dataIndex: 'status',
-      render: (value: string) => <StatusTag status={value} />,
+      render: (value: StatusValue) => <StatusTag status={value} />,
     },
     { title: 'Started', dataIndex: 'started_at' },
   ];
