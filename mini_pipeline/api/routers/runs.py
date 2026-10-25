@@ -371,6 +371,12 @@ async def stream_run_events(
         run = services.runs.get(run_id)
         yield _sse(RunResponse.from_entity(run).model_dump(mode="json"), "snapshot")
 
+        # The snapshot already carries the final state and no further events
+        # can arrive for it — close instead of idling until the client times
+        # out (the reconciliation below only fires on status *changes*).
+        if run.status in {s.value for s in TERMINAL_RUN_STATUSES}:
+            return
+
         subscriber_id, queue = services.events.subscribe(run_id)
         last_status = run.status
         try:

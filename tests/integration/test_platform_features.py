@@ -409,9 +409,15 @@ def test_run_events_stream_reaches_terminal_status(tmp_path) -> None:
                     saw_snapshot = True
                 if line.startswith("data:"):
                     payload = json.loads(line.removeprefix("data:").strip())
-                    if payload.get("type") == "run.status" and payload["data"].get(
-                        "status"
-                    ) in {"SUCCESS", "FAILED"}:
+                    # Two payload shapes: RunEvent.to_sse() nests the status
+                    # under data; reconciliation snapshots carry it at top
+                    # level. A fast run may reach terminal before the client
+                    # subscribes, so snapshots count towards terminal too.
+                    if payload.get("type") == "run.status":
+                        status = payload["data"].get("status")
+                    else:
+                        status = payload.get("status")
+                    if status in {"SUCCESS", "FAILED"}:
                         saw_terminal = True
                         break
             assert saw_snapshot, "first SSE message must be a snapshot"
