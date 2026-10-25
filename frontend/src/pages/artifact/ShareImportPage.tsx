@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { getFileIcon } from '@/components/fileIcon';
 
 import { formatSize } from '@/utils/format';
 import { useParams, useNavigate } from 'react-router-dom';
@@ -20,10 +21,6 @@ import {
   FolderOutlined,
   DownloadOutlined,
   ImportOutlined,
-  FileTextOutlined,
-  FileZipOutlined,
-  FileImageOutlined,
-  CodeOutlined,
   ArrowLeftOutlined,
 } from '@ant-design/icons';
 import { useQuery, useMutation } from '@tanstack/react-query';
@@ -35,21 +32,6 @@ import {
 } from '@/api/packages';
 import { useAuthStore } from '@/store/auth';
 
-
-function getFileIcon(item: StorageItem) {
-  if (item.is_dir) return <FolderOutlined style={{ color: '#faad14', fontSize: 18 }} />;
-  const ext = item.extension.toLowerCase();
-  if (['.zip', '.tar', '.gz', '.tgz'].includes(ext)) {
-    return <FileZipOutlined style={{ color: '#13c2c2', fontSize: 18 }} />;
-  }
-  if (['.png', '.jpg', '.jpeg', '.svg', '.gif', '.webp'].includes(ext)) {
-    return <FileImageOutlined style={{ color: '#eb2f96', fontSize: 18 }} />;
-  }
-  if (['.yaml', '.yml', '.json', '.py', '.sh', '.js', '.ts'].includes(ext)) {
-    return <CodeOutlined style={{ color: '#1890ff', fontSize: 18 }} />;
-  }
-  return <FileTextOutlined style={{ color: '#8c8c8c', fontSize: 18 }} />;
-}
 
 export function ShareImportPage(): React.JSX.Element {
   const { token = '' } = useParams<{ token: string }>();

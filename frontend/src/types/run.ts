@@ -1,5 +1,8 @@
 import type { StatusValue } from './common';
 
+/** Artifact shape embedded in a run/task payload (backend runs.py).
+ *  Distinct from ArtifactListItem (GET /api/artifacts catalog row):
+ *  this one adds the download filename and omits provenance fields. */
 export type ArtifactResponse = {
   id: string;
   name: string;

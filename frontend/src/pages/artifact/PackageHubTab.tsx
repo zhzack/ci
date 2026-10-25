@@ -38,9 +38,6 @@ import {
   ThunderboltOutlined,
   ReloadOutlined,
   FileTextOutlined,
-  FileZipOutlined,
-  FileImageOutlined,
-  CodeOutlined,
   InboxOutlined,
   SaveOutlined,
   ShareAltOutlined,
@@ -92,26 +89,7 @@ import { useAuthStore } from '@/store/auth';
 import { useUploadStore } from '@/store/upload';
 import { formatSize } from '@/utils/format';
 import { scanDataTransfer } from '@/utils/fileDrop';
-
-function getFileIcon(item: StorageItem) {
-  if (item.is_dir) {
-    return <FolderOutlined style={{ color: '#faad14', fontSize: 18 }} />;
-  }
-  if (item.name.endsWith('.link.json')) {
-    return <ShareAltOutlined style={{ color: '#52c41a', fontSize: 18 }} />;
-  }
-  const ext = item.extension.toLowerCase();
-  if (['.zip', '.tar', '.gz', '.tgz'].includes(ext)) {
-    return <FileZipOutlined style={{ color: '#722ed1', fontSize: 18 }} />;
-  }
-  if (['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'].includes(ext)) {
-    return <FileImageOutlined style={{ color: '#13c2c2', fontSize: 18 }} />;
-  }
-  if (['.yaml', '.yml', '.json', '.sh', '.py', '.js', '.ts', '.sql'].includes(ext)) {
-    return <CodeOutlined style={{ color: '#1677ff', fontSize: 18 }} />;
-  }
-  return <FileTextOutlined style={{ color: '#8c8c8c', fontSize: 18 }} />;
-}
+import { getFileIcon } from '@/components/fileIcon';
 
 export function PackageHubTab(): React.JSX.Element {
   const { message } = AntApp.useApp();
