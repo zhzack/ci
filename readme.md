@@ -1,5 +1,7 @@
 # Mini Pipeline
 
+[![CI](https://github.com/zhzack/ci/actions/workflows/ci.yml/badge.svg?branch=glm_test)](https://github.com/zhzack/ci/actions/workflows/ci.yml)
+
 **轻量级流水线执行平台** —— 插件只是普通进程，流水线只是一个 YAML DAG。
 
 | | |

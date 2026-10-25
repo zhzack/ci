@@ -1,6 +1,6 @@
 # 运维手册（Operations Runbook）
 
-面向部署与运维人员的实操指南。非源码生产发布与单机/多机部署方案见 [docs/deploy/非源码部署指南.md](deploy/非源码部署指南.md)，架构背景见 `docs/architecture.md`，配置项速查见 `readme.md` §8。
+面向部署与运维人员的实操指南。非源码生产发布与单机/多机部署方案见 [docs/deploy/非源码部署指南.md](deploy/非源码部署指南.md)，架构背景见 `docs/architecture.md`，配置项速查见 `readme.md` §8。 持续集成（GitHub Actions 质量门禁）的配置、运行环境与依赖锁定机制见 [docs/ci.md](ci.md)。
 
 ## 1. 进程与端口
 

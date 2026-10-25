@@ -5,17 +5,30 @@ on:
     branches: [main, glm_test]
   pull_request:
 
+# One run per branch: a new push cancels the superseded run instead of queuing.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Read-only token: this pipeline never pushes anything back.
+permissions:
+  contents: read
+
 jobs:
   backend:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
-      - name: Install backend dependencies
-        run: pip install -e '.[dev]'
+          cache-dependency-path: requirements-lock.txt
+      - name: Install locked dependencies
+        run: |
+          pip install -r requirements-lock.txt
+          pip install -e . --no-deps
       - name: Lint (ruff)
         run: ruff check .
       - name: Test with coverage
@@ -25,6 +38,7 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: frontend
