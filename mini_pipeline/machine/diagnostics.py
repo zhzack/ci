@@ -1236,6 +1236,42 @@ class MachineDiagnosticsService:
                         tx_mb=tx_m,
                     ))
 
+            # 1b. BSD/macOS fallback: no /proc/net/dev — use netstat -ibn.
+            # Each interface spans several rows (link/IPv4/IPv6); byte
+            # counters repeat on every row, the IPv4 address only on one.
+            if not interfaces:
+                _, stdout_bs, _ = client.exec_command(
+                    "netstat -ibn 2>/dev/null", timeout=5
+                )
+                bs_raw = stdout_bs.read().decode("utf-8", errors="replace")
+                ipv4_re = re.compile(r"^\d+\.\d+\.\d+\.\d+$")
+                counters: dict[str, tuple[float, float]] = {}
+                addrs: dict[str, str] = {}
+                for line in bs_raw.splitlines():
+                    p = line.split()
+                    if len(p) < 10 or p[0] == "Name":
+                        continue
+                    ifname = p[0].rstrip("*")
+                    if ifname.startswith("lo"):
+                        continue
+                    if ifname not in counters and p[6].isdigit() and p[9].isdigit():
+                        counters[ifname] = (
+                            round(int(p[6]) / (1024 * 1024), 2),
+                            round(int(p[9]) / (1024 * 1024), 2),
+                        )
+                    if ipv4_re.fullmatch(p[3]):
+                        addrs.setdefault(ifname, p[3])
+                for ifname, (rx_m, tx_m) in counters.items():
+                    rx_tot += rx_m
+                    tx_tot += tx_m
+                    interfaces.append(NetworkInterfaceInfo(
+                        name=ifname,
+                        status="up" if rx_m > 0 or tx_m > 0 else "unknown",
+                        ipv4=addrs.get(ifname, ""),
+                        rx_mb=rx_m,
+                        tx_mb=tx_m,
+                    ))
+
             # 2. IP addresses from ip -br addr
             _, stdout_ip, _ = client.exec_command("ip -br addr 2>/dev/null", timeout=5)
             ip_raw = stdout_ip.read().decode("utf-8", errors="replace")

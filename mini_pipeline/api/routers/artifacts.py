@@ -34,7 +34,8 @@ def list_artifacts(
         offset=0, limit=10_000, run_id=run_id
     )
     visible = []
-    seen_runs: set[str] = set()
+    # run_id -> permission verdict cache (dict, not set).
+    seen_runs: dict[str, bool] = {}
     for item in items:
         if item.run_id not in seen_runs:
             run = services.runs.get(item.run_id)

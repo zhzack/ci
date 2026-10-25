@@ -260,6 +260,7 @@ class Services:
             permissions=permissions,
             machine_repository=machine_repository,
             plugin_repository=plugin_repository,
+            storage=settings.storage,
         )
         lease_reaper = LeaseReaper(
             runs_repository=run_repository,

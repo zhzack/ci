@@ -86,7 +86,8 @@ def test_docker_runtime_builds_run_command(
     assert "MY_VAR=hello" in env_args
     assert not any(str(tmp_path) in c for c in env_args)
     # Image then entry relative to the workspace root.
-    assert command[-2:] == ["alpine:3.19", "run.sh"]
+    assert command[-3:] == ['sh', '-c', './run.sh']
+    assert 'alpine:3.19' in command
 
 
 def test_docker_runtime_requires_image(tmp_path: Path, fake_docker: list[str]) -> None:

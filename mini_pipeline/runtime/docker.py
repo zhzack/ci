@@ -126,7 +126,16 @@ class DockerRuntime:
         for key, value in request.environment.items():
             command.extend(["-e", f"{key}={_REMAPPED_ENV_KEYS.get(key, value)}"])
         command.append(image)
-        command.append(self._entry_relative(request))
+        # Bundle zips lose both the POSIX exec bit and empty dirs; restore
+        # +x on the entry (best effort) and invoke it as ./entry so the
+        # kernel honours its shebang. A bare `sh -c run.sh` would PATH-search
+        # and fail with 127.
+        entry_abs = request.cwd / self._entry_relative(request)
+        try:
+            entry_abs.chmod(entry_abs.stat().st_mode | 0o755)
+        except OSError:
+            pass
+        command.extend(["sh", "-c", f"./{self._entry_relative(request)}"])
 
         result = self._runner.run(command, request)
         if result.timed_out or result.cancelled:

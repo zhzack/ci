@@ -34,11 +34,15 @@ class RunService:
         permissions=None,
         machine_repository=None,
         plugin_repository=None,
+        storage=None,
     ) -> None:
         self.pipelines = pipelines
         self.repository = repository
         self.engine = engine
         self.permissions = permissions
+        # StorageConfig — needed to resolve log paths for tasks that have
+        # not started yet (log_path empty until the executor first writes).
+        self.storage = storage
         self.machine_repository = machine_repository
         self.plugin_repository = plugin_repository
 

@@ -590,6 +590,11 @@ def execute_task(client: RunnerClient, spec: dict[str, Any], workspace_root: Pat
         client.download_bundle(task_id, bundle_path)
         with zipfile.ZipFile(bundle_path) as zf:
             zf.extractall(workspace)
+            # Bundle zips only carry files; recreate the protocol skeleton
+            # (output/, temp/, ...) that empty-directory zipping dropped.
+            from mini_pipeline.executor.context import create_workspace
+
+            create_workspace(workspace)
     finally:
         bundle_path.unlink(missing_ok=True)
 
