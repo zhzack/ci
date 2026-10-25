@@ -82,6 +82,13 @@ class S3ArtifactStore:
         stream, _, _ = self._driver.get_file_stream(key)
         return stream
 
+    def delete(self, artifact: ArtifactRecord) -> None:
+        """Delete the backing S3 object so retention GC reclaims bucket space."""
+        key = str(artifact.storage_path).replace("\\", "/").lstrip("/")
+        if not key.startswith(f"{self.prefix}/"):
+            raise ExecutionError("Stored artifact file is unavailable")
+        self._driver.delete(key)
+
 
 # Re-exported so callers can keep a single import site for both backends.
 __all__ = ["LocalArtifactStore", "S3ArtifactStore"]

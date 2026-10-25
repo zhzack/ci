@@ -9,9 +9,10 @@ class SmtpSettings(BaseModel):
     enabled: bool = True
     host: str = "smtp.qq.com"
     port: int = 465
-    username: str = "1018784543@qq.com"
-    password: str = "jnkepakmmszlbeij"
-    sender_email: str = "1018784543@qq.com"
+    username: str = ""
+    # Credentials come from config env expansion or the admin console DB row.
+    password: str = ""
+    sender_email: str = ""
     sender_name: str = "Mini Pipeline CI/CD"
     use_ssl: bool = True
     use_tls: bool = False

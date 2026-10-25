@@ -114,13 +114,21 @@ def collect(
                 removed_any = True
             if removed_any:
                 summary["runs"] += 1
-            # Artifact DB rows follow the artifact window.
+            # Artifact DB rows follow the artifact window. Physical content is
+            # removed through the configured ArtifactStore so object-storage
+            # backends (S3) reclaim bucket space too, not just local disks.
             if deadlines["artifacts"] > 0 and age > deadlines["artifacts"]:
                 artifacts = services.run_repository.list_artifacts(
                     run_id=run.id, offset=0, limit=10000
                 )
                 for artifact in artifacts:
                     if not dry_run:
+                        try:
+                            services.artifacts.delete(artifact)
+                        except Exception as exc:
+                            logger.warning(
+                                "Failed to delete artifact %s: %s", artifact.id, exc
+                            )
                         services.run_repository.delete_artifact(artifact.id)
                     summary["artifacts"] += 1
         if len(runs) < batch:

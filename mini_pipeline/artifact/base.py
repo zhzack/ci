@@ -25,3 +25,6 @@ class ArtifactStore(Protocol):
     ) -> ArtifactRecord: ...
 
     def open(self, artifact: ArtifactRecord) -> BinaryIO: ...
+
+    def delete(self, artifact: ArtifactRecord) -> None:
+        """Remove the stored content of one artifact (best effort)."""

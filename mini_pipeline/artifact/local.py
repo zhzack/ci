@@ -62,3 +62,17 @@ class LocalArtifactStore:
         if not path.is_relative_to(self.root) or not path.is_file():
             raise ExecutionError("Stored artifact file is unavailable")
         return path.open("rb")
+
+    def delete(self, artifact: ArtifactRecord) -> None:
+        """Unlink the artifact content and prune now-empty parent dirs."""
+        path = artifact.storage_path.resolve()
+        if not path.is_relative_to(self.root):
+            raise ExecutionError("Stored artifact file is unavailable")
+        path.unlink(missing_ok=True)
+        for parent in path.parents:
+            if parent == self.root:
+                break
+            try:
+                parent.rmdir()
+            except OSError:
+                break

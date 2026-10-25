@@ -183,7 +183,9 @@ def test_email_verification_and_auth_flows(tmp_path: Path) -> None:
         smtp_info = res_smtp_get.json()
         assert smtp_info["host"] == "smtp.qq.com"
         assert smtp_info["port"] == 465
-        assert smtp_info["has_password"] is True
+        # Credentials are environment/console-provided now — a fresh system
+        # starts with no SMTP password configured.
+        assert smtp_info["has_password"] is False
 
         # Update SMTP config
         res_smtp_put = client.put(

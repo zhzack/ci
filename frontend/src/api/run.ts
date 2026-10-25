@@ -1,4 +1,4 @@
-import { http } from './http';
+import { http, loadStoredAuth } from './http';
 import type { Paged } from '@/types/common';
 import type {
   PipelineRun,
@@ -85,8 +85,19 @@ export type RunStreamHandlers = {
  * Returns a disposer. The server closes the stream itself once the run
  * reaches a terminal status, so long-lived reconnect logic is unnecessary.
  */
+/**
+ * EventSource cannot send Authorization headers, so the backend accepts the
+ * session token via the `?token=` query parameter (same channel the
+ * WebSocket terminal uses). Auth-disabled deployments return a tokenless URL.
+ */
+function withStreamToken(url: string): string {
+  const token = loadStoredAuth()?.token;
+  if (!token) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
+}
+
 export function openRunEventStream(runId: string, handlers: RunStreamHandlers): () => void {
-  const source = new EventSource(`/api/runs/${encodeURIComponent(runId)}/events`);
+  const source = new EventSource(withStreamToken(`/api/runs/${encodeURIComponent(runId)}/events`));
   source.addEventListener('snapshot', (ev) => {
     try {
       handlers.onSnapshot?.(JSON.parse((ev as MessageEvent<string>).data));
@@ -117,7 +128,9 @@ export function openTaskLogStream(
   stepName: string,
   handlers: LogStreamHandlers,
 ): () => void {
-  const url = `/api/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(stepName)}/log/stream`;
+  const url = withStreamToken(
+    `/api/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(stepName)}/log/stream`,
+  );
   const source = new EventSource(url);
   source.addEventListener('log', (ev) => {
     try {

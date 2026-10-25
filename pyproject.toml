@@ -22,6 +22,7 @@ dependencies = [
     "alembic>=1.13,<2",
     "cryptography>=42,<46",
     "paramiko>=3.4,<4",
+    "python-dotenv>=1.0,<2",
     "PySocks>=1.28,<2",
 ]
 
@@ -39,6 +40,14 @@ mini-pipeline-runner = "mini_pipeline.runner.agent:main"
 
 [tool.setuptools.packages.find]
 include = ["mini_pipeline*"]
+
+[tool.coverage.run]
+source = ["mini_pipeline"]
+omit = ["*/migrations/*"]
+
+[tool.coverage.report]
+show_missing = true
+precision = 1
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

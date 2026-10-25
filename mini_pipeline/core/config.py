@@ -151,9 +151,11 @@ class EmailConfig(BaseModel):
     enabled: bool = True
     host: str = "smtp.qq.com"
     port: int = 465
-    username: str = "1018784543@qq.com"
-    password: str = "jnkepakmmszlbeij"
-    sender_email: str = "1018784543@qq.com"
+    username: str = ""
+    # SMTP credentials must come from the environment (SMTP_PASSWORD) or the
+    # admin console — never from a source-control default.
+    password: str = ""
+    sender_email: str = ""
     sender_name: str = "Mini Pipeline CI/CD"
     use_ssl: bool = True
     use_tls: bool = False
@@ -226,11 +228,26 @@ def _resolve_storage_paths(data: dict[str, Any], working_directory: Path) -> Non
             local["root"] = str(path.resolve())
 
 
+def _load_dotenv() -> None:
+    """Load .env from the working directory if python-dotenv is available.
+
+    Real process.env entries always win (override=False), matching
+    docker-compose semantics; this only bridges bare ``uvicorn`` runs to the
+    same .env file the compose files consume.
+    """
+    try:
+        from dotenv import load_dotenv
+    except ImportError:  # dependency optional for pure-compose deployments
+        return
+    load_dotenv(override=False)
+
+
 def load_settings(
     path: Optional[Path] = None,
     *,
     working_directory: Optional[Path] = None,
 ) -> Settings:
+    _load_dotenv()
     config_path = Path(path or os.getenv("MINI_PIPELINE_CONFIG", "config/default.yaml"))
     if not config_path.is_absolute():
         config_path = Path.cwd() / config_path
