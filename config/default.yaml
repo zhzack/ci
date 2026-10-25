@@ -96,10 +96,11 @@ email:
   sender_name: "Mini Pipeline CI/CD"
   use_ssl: true
   use_tls: false
-  # Optional SOCKS5 proxy for SMTP delivery. This host's network blocks
-  # outbound SMTP (smtp.qq.com DNS-poisoned to 30.0.0.1, 465/587 filtered),
-  # so route mail through the local Clash Verge mixed port instead.
-  proxy: "socks5://127.0.0.1:7897"
+  # Optional SOCKS5 proxy for SMTP delivery, e.g. "socks5://127.0.0.1:7897".
+  # Deploy hosts whose network blocks outbound SMTP (DNS-poisoned mail
+  # servers, filtered 465/587) should set the SMTP_PROXY environment
+  # variable instead of hardcoding a machine-specific proxy here.
+  proxy: "${SMTP_PROXY:-}"
 
 artifact_storage:
   # Storage backend for pipeline run artifacts. Options: local | s3.
