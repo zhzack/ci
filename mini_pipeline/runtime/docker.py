@@ -21,11 +21,14 @@ container, we follow up with a best-effort ``docker rm -f``.
 
 from __future__ import annotations
 
+import fnmatch
 import shutil
 import subprocess
 import uuid
 from pathlib import Path
+from typing import Optional
 
+from mini_pipeline.core.config import DockerRuntimeConfig
 from mini_pipeline.domain.exceptions import ValidationError
 from mini_pipeline.domain.runtime import RuntimeRequest, RuntimeResult
 from mini_pipeline.plugin.manifest import load_manifest
@@ -63,8 +66,40 @@ def force_remove_container(binary: str, container: str) -> None:
 class DockerRuntime:
     runtime_type = "docker"
 
-    def __init__(self) -> None:
+    def __init__(self, config: Optional[DockerRuntimeConfig] = None) -> None:
+        self._config = config or DockerRuntimeConfig()
         self._runner = ProcessRunner()
+
+    def _security_flags(self) -> list[str]:
+        """Build the sandbox flags from configuration."""
+        cfg = self._config
+        flags: list[str] = []
+        if cfg.cpus:
+            flags.extend(["--cpus", str(cfg.cpus)])
+        if cfg.memory:
+            flags.extend(["--memory", str(cfg.memory)])
+        if cfg.pids_limit:
+            flags.extend(["--pids-limit", str(cfg.pids_limit)])
+        if cfg.network:
+            if cfg.network.strip().lower() == "host":
+                raise ValidationError(
+                    "docker_runtime.network: host networking is not allowed "
+                    "(containers must not share the host network namespace)"
+                )
+            flags.extend(["--network", str(cfg.network)])
+        # Defence in depth: never run privileged, drop capabilities by default.
+        flags.append("--security-opt=no-new-privileges")
+        return flags
+
+    def _validate_image(self, image: str) -> None:
+        patterns = [p for p in (self._config.allowed_images or []) if p.strip()]
+        if not patterns:
+            return
+        if any(fnmatch.fnmatch(image, p.strip()) for p in patterns):
+            return
+        raise ValidationError(
+            f"Image {image!r} is not in the docker_runtime.allowed_images allowlist"
+        )
 
     def execute(self, request: RuntimeRequest) -> RuntimeResult:
         binary = find_docker_binary()
@@ -76,12 +111,15 @@ class DockerRuntime:
             )
         try:
             image = self._resolve_image(request.cwd)
+            self._validate_image(image)
+            security_flags = self._security_flags()
         except ValidationError as exc:
             return RuntimeResult(exit_code=-1, error=str(exc))
 
         container = f"mp-task-{uuid.uuid4().hex[:12]}"
         command = [
             binary, "run", "--rm", "--name", container,
+            *security_flags,
             "-v", f"{request.cwd}:{_WORKSPACE_MOUNT}",
             "-w", _WORKSPACE_MOUNT,
         ]

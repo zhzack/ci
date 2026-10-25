@@ -210,7 +210,7 @@ class Services:
         runtimes.register(PythonRuntime())
         runtimes.register(NodeRuntime())
         runtimes.register(ExecutableRuntime())
-        runtimes.register(DockerRuntime())
+        runtimes.register(DockerRuntime(settings.docker_runtime))
         executor = TaskExecutor(
             storage=settings.storage,
             execution=settings.execution,

@@ -162,6 +162,24 @@ class EmailConfig(BaseModel):
     proxy: Optional[str] = None
 
 
+class DockerRuntimeConfig(BaseModel):
+    """Sandbox controls for the Docker runtime (applied on `docker run`).
+
+    Defaults keep the pre-hardening behaviour (no limits, bridge network,
+    any image allowed); production deployments should set network to `none`
+    and pin an image allowlist. `network: host` is always rejected.
+    """
+
+    # --cpus (e.g. "1.5"), --memory (e.g. "512m"), --pids-limit (e.g. 128).
+    cpus: Optional[str] = None
+    memory: Optional[str] = None
+    pids_limit: Optional[int] = None
+    # --network; "host" is rejected outright at validation time.
+    network: Optional[str] = None
+    # fnmatch patterns (e.g. "python:3.12-*"); empty list = any image.
+    allowed_images: list[str] = Field(default_factory=list)
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -178,6 +196,7 @@ class Settings(BaseModel):
     runner: RunnerConfig = Field(default_factory=RunnerConfig)
     packages: PackageStorageConfig = Field(default_factory=PackageStorageConfig)
     artifact_storage: ArtifactStorageConfig = Field(default_factory=ArtifactStorageConfig)
+    docker_runtime: DockerRuntimeConfig = Field(default_factory=DockerRuntimeConfig)
     email: EmailConfig = Field(default_factory=EmailConfig)
 
     def prepare_directories(self) -> None:

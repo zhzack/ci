@@ -105,6 +105,16 @@ email:
   # variable instead of hardcoding a machine-specific proxy here.
   proxy: "${SMTP_PROXY:-}"
 
+# Docker runtime sandbox controls (applied on `docker run`).
+# Defaults keep backward compatibility; production should set
+# network: none and pin an allowed_images list. network: host is rejected.
+docker_runtime:
+  cpus: null
+  memory: null
+  pids_limit: null
+  network: null
+  allowed_images: []
+
 artifact_storage:
   # Storage backend for pipeline run artifacts. Options: local | s3.
   # With s3, artifacts live in the bucket below (S3/MinIO/OSS/COS/R2) and

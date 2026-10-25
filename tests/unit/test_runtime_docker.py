@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from mini_pipeline.core.config import DockerRuntimeConfig
 from mini_pipeline.domain.runtime import RuntimeRequest, RuntimeResult
 from mini_pipeline.runtime import docker as docker_module
 from mini_pipeline.runtime.docker import DockerRuntime
@@ -159,3 +160,73 @@ def test_docker_runtime_no_cleanup_on_success(
 
     assert result.exit_code == 0
     assert fake_docker == []
+
+
+def test_docker_runtime_applies_security_flags(tmp_path: Path) -> None:
+    entry = _write_plugin(
+        tmp_path,
+        "name: demo\nversion: 1.0.0\n"
+        "runtime:\n  type: docker\n  image: alpine:3.19\n  entry: run.sh\n",
+    )
+    runtime = DockerRuntime(DockerRuntimeConfig(
+        cpus="1.5", memory="512m", pids_limit=128, network="none",
+    ))
+    fake = FakeRunner()
+    runtime._runner = fake  # type: ignore[assignment]
+
+    result = runtime.execute(_request(entry, tmp_path))
+
+    assert result.exit_code == 0
+    command = fake.commands[0]
+    for expected in [
+        "--cpus", "1.5", "--memory", "512m",
+        "--pids-limit", "128", "--network", "none",
+        "--security-opt=no-new-privileges",
+    ]:
+        assert expected in command, (expected, command)
+
+
+def test_docker_runtime_rejects_host_network(tmp_path: Path) -> None:
+    entry = _write_plugin(
+        tmp_path,
+        "name: demo\nversion: 1.0.0\n"
+        "runtime:\n  type: docker\n  image: alpine:3.19\n  entry: run.sh\n",
+    )
+    runtime = DockerRuntime(DockerRuntimeConfig(network="HOST"))
+    fake = FakeRunner()
+    runtime._runner = fake  # type: ignore[assignment]
+
+    result = runtime.execute(_request(entry, tmp_path))
+
+    assert result.exit_code == -1
+    assert "host networking is not allowed" in (result.error or "")
+    assert fake.commands == []
+
+
+def test_docker_runtime_image_allowlist(tmp_path: Path) -> None:
+    entry = _write_plugin(
+        tmp_path,
+        "name: demo\nversion: 1.0.0\n"
+        "runtime:\n  type: docker\n  image: python:3.12-slim\n  entry: run.sh\n",
+    )
+    runtime = DockerRuntime(DockerRuntimeConfig(
+        allowed_images=["alpine:*", "python:3.12-*"],
+    ))
+    fake = FakeRunner()
+    runtime._runner = fake  # type: ignore[assignment]
+
+    # Allowed image runs normally.
+    ok = runtime.execute(_request(entry, tmp_path))
+    assert ok.exit_code == 0
+    assert len(fake.commands) == 1
+
+    # Non-matching image is rejected before docker is invoked.
+    (tmp_path / "plugin.yaml").write_text(
+        "name: demo\nversion: 1.0.0\n"
+        "runtime:\n  type: docker\n  image: evil:latest\n  entry: run.sh\n",
+        encoding="utf-8",
+    )
+    bad = runtime.execute(_request(entry, tmp_path))
+    assert bad.exit_code == -1
+    assert "allowlist" in (bad.error or "")
+    assert len(fake.commands) == 1

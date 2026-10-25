@@ -71,6 +71,13 @@ packages:
     secret_key: null
     region: us-east-1
 
+docker_runtime:
+  cpus: null
+  memory: null
+  pids_limit: null
+  network: ${DOCKER_RUNTIME_NETWORK:-}
+  allowed_images: []
+
 artifact_storage:
   driver: ${ARTIFACT_STORAGE_DRIVER:-local}
   prefix: artifacts
