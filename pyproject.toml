@@ -23,7 +23,7 @@ dependencies = [
     "cryptography>=42,<46",
     "paramiko>=3.4,<4",
     "python-dotenv>=1.0,<2",
-    "PySocks>=1.28,<2",
+    "PySocks>=1.7.1,<2",
 ]
 
 [project.optional-dependencies]
