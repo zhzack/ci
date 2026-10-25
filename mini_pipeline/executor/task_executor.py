@@ -68,6 +68,7 @@ class TaskExecutor:
         dependencies: dict[str, Any],
         uploads: dict[str, Path] | None = None,
         run_params: dict[str, Any] | None = None,
+        secret_values: dict[str, Any] | None = None,
         cancel_event=None,
     ) -> TaskExecutionResult:
         workspace = self.storage.workspaces / run_id / task.id
@@ -145,11 +146,17 @@ class TaskExecutor:
                     command=cmd,
                     cwd=workspace,
                     environment={
-                        "PIPELINE_CONTEXT": str(workspace / "context.json"),
-                        "PIPELINE_WORKSPACE": str(workspace),
-                        "PIPELINE_TASK_ID": task.id,
-                        "MINI_PIPELINE_WORKSPACE": str(workspace),
+                    "PIPELINE_CONTEXT": str(workspace / "context.json"),
+                    "PIPELINE_WORKSPACE": str(workspace),
+                    "PIPELINE_TASK_ID": task.id,
+                    "MINI_PIPELINE_WORKSPACE": str(workspace),
+                    **{
+                        # Secret params reach the plugin only through these
+                        # variables — never through params.json or logs.
+                        f"MP_SECRET_{k.upper()}": str(v)
+                        for k, v in (secret_values or {}).items()
                     },
+                },
                     timeout_seconds=self.execution.task_timeout_seconds,
                     log_stream=log_stream,
                     cancel_event=cancel_event,

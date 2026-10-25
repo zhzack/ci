@@ -16,6 +16,10 @@ from mini_pipeline.domain.states import (
     TaskStatus,
 )
 from mini_pipeline.pipeline.dag import topological_order
+from mini_pipeline.pipeline.schema import (
+    secret_param_names,
+    split_secret_params,
+)
 from mini_pipeline.pipeline.service import PipelineService
 from mini_pipeline.scheduler.engine import PipelineEngine
 
@@ -167,6 +171,17 @@ class RunService:
         self._check_plugins_usable(principal, definition, entity)
         machine_id = self._resolve_machine_id(principal, machine)
 
+        # Secret params: values must come from the run request; they are
+        # pulled out of the visible payload (masked) and stored separately.
+        missing = sorted(
+            n for n in secret_param_names(definition.params) if n not in params
+        )
+        if missing:
+            raise ValidationError(
+                "缺少必填的密钥参数 (secret params): " + ", ".join(missing)
+            )
+        params, secret_values = split_secret_params(definition.params, params)
+
         inherited_uploads: dict[str, Path] = {}
         if parent_run_id and reuse_uploads:
             try:
@@ -184,6 +199,7 @@ class RunService:
             pipeline_id=entity.id,
             definition=definition,
             params=params,
+            secret_values=secret_values,
             uploads=inherited_uploads or None,
             machine_id=machine_id,
             task_machines=self._task_machines(principal, definition, machine_id),
@@ -206,6 +222,16 @@ class RunService:
         self._check_plugins_usable(principal, definition, entity)
         machine_id = self._resolve_machine_id(principal, machine)
 
+        # Secret params: same contract as submit().
+        missing = sorted(
+            n for n in secret_param_names(definition.params) if n not in params
+        )
+        if missing:
+            raise ValidationError(
+                "缺少必填的密钥参数 (secret params): " + ", ".join(missing)
+            )
+        params, secret_values = split_secret_params(definition.params, params)
+
         final_uploads: dict[str, Path] = dict(uploads or {})
         if parent_run_id and reuse_uploads:
             try:
@@ -224,6 +250,7 @@ class RunService:
             pipeline_id=entity.id,
             definition=definition,
             params=params,
+            secret_values=secret_values,
             uploads=final_uploads or None,
             machine_id=machine_id,
             task_machines=self._task_machines(principal, definition, machine_id),
@@ -378,6 +405,20 @@ class RunService:
                 continue
             merged_params[key] = value
         merged_params.update(params)
+        # Secret values live outside the visible params payload; inherit them
+        # from the parent run so branch runs execute with real values.
+        parent_secrets: dict[str, Any] = parent.secret_values or {}
+        if parent_secrets:
+            inheritable = secret_param_names(definition.params)
+            merged_params = {
+                k: v for k, v in merged_params.items() if k not in inheritable
+            }
+            merged_params.update(
+                {k: v for k, v in parent_secrets.items() if k not in params}
+            )
+        run_params, secret_values = split_secret_params(
+            definition.params, merged_params
+        )
 
         if parent.machine_id:
             try:

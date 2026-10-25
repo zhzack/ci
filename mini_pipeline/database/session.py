@@ -115,6 +115,19 @@ class Database:
                             "ALTER TABLE pipeline_runs ADD COLUMN parent_run_id VARCHAR(36)"
                         )
                     try:
+                        cursor.execute("SELECT secret_values FROM pipeline_runs LIMIT 1")
+                    except Exception:
+                        if is_pg:
+                            cursor.execute(
+                                "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS "
+                                "secret_values JSON NOT NULL DEFAULT '{}';"
+                            )
+                        else:
+                            cursor.execute(
+                                "ALTER TABLE pipeline_runs ADD COLUMN secret_values JSON "
+                                "NOT NULL DEFAULT '{}'"
+                            )
+                    try:
                         cursor.execute("SELECT branched_from_step FROM pipeline_runs LIMIT 1")
                     except Exception:
                         cursor.execute(

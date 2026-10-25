@@ -61,6 +61,51 @@ class PipelineStep(BaseModel):
         return match.group("name"), match.group("version")
 
 
+MASK = "******"
+
+
+def secret_param_names(params_def: dict[str, Any] | None) -> set[str]:
+    """Names of parameters declared as secrets.
+
+    A parameter is a secret when its definition is a mapping containing
+    ``secret: true``::
+
+        params:
+          api_key:
+            secret: true
+            description: Third-party API key
+
+    Secret values must be supplied by the run request; they are stored out of
+    the visible params payload and injected as ``MP_SECRET_<NAME>`` env vars.
+    """
+    names: set[str] = set()
+    for key, spec in (params_def or {}).items():
+        if isinstance(spec, dict) and spec.get("secret") is True:
+            names.add(key)
+    return names
+
+
+def split_secret_params(
+    params_def: dict[str, Any] | None,
+    run_params: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Split run params into (masked, real) using the pipeline definition.
+
+    Values for secret parameters are pulled out of the visible payload
+    (replaced with ``******``) and returned separately for durable storage.
+    """
+    secrets = secret_param_names(params_def)
+    if not secrets:
+        return dict(run_params), {}
+    masked = dict(run_params)
+    real: dict[str, Any] = {}
+    for key in secrets:
+        if key in masked:
+            real[key] = masked.pop(key)
+            masked[key] = MASK
+    return masked, real
+
+
 class PipelineDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

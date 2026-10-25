@@ -207,6 +207,7 @@ class PipelineEngine:
         machine_id: str | None = None,
         task_machines: dict[str, str] | None = None,
         owner_id: str | None = None,
+        secret_values: dict[str, Any] | None = None,
     ) -> PipelineRun:
         merged_params = dict(definition.params)
         merged_params.update(params)
@@ -225,6 +226,7 @@ class PipelineEngine:
             pipeline_id=pipeline_id,
             pipeline_name=definition.name,
             params=merged_params,
+            secret_values=secret_values,
             tasks=[(name, *steps[name].plugin_reference) for name in ordered],
             machine_id=machine_id,
             task_machines=task_machines,
@@ -476,10 +478,14 @@ class PipelineEngine:
         definition: PipelineDefinition,
         params: dict[str, Any],
         uploads: dict[str, Path] | None = None,
+        secret_values: dict[str, Any] | None = None,
     ) -> None:
         run_cancel = self.cancellations.register(run_id)
         try:
-            self._coordinate_inner(run_id, definition, params, uploads, run_cancel)
+            self._coordinate_inner(
+                run_id, definition, params, uploads, run_cancel,
+                secret_values=secret_values,
+            )
         finally:
             self.cancellations.release(run_id)
 
@@ -490,12 +496,17 @@ class PipelineEngine:
         params: dict[str, Any],
         uploads: dict[str, Path] | None,
         run_cancel,
+        secret_values: dict[str, Any] | None = None,
     ) -> None:
         now = utcnow()
         self.runs.set_run_state(run_id, PipelineStatus.RUNNING, started_at=now)
         self._publish(run_id, "run.status", data={"status": PipelineStatus.RUNNING.value})
         steps = {step.name: step for step in definition.steps}
-        task_entities = {task.step_name: task for task in self.runs.get(run_id).tasks}
+        run_entity = self.runs.get(run_id)
+        task_entities = {task.step_name: task for task in run_entity.tasks}
+        # Secret param values live outside the visible params payload; the
+        # executor injects them as MP_SECRET_<NAME> environment variables.
+        secret_values = dict(secret_values or run_entity.secret_values or {})
         # Initialise `states` from the database so branch runs respect the
         # tasks that were already marked SUCCESS / SKIPPED by RunService.
         states = {name: TaskStatus(task.status) for name, task in task_entities.items()}
@@ -522,6 +533,7 @@ class PipelineEngine:
                     attempts=attempts,
                     uploads=uploads,
                     run_cancel=run_cancel,
+                    secret_values=secret_values,
                 )
                 if not futures:
                     if not progressed:
@@ -727,6 +739,7 @@ class PipelineEngine:
         definition: PipelineDefinition,
         from_step: str,
         params: dict[str, Any],
+        secret_values: dict[str, Any] | None = None,
         uploads: dict[str, Path] | None = None,
     ) -> None:
         """Schedule execution of just the from_step subgraph for a branch run.
@@ -735,7 +748,9 @@ class PipelineEngine:
         caller; this method only progresses tasks that are still PENDING.
         """
         self.dispatcher.submit_run(
-            lambda r_id, defn, prms: self._coordinate(r_id, defn, prms, uploads=uploads),
+            lambda r_id, defn, prms: self._coordinate(
+                r_id, defn, prms, uploads=uploads, secret_values=secret_values
+            ),
             run_id,
             definition,
             params,
@@ -813,6 +828,7 @@ class PipelineEngine:
         attempts: dict[str, int],
         uploads: dict[str, Path] | None = None,
         run_cancel=None,
+        secret_values: dict[str, Any] | None = None,
     ) -> bool:
         progressed = False
         for name, step in steps.items():
@@ -1063,6 +1079,7 @@ class PipelineEngine:
                 dependencies=dependency_results,
                 uploads=uploads,
                 run_params=step_local_params,
+                secret_values=secret_values,
                 cancel_event=run_cancel,
             )
             futures[future] = name

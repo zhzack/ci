@@ -160,6 +160,9 @@ class PipelineRun(Base):
         String(32), default=PipelineStatus.PENDING.value, nullable=False, index=True
     )
     params: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    # Real values of secret params, stored separately so the visible
+    # `params` payload only ever carries the "******" mask.
+    secret_values: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     uploads: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     # Run submitter; NULL = legacy/anonymous.
     owner_id: Mapped[Optional[str]] = mapped_column(
