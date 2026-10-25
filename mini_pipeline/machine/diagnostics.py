@@ -889,8 +889,11 @@ class MachineDiagnosticsService:
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
         if machine.credentials:
-            raw = decrypt_credentials(machine.credentials, self.settings.security.secret_key or "")
-            connection = json.loads(raw)
+            # decrypt_credentials already parses the payload into a dict;
+            # a second json.loads here raised TypeError on every SSH probe.
+            connection = decrypt_credentials(
+                machine.credentials, self.settings.security.secret_key or ""
+            ) or {}
         else:
             # No stored credentials: try platform private key (auto-provisioned
             # via Agent heartbeat → authorized_keys on the target machine).
