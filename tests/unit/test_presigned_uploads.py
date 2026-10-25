@@ -276,7 +276,8 @@ def test_upload_session_end_to_end_with_s3_backend(tmp_path) -> None:
                 artifact_id="aid-1", size=len(b"artifact-bytes"),
                 sha256=_hashlib.sha256(b"artifact-bytes").hexdigest(),
             )
-            assert str(record.storage_path).replace(chr(92), "/").endswith(f"artifacts/{run.id}/{task.id}/aid-1/content")
+            key = str(record.storage_path).replace(chr(92), "/")
+            assert key.endswith(f"artifacts/{run.id}/{task.id}/aid-1/content")
 
             # Presigned download round-trips the bytes back out.
             dl_url = services.artifacts.presign_download(record)
