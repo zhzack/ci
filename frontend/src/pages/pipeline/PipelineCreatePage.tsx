@@ -1,4 +1,5 @@
 import React from "react";
+import { YamlEditor } from '@/components/YamlEditor';
 import { useState } from 'react';
 import { Alert, Button, Form, Input, Space, Typography, message as antdMessage } from 'antd';
 import { useNavigate } from 'react-router-dom';
@@ -66,12 +67,10 @@ export default function PipelineCreatePage(): React.JSX.Element {
             />
           </Form.Item>
           <Form.Item label="Definition (YAML)">
-            <Input.TextArea
+            <YamlEditor
               value={definition}
-              onChange={(event) => setDefinition(event.target.value)}
-              autoSize={{ minRows: 12, maxRows: 30 }}
-              spellCheck={false}
-              style={{ fontFamily: 'JetBrains Mono, Menlo, Consolas, monospace' }}
+              onChange={setDefinition}
+              height={460}
             />
           </Form.Item>
           <Typography.Paragraph type="secondary">

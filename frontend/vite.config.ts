@@ -13,9 +13,10 @@ export default defineConfig({
     },
   },
   build: {
-    // The antd vendor chunk is ~1 MB raw (330 kB gzip) and cached across
-    // releases; above the default limit by design.
-    chunkSizeWarningLimit: 1100,
+    // The antd vendor chunk is ~1 MB raw (330 kB gzip) and the Monaco
+    // editor chunk ~4 MB raw — both are cached across releases; above the
+    // default limit by design.
+    chunkSizeWarningLimit: 4200,
     rollupOptions: {
       output: {
         // Split the large vendor libraries into cacheable chunks instead of
@@ -24,6 +25,7 @@ export default defineConfig({
           react: ['react', 'react-dom', 'react-router-dom'],
           antd: ['antd', '@ant-design/icons'],
           query: ['@tanstack/react-query', 'axios', 'zustand'],
+          monaco: ['monaco-editor', '@monaco-editor/react'],
         },
       },
     },

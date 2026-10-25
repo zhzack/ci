@@ -1,4 +1,5 @@
 import React from "react";
+import { YamlEditor } from '@/components/YamlEditor';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
@@ -1218,12 +1219,10 @@ export default function PipelineVisualEditorPage(): React.JSX.Element {
                     Edits to YAML only take effect after pressing Sync.
                   </Typography.Text>
                 </Space>
-                <Input.TextArea
+                <YamlEditor
                   value={yamlText}
-                  onChange={(event) => setYamlText(event.target.value)}
-                  autoSize={{ minRows: 18, maxRows: 40 }}
-                  spellCheck={false}
-                  style={{ fontFamily: 'JetBrains Mono, Menlo, Consolas, monospace', fontSize: 12 }}
+                  onChange={setYamlText}
+                  height={520}
                 />
               </div>
             ),
