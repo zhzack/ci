@@ -64,30 +64,42 @@ import {
   publishPackageAsPlugin,
   extractPackageArchive,
   copyPackageItem,
-  createPackageShare,
-  listPackageShares,
-  deletePackageShare,
-  createPackageGrant,
-  listPackageGrants,
-  revokePackageGrant,
-  getPackageStats,
-  importRemotePackage,
   type StorageItem,
-  type PackageShareLink,
   type PackageGrant,
 } from '@/api/packages';
 import { matchCredentials } from '@/api/credentials';
 import { CredentialSelect } from '@/components/credential/CredentialSelect';
-import { adminListUsers, adminListTeams } from '@/api/admin';
 import { useAuthStore } from '@/store/auth';
 import { useUploadStore } from '@/store/upload';
 import { formatSize } from '@/utils/format';
 import { scanDataTransfer } from '@/utils/fileDrop';
 import { getFileIcon } from '@/components/fileIcon';
 import { usePackageActions } from './usePackageActions';
+import { usePackageShare } from './usePackageShare';
+import { usePackageAdminPanels } from './usePackageAdminPanels';
 
 export function PackageHubTab(): React.JSX.Element {
   const { message } = AntApp.useApp();
+
+  const {
+    shareModalOpen,
+    setShareModalOpen,
+    shareTargetItem,
+    shareType,
+    setShareType,
+    shareExpiresHours,
+    setShareExpiresHours,
+    shareDesc,
+    setShareDesc,
+    generatedShareUrl,
+    mySharesDrawerOpen,
+    setMySharesDrawerOpen,
+    myShares,
+    refetchShares,
+    createShareMutation,
+    deleteShareMutation,
+    handleOpenShare,
+  } = usePackageShare({ message });
   const { token } = antdTheme.useToken();
   const queryClient = useQueryClient();
 
@@ -100,6 +112,41 @@ export function PackageHubTab(): React.JSX.Element {
 
   const myPersonalZone = user ? `personal/${user.username || user.display_name}` : 'shared';
   const [currentPath, setCurrentPath] = useState(myPersonalZone);
+
+  const {
+    isImportRemoteModalOpen,
+    setIsImportRemoteModalOpen,
+    importRemoteUrl,
+    setImportRemoteUrl,
+    importRemoteFilename,
+    setImportRemoteFilename,
+    importRemoteCredentialId,
+    setImportRemoteCredentialId,
+    importRemoteMutation,
+    statsDrawerOpen,
+    setStatsDrawerOpen,
+    statsScope,
+    setStatsScope,
+    storageStats,
+    statsLoading,
+    refetchStats,
+    grantModalOpen,
+    setGrantModalOpen,
+    grantTargetPath,
+    setGrantTargetPath,
+    granteeType,
+    setGranteeType,
+    granteeId,
+    setGranteeId,
+    grantPermission,
+    setGrantPermission,
+    grants,
+    grantsLoading,
+    allUsers,
+    allTeams,
+    createGrantMutation,
+    revokeGrantMutation,
+  } = usePackageAdminPanels({ currentPath, message });
   const [searchFilter, setSearchFilter] = useState('');
 
   // Modals & Drawers
@@ -152,17 +199,6 @@ export function PackageHubTab(): React.JSX.Element {
     }
   };
 
-  // Share Modal state
-  const [shareModalOpen, setShareModalOpen] = useState(false);
-  const [shareTargetItem, setShareTargetItem] = useState<StorageItem | null>(null);
-  const [shareType, setShareType] = useState<'live' | 'snapshot'>('live');
-  const [shareExpiresHours, setShareExpiresHours] = useState<number | undefined>(undefined);
-  const [shareDesc, setShareDesc] = useState('');
-  const [generatedShareUrl, setGeneratedShareUrl] = useState<string | null>(null);
-
-  // My Shares Drawer state
-  const [mySharesDrawerOpen, setMySharesDrawerOpen] = useState(false);
-
   // Copy / Import Modal state
   const [copyModalOpen, setCopyModalOpen] = useState(false);
   const [copyTarget, setCopyTarget] = useState('');
@@ -210,12 +246,6 @@ export function PackageHubTab(): React.JSX.Element {
     handleRowMouseDown,
     handleRowMouseEnter,
   } = usePackageActions({ data, currentPath, setCurrentPath, searchFilter, message });
-
-  const { data: myShares = [], refetch: refetchShares } = useQuery({
-    queryKey: ['my-package-shares'],
-    queryFn: () => listPackageShares(),
-    enabled: Boolean(user),
-  });
 
   // Mutations
   const mkdirMutation = useMutation({
@@ -268,139 +298,6 @@ export function PackageHubTab(): React.JSX.Element {
       message.error(`复制失败: ${err instanceof Error ? err.message : String(err)}`);
     },
   });
-
-  const createShareMutation = useMutation({
-    mutationFn: (payload: {
-      source_path: string;
-      share_type: 'live' | 'snapshot';
-      description?: string;
-      expires_in_hours?: number;
-    }) => createPackageShare(payload),
-    onSuccess: (share: PackageShareLink) => {
-      const url = `${window.location.origin}/share/${share.token}`;
-      setGeneratedShareUrl(url);
-      void queryClient.invalidateQueries({ queryKey: ['my-package-shares'] });
-      void navigator.clipboard.writeText(url).then(
-        () => message.success('分享链接已创建并复制到剪贴板！'),
-        () => message.success('分享链接已创建！'),
-      );
-    },
-    onError: (err) => {
-      message.error(`创建分享失败: ${err instanceof Error ? err.message : String(err)}`);
-    },
-  });
-
-  const deleteShareMutation = useMutation({
-    mutationFn: (token: string) => deletePackageShare(token),
-    onSuccess: () => {
-      message.success('分享已撤销');
-      void queryClient.invalidateQueries({ queryKey: ['my-package-shares'] });
-    },
-  });
-
-  // --- Remote URL Import state & mutation ---
-  const [isImportRemoteModalOpen, setIsImportRemoteModalOpen] = useState(false);
-  const [importRemoteUrl, setImportRemoteUrl] = useState('');
-  const [importRemoteFilename, setImportRemoteFilename] = useState('');
-  const [importRemoteCredentialId, setImportRemoteCredentialId] = useState<string | undefined>(undefined);
-
-  const importRemoteMutation = useMutation({
-    mutationFn: () =>
-      importRemotePackage({
-        url: importRemoteUrl.trim(),
-        target_dir: currentPath,
-        filename: importRemoteFilename.trim() || undefined,
-        credential_id: importRemoteCredentialId || undefined,
-      }),
-    onSuccess: (item) => {
-      message.success(`文件 ${item.name} 已成功下载并保存到当前目录！`);
-      setIsImportRemoteModalOpen(false);
-      setImportRemoteUrl('');
-      setImportRemoteFilename('');
-      setImportRemoteCredentialId(undefined);
-      void queryClient.invalidateQueries({ queryKey: ['packages', currentPath] });
-    },
-    onError: (err) => {
-      message.error(`远程下载失败: ${err instanceof Error ? err.message : String(err)}`);
-    },
-  });
-
-  // --- Storage Analytics state & query ---
-  const [statsDrawerOpen, setStatsDrawerOpen] = useState(false);
-  const [statsScope, setStatsScope] = useState<string>('');
-
-  const {
-    data: storageStats,
-    isLoading: statsLoading,
-    refetch: refetchStats,
-  } = useQuery({
-    queryKey: ['package-storage-stats', statsScope],
-    queryFn: () => getPackageStats(statsScope),
-    enabled: statsDrawerOpen,
-  });
-
-  // --- Directory ACL Grants state & mutations ---
-  const [grantModalOpen, setGrantModalOpen] = useState(false);
-  const [grantTargetPath, setGrantTargetPath] = useState<string>('');
-  const [granteeType, setGranteeType] = useState<'user' | 'team'>('user');
-  const [granteeId, setGranteeId] = useState<string>('');
-  const [grantPermission, setGrantPermission] = useState<'viewer' | 'operator'>('viewer');
-
-  const { data: grants = [], refetch: refetchGrants, isLoading: grantsLoading } = useQuery({
-    queryKey: ['package-grants', grantTargetPath],
-    queryFn: () => listPackageGrants(grantTargetPath),
-    enabled: grantModalOpen && Boolean(grantTargetPath),
-  });
-
-  const { data: allUsers = [] } = useQuery({
-    queryKey: ['admin-users-for-grants'],
-    queryFn: adminListUsers,
-    enabled: grantModalOpen,
-  });
-
-  const { data: allTeams = [] } = useQuery({
-    queryKey: ['admin-teams-for-grants'],
-    queryFn: adminListTeams,
-    enabled: grantModalOpen,
-  });
-
-  const createGrantMutation = useMutation({
-    mutationFn: () =>
-      createPackageGrant({
-        path: grantTargetPath,
-        grantee_type: granteeType,
-        grantee_id: granteeId,
-        permission: grantPermission,
-      }),
-    onSuccess: () => {
-      message.success('权限授予成功');
-      setGranteeId('');
-      void refetchGrants();
-    },
-    onError: (err) => {
-      message.error(`授予权限失败: ${err instanceof Error ? err.message : String(err)}`);
-    },
-  });
-
-  const revokeGrantMutation = useMutation({
-    mutationFn: (grantId: string) => revokePackageGrant(grantId),
-    onSuccess: () => {
-      message.success('权限已撤销');
-      void refetchGrants();
-    },
-    onError: (err) => {
-      message.error(`撤销权限失败: ${err instanceof Error ? err.message : String(err)}`);
-    },
-  });
-
-  const handleOpenShare = (record: StorageItem) => {
-    setShareTargetItem(record);
-    setShareType('live');
-    setShareExpiresHours(undefined);
-    setShareDesc('');
-    setGeneratedShareUrl(null);
-    setShareModalOpen(true);
-  };
 
   const columns: TableColumnsType<StorageItem> = [
     {
