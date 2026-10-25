@@ -474,6 +474,12 @@ def create_admin_machine(
         max_concurrency=payload.max_concurrency,
         notes=payload.notes,
         granted_by=principal.user_id,
+        # SSH machines persist their connection details through `connection`;
+        # without it the service stores nothing and every run fails with
+        # "no stored connection details".
+        connection=payload.connection or payload.credentials
+        if payload.connection_type == "ssh"
+        else None,
         connection_type=payload.connection_type,
     )
     services.audit.record(
