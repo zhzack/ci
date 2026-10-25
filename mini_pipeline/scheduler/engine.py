@@ -29,6 +29,10 @@ from mini_pipeline.domain.exceptions import ValidationError
 from mini_pipeline.domain.states import PipelineStatus, TaskStatus
 from mini_pipeline.executor.dependencies import DependencyResult
 from mini_pipeline.executor.task_executor import TaskExecutionResult, TaskExecutor
+from mini_pipeline.notify.webhook import (
+    build_run_finished_payload,
+    dispatch_run_webhooks,
+)
 from mini_pipeline.pipeline.dag import topological_order
 from mini_pipeline.pipeline.resolver import resolve_parameters
 from mini_pipeline.pipeline.schema import PipelineDefinition, PipelineStep
@@ -161,6 +165,41 @@ class PipelineEngine:
                 dep_dict[dep_name] = str(dep_res)
         hasher.update(json.dumps(dep_dict, sort_keys=True, default=str).encode("utf-8"))
         return hasher.hexdigest()
+
+    def _dispatch_webhooks(
+        self,
+        definition: PipelineDefinition,
+        run_entity: Any,
+        status: PipelineStatus,
+        message: str = "",
+    ) -> None:
+        """Queue run-finished webhook deliveries; must never break the run."""
+        hooks = list(getattr(definition, "webhooks", None) or [])
+        if not hooks:
+            return
+        try:
+            fresh = self.runs.get(run_entity.id)
+            payload = build_run_finished_payload(
+                run_id=fresh.id,
+                pipeline_name=fresh.pipeline_name,
+                status=status.value,
+                message=message,
+                started_at=fresh.started_at,
+                finished_at=fresh.finished_at,
+                tasks=[
+                    {
+                        "name": t.step_name,
+                        "status": t.status,
+                        "attempt": t.attempt,
+                    }
+                    for t in (fresh.tasks or [])
+                ],
+            )
+            dispatch_run_webhooks(hooks, payload)
+        except Exception:
+            logger.exception(
+                "Failed to dispatch webhooks for run %s", run_entity.id
+            )
 
     def _dispatch_email_notification(
         self, run_id: str, status: PipelineStatus, message: str = ""
@@ -717,6 +756,7 @@ class PipelineEngine:
             self._observe_run(status.value)
             self._publish(run_id, "run.status", data={"status": status.value})
             self._dispatch_email_notification(run_id, status, message)
+            self._dispatch_webhooks(definition, run_entity, status, message)
         except Exception as exc:
             logger.exception("Pipeline run %s failed in coordinator", run_id)
             self.runs.set_run_state(
@@ -731,6 +771,7 @@ class PipelineEngine:
                 data={"status": PipelineStatus.FAILED.value, "message": str(exc)},
             )
             self._dispatch_email_notification(run_id, PipelineStatus.FAILED, str(exc))
+            self._dispatch_webhooks(definition, run_entity, PipelineStatus.FAILED, str(exc))
 
     def execute_subgraph(
         self,

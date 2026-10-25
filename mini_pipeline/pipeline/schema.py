@@ -106,12 +106,33 @@ def split_secret_params(
     return masked, real
 
 
+class WebhookConfig(BaseModel):
+    """Outbound webhook registered on a pipeline for run-finished events."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str
+    # HMAC-SHA256 signing key; omit to deliver unsigned.
+    secret: str | None = None
+    # Which events to receive; "run.finished" is the only one today.
+    events: list[str] = Field(default_factory=lambda: ["run.finished"])
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url(cls, value: str) -> str:
+        if not value.startswith(("http://", "https://")):
+            raise ValueError("webhook url must start with http:// or https://")
+        return value
+
+
 class PipelineDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
     description: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
+    # Outbound run-finished callbacks (HMAC-signed when secret is set).
+    webhooks: list[WebhookConfig] = Field(default_factory=list)
     steps: list[PipelineStep] = Field(min_length=1)
 
     @field_validator("name", mode="before")
