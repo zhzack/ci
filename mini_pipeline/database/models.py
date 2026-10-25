@@ -106,6 +106,28 @@ class PipelineDefinition(Base):
     runs: Mapped[list[PipelineRun]] = relationship(back_populates="pipeline")
 
 
+class PipelineVersion(Base):
+    """Immutable snapshot of a pipeline definition, taken on create/update."""
+
+    __tablename__ = "pipeline_versions"
+    __table_args__ = (
+        UniqueConstraint("pipeline_id", "version", name="uq_pipeline_version"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    pipeline_id: Mapped[str] = mapped_column(
+        ForeignKey("pipeline_definitions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    definition: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    created_by: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
 class Machine(Base):
     """A registered execution host.
 

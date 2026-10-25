@@ -149,6 +149,76 @@ def update_pipeline(
     )
 
 
+class PipelineVersionSummary(BaseModel):
+    version: int
+    created_at: datetime
+    created_by: Optional[str] = None
+    # First 200 chars for list rendering; full text via the detail endpoint.
+    definition_preview: str
+
+
+class PipelineVersionDetail(PipelineVersionSummary):
+    definition: str
+
+
+@router.get("/{identifier}/versions")
+def list_pipeline_versions(
+    identifier: str,
+    principal: PrincipalDep,
+    services: Annotated[Services, Depends(get_services)],
+    page_params: Annotated[PageParams, Depends()],
+) -> Page[PipelineVersionSummary]:
+    pipeline = services.pipelines.get(identifier)
+    _ensure_pipeline_visible(services, principal, pipeline)
+    rows = services.pipelines.list_versions(identifier)
+    window = rows[page_params.offset : page_params.offset + page_params.page_size]
+    items = [
+        PipelineVersionSummary(
+            version=row.version,
+            created_at=row.created_at,
+            created_by=row.created_by,
+            definition_preview=row.definition[:200],
+        ).model_dump()
+        for row in window
+    ]
+    return page_params.envelope(items, total=len(rows))
+
+
+@router.get("/{identifier}/versions/{version}", response_model=PipelineVersionDetail)
+def get_pipeline_version(
+    identifier: str,
+    version: int,
+    principal: PrincipalDep,
+    services: Annotated[Services, Depends(get_services)],
+) -> PipelineVersionDetail:
+    pipeline = services.pipelines.get(identifier)
+    _ensure_pipeline_visible(services, principal, pipeline)
+    row = services.pipelines.get_version(identifier, version)
+    return PipelineVersionDetail(
+        version=row.version,
+        created_at=row.created_at,
+        created_by=row.created_by,
+        definition_preview=row.definition[:200],
+        definition=row.definition,
+    )
+
+
+@router.post("/{identifier}/rollback/{version}", response_model=PipelineResponse)
+def rollback_pipeline(
+    identifier: str,
+    version: int,
+    principal: PrincipalDep,
+    services: Annotated[Services, Depends(get_services)],
+) -> PipelineResponse:
+    """Restore an old definition. Recorded as a NEW version (append-only)."""
+    pipeline = services.pipelines.get(identifier)
+    _ensure_pipeline_manage(services, principal, pipeline)
+    actor_id = principal.user_id if principal else None
+    return PipelineResponse.from_entity(
+        services.pipelines.rollback(identifier, version, actor_id=actor_id)
+    )
+
+
 @router.delete("/{identifier}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_pipeline(
     identifier: str,

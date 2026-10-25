@@ -7,7 +7,13 @@ from pathlib import Path
 from typing import Any
 
 from mini_pipeline.database.models import PipelineDefinition as PipelineEntity
-from mini_pipeline.database.repositories import PipelineRepository, PluginRepository
+from mini_pipeline.database.models import PipelineVersion
+from mini_pipeline.database.repositories import (
+    PipelineRepository,
+    PipelineVersionRepository,
+    PluginRepository,
+)
+from mini_pipeline.domain.exceptions import NotFoundError
 from mini_pipeline.pipeline.parser import parse_pipeline
 from mini_pipeline.pipeline.schema import PipelineDefinition
 from mini_pipeline.plugin.manifest import load_manifest
@@ -21,16 +27,52 @@ class PipelineService:
         repository: PipelineRepository,
         *,
         plugin_repository: PluginRepository | None = None,
+        versions: PipelineVersionRepository | None = None,
     ) -> None:
         self.repository = repository
         self.plugin_repository = plugin_repository
+        self.versions = versions
 
     def create(self, definition: str, *, owner_id: str | None = None) -> PipelineEntity:
         pipeline = parse_pipeline(definition)
         self._validate_wiring(pipeline)
-        return self.repository.create(
+        entity = self.repository.create(
             name=pipeline.name, definition=definition, owner_id=owner_id
         )
+        if self.versions is not None:
+            self.versions.record(
+                pipeline_id=entity.id, definition=definition, created_by=owner_id
+            )
+        return entity
+
+    # -- definition versioning ------------------------------------------------
+
+    def list_versions(self, identifier: str) -> list[PipelineVersion]:
+        if self.versions is None:
+            return []
+        entity = self.get(identifier)
+        return self.versions.list(entity.id)
+
+    def get_version(self, identifier: str, version: int) -> PipelineVersion:
+        if self.versions is None:
+            raise NotFoundError("Pipeline versioning is not available")
+        entity = self.get(identifier)
+        return self.versions.get(entity.id, version)
+
+    def rollback(
+        self, identifier: str, version: int, *, actor_id: str | None = None
+    ) -> PipelineEntity:
+        # Restoring an old definition records it as the newest version, so the
+        # history stays append-only and nothing is destroyed.
+        if self.versions is None:
+            raise NotFoundError("Pipeline versioning is not available")
+        entity = self.get(identifier)
+        snapshot = self.versions.get(entity.id, version)
+        if snapshot.definition == entity.definition:
+            return entity
+        updated = self.update(identifier, snapshot.definition)
+        # update() already recorded the changed definition as a new version.
+        return updated
 
     def get(self, identifier: str) -> PipelineEntity:
         return self.repository.get(identifier)
@@ -45,7 +87,14 @@ class PipelineService:
         _ = owner_id  # ownership is checked at the API layer
         pipeline = parse_pipeline(definition)
         self._validate_wiring(pipeline)
-        return self.repository.update(identifier, definition=definition)
+        entity = self.repository.update(identifier, definition=definition)
+        if self.versions is not None:
+            latest = self.versions.list(entity.id)
+            if not latest or latest[0].definition != definition:
+                self.versions.record(
+                    pipeline_id=entity.id, definition=definition, created_by=owner_id
+                )
+        return entity
 
     def delete(self, identifier: str) -> None:
         self.repository.delete(identifier)

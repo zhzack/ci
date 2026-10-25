@@ -33,6 +33,7 @@ from mini_pipeline.database.environment_repositories import (
 )
 from mini_pipeline.database.repositories import (
     PipelineRepository,
+    PipelineVersionRepository,
     PluginRepository,
     RunRepository,
     TaskCacheRepository,
@@ -120,6 +121,7 @@ class Services:
 
         plugin_repository = PluginRepository(database)
         pipeline_repository = PipelineRepository(database)
+        pipeline_version_repository = PipelineVersionRepository(database)
         run_repository = RunRepository(database)
         task_cache = TaskCacheRepository(database)
         users = UserRepository(database)
@@ -183,7 +185,9 @@ class Services:
             credentials=credentials,
         )
         pipelines = PipelineService(
-            pipeline_repository, plugin_repository=plugin_repository
+            pipeline_repository,
+            plugin_repository=plugin_repository,
+            versions=pipeline_version_repository,
         )
         permissions = PermissionService(
             grants=grants, teams=teams, settings=settings

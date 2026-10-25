@@ -14,6 +14,7 @@ from mini_pipeline.database.models import (
     Artifact,
     PipelineDefinition,
     PipelineRun,
+    PipelineVersion,
     Plugin,
     PluginVersion,
     TaskCacheRecord,
@@ -267,6 +268,68 @@ class PipelineRepository:
             if pipeline is None:
                 raise NotFoundError(f"Pipeline {identifier!r} was not found")
             session.delete(pipeline)
+
+
+class PipelineVersionRepository:
+    """Immutable definition snapshots, versioned per pipeline."""
+
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def record(
+        self,
+        *,
+        pipeline_id: str,
+        definition: str,
+        created_by: str | None = None,
+    ) -> PipelineVersion:
+        with self.database.session() as session:
+            latest = (
+                session.query(PipelineVersion)
+                .filter(PipelineVersion.pipeline_id == pipeline_id)
+                .order_by(PipelineVersion.version.desc())
+                .first()
+            )
+            version = (latest.version if latest else 0) + 1
+            entity = PipelineVersion(
+                pipeline_id=pipeline_id,
+                version=version,
+                definition=definition,
+                created_by=created_by,
+            )
+            session.add(entity)
+            session.flush()
+            session.expunge(entity)
+            return entity
+
+    def list(self, pipeline_id: str) -> list[PipelineVersion]:
+        with self.database.session() as session:
+            rows = (
+                session.query(PipelineVersion)
+                .filter(PipelineVersion.pipeline_id == pipeline_id)
+                .order_by(PipelineVersion.version.desc())
+                .all()
+            )
+            for row in rows:
+                session.expunge(row)
+            return rows
+
+    def get(self, pipeline_id: str, version: int) -> PipelineVersion:
+        with self.database.session() as session:
+            entity = (
+                session.query(PipelineVersion)
+                .filter(
+                    PipelineVersion.pipeline_id == pipeline_id,
+                    PipelineVersion.version == version,
+                )
+                .first()
+            )
+            if entity is None:
+                raise NotFoundError(
+                    f"Pipeline version {version} not found"
+                )
+            session.expunge(entity)
+            return entity
 
 
 class RunRepository:
