@@ -195,6 +195,8 @@ async def _handle_windows_process_terminal(
                     if text.startswith("{") and text.endswith("}"):
                         try:
                             payload = json.loads(text)
+                            if payload.get("type") == "resize":
+                                continue
                             if payload.get("type") == "ping":
                                 await websocket.send_text('{"type":"pong"}')
                                 continue

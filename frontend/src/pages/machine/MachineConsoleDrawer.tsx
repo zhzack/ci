@@ -580,6 +580,7 @@ export function MachineConsoleDrawer({
         setFilesLoading(false);
       }
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [machineId, dirCache]
   );
 
@@ -662,6 +663,7 @@ export function MachineConsoleDrawer({
             resolve();
           });
       }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [machineId, dirCache]
   );
 
@@ -1189,7 +1191,7 @@ export function MachineConsoleDrawer({
         },
       },
     ],
-    [machineId, fetchDirectory, handleOpenFileEditor, handleDeleteSingle]
+    [machineId, fetchDirectory, handleOpenFileEditor, handleDeleteSingle, handleOpenInTerminal]
   );
 
   // Columns for Directory table
@@ -2173,6 +2175,7 @@ export function MachineConsoleDrawer({
     }
 
     return registry;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     currentPath,
     inputPath,

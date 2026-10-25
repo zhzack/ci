@@ -3,6 +3,9 @@ export type PipelineStep = {
   plugin: string;
   depends: string[];
   with: Record<string, unknown>;
+  cache?: boolean;
+  retries?: number;
+  machine?: string | null;
 };
 
 export type PipelineRecord = {

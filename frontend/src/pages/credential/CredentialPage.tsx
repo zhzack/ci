@@ -691,7 +691,7 @@ export function CredentialPage(): React.JSX.Element {
             rules={[
               { required: true, message: '请输入凭据标识名称' },
               {
-                pattern: /^[a-zA-Z0-9_\-\.]{2,64}$/,
+                pattern: /^[a-zA-Z0-9_.-]{2,64}$/,
                 message: '必须为 2-64 位字母、数字、短横线或下划线',
               },
             ]}

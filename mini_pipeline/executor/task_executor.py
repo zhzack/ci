@@ -88,7 +88,8 @@ class TaskExecutor:
         entry = (workspace / manifest.entry).resolve()
         try:
             entry.chmod(entry.stat().st_mode | 0o755)
-            # Ensure shell scripts have POSIX line endings (avoid exec /bin/bash\r: no such file or directory)
+            # Ensure shell scripts have POSIX line endings
+            # (avoid exec /bin/bash\r: no such file or directory)
             if entry.suffix.lower() in {".sh", ".bash"} and entry.is_file():
                 content = entry.read_bytes()
                 if b"\r\n" in content:

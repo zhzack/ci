@@ -74,6 +74,13 @@ class Database:
                         "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS "
                         "branched_from_step VARCHAR(128);"
                     )
+                    conn.exec_driver_sql(
+                        "ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS "
+                        "filename VARCHAR(255) NOT NULL DEFAULT '';"
+                    )
+                    conn.exec_driver_sql(
+                        "ALTER TABLE artifacts ALTER COLUMN size TYPE BIGINT;"
+                    )
                 elif is_sqlite:
                     cursor = conn.connection.cursor()
                     try:
@@ -116,12 +123,10 @@ class Database:
                     try:
                         cursor.execute("SELECT filename FROM artifacts LIMIT 1")
                     except Exception:
-                        cursor.execute("ALTER TABLE artifacts ADD COLUMN filename VARCHAR(255) NOT NULL DEFAULT ''")
-                    try:
-                        if is_postgres:
-                            cursor.execute("ALTER TABLE artifacts ALTER COLUMN size TYPE BIGINT")
-                    except Exception:
-                        pass
+                        cursor.execute(
+                            "ALTER TABLE artifacts ADD COLUMN filename "
+                            "VARCHAR(255) NOT NULL DEFAULT ''"
+                        )
                     cursor.close()
         except Exception:
             pass

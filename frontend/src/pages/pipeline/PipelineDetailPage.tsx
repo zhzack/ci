@@ -244,6 +244,28 @@ export default function PipelineDetailPage(): React.JSX.Element {
         ),
     },
     {
+      title: 'Cache & Retries',
+      key: 'cache_retries',
+      render: (_, record) => (
+        <Space size={4}>
+          {record.cache ? (
+            <Tag color="cyan" style={{ fontSize: 11, lineHeight: '18px', padding: '0 6px', borderRadius: 10 }}>
+              ⚡ Cached
+            </Tag>
+          ) : (
+            <Tag style={{ fontSize: 11, lineHeight: '18px', padding: '0 6px', color: '#8c8c8c' }}>
+              Off
+            </Tag>
+          )}
+          {typeof record.retries === 'number' && record.retries > 0 ? (
+            <Tag color="orange" style={{ fontSize: 11, lineHeight: '18px', padding: '0 6px', borderRadius: 10 }}>
+              ↻ {record.retries}
+            </Tag>
+          ) : null}
+        </Space>
+      ),
+    },
+    {
       title: 'Parameters',
       dataIndex: 'with',
       render: (value: Record<string, unknown> | undefined) => (

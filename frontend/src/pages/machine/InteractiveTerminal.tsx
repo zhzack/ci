@@ -1,3 +1,4 @@
+/* eslint-disable no-control-regex */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Button,
@@ -355,6 +356,7 @@ const SingleTerminalPane = React.memo(function SingleTerminalPane({
         }
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, machineId]); // only reconnect if session or machine identity changes!
 
   // Auto focus when activated

@@ -54,7 +54,13 @@ class ArtifactResponse(BaseModel):
     @classmethod
     def from_entity(cls, entity) -> ArtifactResponse:
         fname = getattr(entity, "filename", "") or entity.name
-        return cls(id=entity.id, name=entity.name, filename=fname, size=entity.size, sha256=entity.sha256)
+        return cls(
+            id=entity.id,
+            name=entity.name,
+            filename=fname,
+            size=entity.size,
+            sha256=entity.sha256,
+        )
 
 
 class TaskResponse(BaseModel):

@@ -1,20 +1,21 @@
 # Development Docker Compose setup with volume mounts and hot-reloading
 services:
-  database:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: mini_pipeline
-      POSTGRES_USER: mini_pipeline
-      POSTGRES_PASSWORD: mini_pipeline
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U mini_pipeline"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-    # ports:
-    #   - "5432:5432"
-    volumes:
-      - postgres-dev-data:/var/lib/postgresql/data
+  # Remote Database: Decoupled to cloud server 139.196.110.243:55555
+  # database:
+  #   image: postgres:16-alpine
+  #   environment:
+  #     POSTGRES_DB: mini_pipeline
+  #     POSTGRES_USER: mini_pipeline
+  #     POSTGRES_PASSWORD: mini_pipeline
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U mini_pipeline"]
+  #     interval: 5s
+  #     timeout: 3s
+  #     retries: 10
+  #   # ports:
+  #   #   - "5432:5432"
+  #   volumes:
+  #     - postgres-dev-data:/var/lib/postgresql/data
 
   api:
     build:
@@ -22,14 +23,14 @@ services:
       dockerfile: Dockerfile
     environment:
       MINI_PIPELINE_CONFIG: /app/config/docker.yaml
-      DATABASE_URL: postgresql+psycopg://mini_pipeline:mini_pipeline@database:5432/mini_pipeline
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://postgres:Zz659538974.@139.196.110.243:55555/mini_pipeline}
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
       MINI_PIPELINE_ADMIN_TOKEN: ${MINI_PIPELINE_ADMIN_TOKEN:-dev-admin-token}
       MINI_PIPELINE_READER_TOKEN: ${MINI_PIPELINE_READER_TOKEN:-dev-reader-token}
       MINI_PIPELINE_SECRET_KEY: ${MINI_PIPELINE_SECRET_KEY:-dev-secret-key-32-chars-long-xxx}
-    depends_on:
-      database:
-        condition: service_healthy
+    # depends_on:
+    #   database:
+    #     condition: service_healthy
     ports:
       - "8000:8000"
     volumes:

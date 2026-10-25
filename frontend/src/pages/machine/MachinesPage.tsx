@@ -807,7 +807,7 @@ export function MachinesPage(): React.JSX.Element {
         const isBuiltin =
           record.labels?.builtin ||
           record.id === 'master-local' ||
-          record.connection_type === ('builtin' as any);
+          (record.connection_type as string) === 'builtin';
         if (isBuiltin) {
           return <Tag color="purple">👑 Built-in Server</Tag>;
         }

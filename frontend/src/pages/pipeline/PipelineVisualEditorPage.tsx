@@ -85,6 +85,9 @@ type StepDraft = {
   pluginRef: string;
   depends: string[];
   params: Record<string, unknown>;
+  cache?: boolean;
+  retries?: number;
+  machine?: string;
 };
 
 /** A candidate wiring the platform could apply for one param key.
@@ -513,10 +516,11 @@ const FANOUT_TEMPLATE: FormState = {
 };
 
 function toYamlPreview(state: FormState): string {
-  const filterEmpty = (obj: Record<string, unknown>) => {
+  const filterEmpty = (obj: Record<string, unknown>): Record<string, unknown> => {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(obj)) {
-      if (k) out[k] = v;
+      if (k === '') continue;
+      out[k] = v;
     }
     return out;
   };
@@ -528,6 +532,9 @@ function toYamlPreview(state: FormState): string {
         name: step.name,
         plugin: step.pluginRef,
         ...(step.depends.length > 0 ? { depends: step.depends } : {}),
+        ...(step.cache ? { cache: true } : {}),
+        ...(typeof step.retries === 'number' && step.retries > 0 ? { retries: step.retries } : {}),
+        ...(step.machine ? { machine: step.machine } : {}),
         ...(Object.keys(step.params ?? {}).filter(Boolean).length > 0
           ? { with: filterEmpty(step.params ?? {}) }
           : {}),
@@ -555,6 +562,9 @@ function parseYamlToForm(text: string): FormState {
       depends: Array.isArray(stepObj.depends)
         ? stepObj.depends.map(String)
         : [],
+      cache: Boolean(stepObj.cache),
+      retries: typeof stepObj.retries === 'number' ? stepObj.retries : 0,
+      machine: typeof stepObj.machine === 'string' ? stepObj.machine : undefined,
       params: (stepObj.with && typeof stepObj.with === 'object'
         ? (stepObj.with as Record<string, unknown>)
         : {}),
@@ -1489,7 +1499,21 @@ function StepCard({
     <Card
       id={`step-card-${index}`}
       size="small"
-      title={`Step ${index + 1}`}
+      title={
+        <Space size={8}>
+          <span>Step {index + 1}: {step.name || '(unnamed)'}</span>
+          {step.cache ? (
+            <Tag color="cyan" style={{ fontSize: 11, lineHeight: '18px', padding: '0 6px', borderRadius: 10 }}>
+              ⚡ Cached
+            </Tag>
+          ) : null}
+          {typeof step.retries === 'number' && step.retries > 0 ? (
+            <Tag color="orange" style={{ fontSize: 11, lineHeight: '18px', padding: '0 6px', borderRadius: 10 }}>
+              ↻ {step.retries} {step.retries === 1 ? 'retry' : 'retries'}
+            </Tag>
+          ) : null}
+        </Space>
+      }
       extra={
         <Button
           type="link"
@@ -1536,6 +1560,64 @@ function StepCard({
               showSearch
               optionFilterProp="label"
               placeholder="Select plugin"
+            />
+          </Form.Item>
+        </div>
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
+            gap: 16,
+            padding: '10px 14px',
+            marginBottom: 12,
+            background: 'var(--mp-bg-subtle, rgba(0, 0, 0, 0.02))',
+            border: '1px solid var(--mp-border-color, rgba(0, 0, 0, 0.06))',
+            borderRadius: 6,
+          }}
+        >
+          <Form.Item
+            label={
+              <Space size={4}>
+                <span>Step Cache</span>
+                <Tooltip title="When enabled, steps with identical plugin version, parameters, and input files skip re-execution and reuse previous outputs and artifacts instantly.">
+                  <Tag color="blue" style={{ fontSize: 10, lineHeight: '16px', padding: '0 4px', cursor: 'pointer' }}>
+                    SHA-256
+                  </Tag>
+                </Tooltip>
+              </Space>
+            }
+            style={{ marginBottom: 0 }}
+          >
+            <Space size={10}>
+              <Switch
+                checked={Boolean(step.cache)}
+                checkedChildren="⚡ ON"
+                unCheckedChildren="OFF"
+                onChange={(checked) => onChange({ cache: checked })}
+              />
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {step.cache ? 'Content-Addressed Cache enabled' : 'Disabled'}
+              </Typography.Text>
+            </Space>
+          </Form.Item>
+
+          <Form.Item
+            label={
+              <Space size={4}>
+                <span>Auto Retries</span>
+                <Tooltip title="Automatic retry count on failure (0-10, with exponential backoff).">
+                  <span style={{ color: 'var(--mp-text-secondary, #8c8c8c)', fontSize: 11, cursor: 'help' }}>ℹ️</span>
+                </Tooltip>
+              </Space>
+            }
+            style={{ marginBottom: 0 }}
+          >
+            <InputNumber
+              min={0}
+              max={10}
+              value={step.retries ?? 0}
+              onChange={(val) => onChange({ retries: typeof val === 'number' ? val : 0 })}
+              style={{ width: 120 }}
             />
           </Form.Item>
         </div>
