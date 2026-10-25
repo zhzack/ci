@@ -1,10 +1,8 @@
 import { http } from './http';
-import type { CurrentUser } from './auth';
 
-export type AdminUser = CurrentUser & {
-  email?: string | null;
-  must_change_password?: boolean;
-};
+
+import type { AdminUser, AdminTeam, AuditEntry, SmtpConfig } from '@/types/admin';
+export type { AdminUser, AdminTeam, AuditEntry, SmtpConfig };
 
 export async function adminListUsers(): Promise<AdminUser[]> {
   const { data } = await http.get<AdminUser[]>('/admin/users');
@@ -45,7 +43,6 @@ export async function adminSetStatus(
   await http.patch(`/admin/users/${encodeURIComponent(userId)}/status`, { status });
 }
 
-export type AdminTeam = { id: string; name: string; member_ids: string[] };
 
 export async function adminListTeams(): Promise<AdminTeam[]> {
   const { data } = await http.get<AdminTeam[]>('/admin/teams');
@@ -65,33 +62,12 @@ export async function adminRemoveTeamMember(teamId: string, userId: string): Pro
   await http.delete(`/admin/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(userId)}`);
 }
 
-export type AuditEntry = {
-  id: string;
-  user_id: string | null;
-  action: string;
-  resource_type: string | null;
-  resource_id: string | null;
-  detail: Record<string, unknown>;
-  request_id: string | null;
-  created_at: string;
-};
 
 export async function adminAudit(limit = 100): Promise<AuditEntry[]> {
   const { data } = await http.get<AuditEntry[]>('/admin/audit', { params: { limit } });
   return data;
 }
 
-export type SmtpConfig = {
-  enabled: boolean;
-  host: string;
-  port: number;
-  username: string;
-  sender_email: string;
-  sender_name: string;
-  use_ssl: boolean;
-  use_tls: boolean;
-  has_password?: boolean;
-};
 
 export async function adminGetEmailConfig(): Promise<SmtpConfig> {
   const { data } = await http.get<SmtpConfig>('/admin/email-config');

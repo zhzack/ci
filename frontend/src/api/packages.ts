@@ -1,35 +1,10 @@
 import { http, loadStoredAuth } from './http';
 
-export type StorageItem = {
-  name: string;
-  path: string;
-  is_dir: boolean;
-  size: number;
-  mime_type?: string | null;
-  updated_at?: string | null;
-  extension: string;
-  is_editable: boolean;
-  is_plugin_candidate: boolean;
-};
 
-export type DirectoryListing = {
-  driver: string;
-  current_path: string;
-  parent_path?: string | null;
-  items: StorageItem[];
-};
 
-export type FilePreview = {
-  name: string;
-  path: string;
-  size: number;
-  mime_type: string;
-  is_text: boolean;
-  content?: string | null;
-  line_count: number;
-  is_editable: boolean;
-  updated_at?: string | null;
-};
+
+import type { StorageItem, DirectoryListing, FilePreview, ImportRemoteRequest, PackageShareLink, PackageGrant, ZoneUsage, TypeUsage, StorageLeaderboardItem, StorageStats } from '@/types/packages';
+export type { StorageItem, DirectoryListing, FilePreview, ImportRemoteRequest, PackageShareLink, PackageGrant, ZoneUsage, TypeUsage, StorageLeaderboardItem, StorageStats };
 
 export async function listPackageItems(path = ''): Promise<DirectoryListing> {
   const { data } = await http.get<DirectoryListing>('/packages', {
@@ -86,12 +61,6 @@ export async function extractPackageArchive(
   return data;
 }
 
-export type ImportRemoteRequest = {
-  url: string;
-  target_dir?: string;
-  filename?: string;
-  credential_id?: string;
-};
 
 export async function importRemotePackage(req: ImportRemoteRequest): Promise<StorageItem> {
   const { data } = await http.post<StorageItem>('/packages/import-remote', req);
@@ -195,16 +164,6 @@ export async function copyPackageItem(srcPath: string, dstPath: string): Promise
   return data;
 }
 
-export type PackageShareLink = {
-  id: string;
-  token: string;
-  owner_id: string;
-  source_path: string;
-  share_type: 'live' | 'snapshot';
-  description: string;
-  expires_at?: string | null;
-  created_at: string;
-};
 
 export async function createPackageShare(payload: {
   source_path: string;
@@ -260,15 +219,6 @@ export async function importFromShare(token: string, targetPath = ''): Promise<S
   return data;
 }
 
-export type PackageGrant = {
-  id: string;
-  resource_id: string;
-  grantee_type: 'user' | 'team';
-  grantee_id: string;
-  permission: 'viewer' | 'operator';
-  granted_by?: string | null;
-  created_at: string;
-};
 
 export async function createPackageGrant(payload: {
   path: string;
@@ -292,41 +242,9 @@ export async function revokePackageGrant(grantId: string): Promise<{ success: bo
   return data;
 }
 
-export type ZoneUsage = {
-  zone: string;
-  name: string;
-  size_bytes: number;
-  file_count: number;
-  dir_count: number;
-  percentage: number;
-};
 
-export type TypeUsage = {
-  category: string;
-  label: string;
-  color: string;
-  size_bytes: number;
-  file_count: number;
-  percentage: number;
-};
 
-export type StorageLeaderboardItem = {
-  name: string;
-  path: string;
-  is_dir: boolean;
-  size_bytes: number;
-  updated_at?: string | null;
-};
 
-export type StorageStats = {
-  scope_path: string;
-  total_size_bytes: number;
-  total_files: number;
-  total_dirs: number;
-  zones: ZoneUsage[];
-  types: TypeUsage[];
-  top_largest: StorageLeaderboardItem[];
-};
 
 export async function getPackageStats(path = ''): Promise<StorageStats> {
   const { data } = await http.get<StorageStats>('/packages/stats', {

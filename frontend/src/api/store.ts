@@ -1,7 +1,9 @@
 import { http } from './http';
 import type { PluginVersion } from '@/types/plugin';
 
-export type PublishRequestPayload = { plugin_id: string };
+
+import type { PublishRequestPayload } from '@/types/store';
+export type { PublishRequestPayload };
 
 /** Submit a personal plugin for store review (202 until an admin approves). */
 export async function requestPublish(pluginId: string): Promise<void> {

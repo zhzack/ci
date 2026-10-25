@@ -7,10 +7,9 @@ import type {
   UpdatePipelineRequest,
 } from '@/types/pipeline';
 
-export type PipelineListParams = {
-  page?: number;
-  page_size?: number;
-};
+
+import type { PipelineListParams } from '@/types/pipeline';
+export type { PipelineListParams };
 
 export async function listPipelines(
   params: PipelineListParams = {},

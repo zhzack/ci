@@ -2,21 +2,19 @@ import { http, loadStoredAuth } from './http';
 import type { Paged } from '@/types/common';
 import type {
   PipelineRun,
-  RunEventMessage,
-  RunEventSnapshot,
   RunListParams,
   RunRequest,
   RunSummary,
-  TaskLogChunk,
-  TaskLogEnd,
 } from '@/types/run';
+
+import type { UploadProgressCallback, RunStreamHandlers, LogStreamHandlers } from '@/types/run';
+export type { UploadProgressCallback, RunStreamHandlers, LogStreamHandlers };
 
 export async function submitRun(payload: RunRequest): Promise<PipelineRun> {
   const { data } = await http.post<PipelineRun>('/runs', payload);
   return data;
 }
 
-export type UploadProgressCallback = (percent: number, loaded: number, total: number) => void;
 
 export async function submitRunWithFiles(
   pipeline: string,
@@ -73,12 +71,6 @@ export async function cancelRun(runId: string): Promise<PipelineRun> {
   return data;
 }
 
-export type RunStreamHandlers = {
-  onSnapshot?: (run: RunEventSnapshot) => void;
-  onEvent?: (event: RunEventMessage) => void;
-  /** Called when the stream closes (terminal status reached or error). */
-  onClose?: () => void;
-};
 
 /**
  * Subscribe to live run/task state via Server-Sent Events.
@@ -116,11 +108,6 @@ export function openRunEventStream(runId: string, handlers: RunStreamHandlers): 
   return () => source.close();
 }
 
-export type LogStreamHandlers = {
-  onChunk?: (chunk: TaskLogChunk) => void;
-  onEnd?: (end: TaskLogEnd) => void;
-  onError?: () => void;
-};
 
 /** Tail a task log via SSE until the task finishes. Returns a disposer. */
 export function openTaskLogStream(

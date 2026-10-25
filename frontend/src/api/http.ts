@@ -3,6 +3,9 @@ import { App } from 'antd';
 import type { ApiError } from '@/types/common';
 import type { ModalStaticFunctions } from 'antd/es/modal/confirm';
 
+import type { StoredAuth } from '@/types/http';
+export type { StoredAuth };
+
 let messageApi: ReturnType<typeof App.useApp>['message'] | null = null;
 let notificationApi: ReturnType<typeof App.useApp>['notification'] | null = null;
 let modalApi: Omit<ModalStaticFunctions, 'warn'> | null = null;
@@ -17,14 +20,9 @@ export function getModalApi(): Omit<ModalStaticFunctions, 'warn'> | null {
   return modalApi;
 }
 
-import type { CurrentUser } from './auth';
 
 export const AUTH_STORAGE_KEY = 'mini-pipeline-auth';
 
-export type StoredAuth = {
-  token: string;
-  user: CurrentUser;
-};
 
 export function loadStoredAuth(): StoredAuth | null {
   try {

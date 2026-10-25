@@ -2,11 +2,9 @@ import { http } from './http';
 import type { Paged } from '@/types/common';
 import type { ArtifactListItem } from '@/types/artifact';
 
-export type ArtifactListParams = {
-  page?: number;
-  page_size?: number;
-  run_id?: string;
-};
+
+import type { ArtifactListParams } from '@/types/artifact';
+export type { ArtifactListParams };
 
 export async function listArtifacts(
   params: ArtifactListParams = {},

@@ -2,11 +2,9 @@ import { http } from './http';
 import type { Paged } from '@/types/common';
 import type { PluginManifest, PluginVersion, RegisterPluginRequest } from '@/types/plugin';
 
-export type PluginListParams = {
-  page?: number;
-  page_size?: number;
-  search?: string;
-};
+
+import type { PluginListParams, GitBranchProbeResult } from '@/types/plugin';
+export type { PluginListParams, GitBranchProbeResult };
 
 export async function listPlugins(params: PluginListParams = {}): Promise<Paged<PluginVersion>> {
   const { data } = await http.get<Paged<PluginVersion>>('/plugins', { params });
@@ -59,11 +57,6 @@ export async function deletePlugin(name: string, version: string): Promise<void>
   await http.delete(`/plugins/${encodeURIComponent(name)}/${encodeURIComponent(version)}`);
 }
 
-export type GitBranchProbeResult = {
-  branches: string[];
-  tags: string[];
-  default_branch: string;
-};
 
 export async function detectGitBranches(
   url: string,

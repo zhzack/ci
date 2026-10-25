@@ -51,3 +51,8 @@ export type PipelineParamsSchema = {
   global_params: Record<string, unknown>;
   steps: StepParamSchema[];
 };
+
+export type PipelineListParams = {
+  page?: number;
+  page_size?: number;
+};

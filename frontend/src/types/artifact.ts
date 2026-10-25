@@ -10,3 +10,9 @@ export type ArtifactListItem = {
   sha256: string;
   created_at: string;
 };
+
+export type ArtifactListParams = {
+  page?: number;
+  page_size?: number;
+  run_id?: string;
+};

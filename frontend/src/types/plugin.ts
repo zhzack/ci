@@ -50,3 +50,15 @@ export type PluginSourceRequest = {
 export type RegisterPluginRequest = {
   source: PluginSourceRequest;
 };
+
+export type PluginListParams = {
+  page?: number;
+  page_size?: number;
+  search?: string;
+};
+
+export type GitBranchProbeResult = {
+  branches: string[];
+  tags: string[];
+  default_branch: string;
+};

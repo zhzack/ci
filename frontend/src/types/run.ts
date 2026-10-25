@@ -92,3 +92,18 @@ export type TaskLogEnd = {
   status: StatusValue;
   attempt: number;
 };
+
+export type UploadProgressCallback = (percent: number, loaded: number, total: number) => void;
+
+export type RunStreamHandlers = {
+  onSnapshot?: (run: RunEventSnapshot) => void;
+  onEvent?: (event: RunEventMessage) => void;
+  /** Called when the stream closes (terminal status reached or error). */
+  onClose?: () => void;
+};
+
+export type LogStreamHandlers = {
+  onChunk?: (chunk: TaskLogChunk) => void;
+  onEnd?: (end: TaskLogEnd) => void;
+  onError?: () => void;
+};

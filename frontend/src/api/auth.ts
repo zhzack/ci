@@ -1,19 +1,9 @@
 import { http } from './http';
 
-export type CurrentUser = {
-  id: string;
-  username: string;
-  display_name: string;
-  email?: string | null;
-  role: string;
-  status: string;
-  must_change_password?: boolean;
-};
 
-export type AuthMode = {
-  enabled: boolean;
-  registration_enabled: boolean;
-};
+
+import type { CurrentUser, AuthMode } from '@/types/auth';
+export type { CurrentUser, AuthMode };
 
 export async function getAuthMode(): Promise<AuthMode> {
   const { data } = await http.get<AuthMode>('/auth/mode');

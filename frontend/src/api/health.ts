@@ -1,15 +1,9 @@
 import { http } from './http';
 
-export type ReadinessCheck = {
-  status: string;
-  checks: Record<string, string>;
-};
 
-export type VersionInfo = {
-  name: string;
-  version: string;
-  api: string;
-};
+
+import type { ReadinessCheck, VersionInfo } from '@/types/health';
+export type { ReadinessCheck, VersionInfo };
 
 /** GET /health/ready — lives outside the /api prefix by design. */
 export async function getReadiness(): Promise<ReadinessCheck> {
