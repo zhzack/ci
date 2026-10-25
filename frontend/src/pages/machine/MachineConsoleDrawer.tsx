@@ -66,17 +66,11 @@ import {
   createMachineFile,
   getDownloadFilesUrl,
   getMachineDrives,
-  getMachineNetwork,
-  getMachineOverview,
-  getMachineProcesses,
   listMachineDirectory,
   renameMachinePath,
   uploadMachineFile,
   type DirectoryEntry,
   type DriveInfo,
-  type NetworkDiagnostics,
-  type ProcessInfo,
-  type SystemOverview,
 } from '@/api/diagnostics';
 import { Loading } from '@/components/Loading';
 import { ErrorAlert } from '@/components/ErrorAlert';
@@ -87,14 +81,18 @@ import { NetworkDiagnosticsPane } from './NetworkDiagnosticsPane';
 import { DockLayout } from '@/components/dock/DockLayout';
 import type { LayoutNode, TabItemConfig } from '@/components/dock/types';
 import {
-  deserializeLayout,
-  findTabGroupWithTab,
   getAllOpenTabIds,
-  moveTab,
-  selectTab,
-  serializeLayout,
-  splitTab,
 } from '@/components/dock/dockEngine';
+import {
+  ALL_CORE_TABS,
+  DEFAULT_IDE_LAYOUT,
+  formatUptime,
+  getPathAncestors,
+  mergeTreeNodes,
+  normalizePath,
+} from './machineConsoleUtils';
+import { useConsoleDockLayout } from './useConsoleDockLayout';
+import { useMachineTelemetry } from './useMachineTelemetry';
 
 export interface MachineConsoleProps {
   machineId: string | null;
@@ -114,72 +112,6 @@ interface Props extends MachineConsoleProps {
   /** When true, renders inline (for workbench tab); when false renders as a Drawer */
   tabMode?: boolean;
 }
-
-function formatUptime(seconds: number): string {
-  if (!seconds || seconds <= 0) return '0 秒';
-  const days = Math.floor(seconds / 86400);
-  const hours = Math.floor((seconds % 86400) / 3600);
-  const mins = Math.floor((seconds % 3600) / 60);
-  const secs = Math.floor(seconds % 60);
-  const parts = [];
-  if (days > 0) parts.push(`${days}天`);
-  if (hours > 0) parts.push(`${hours}小时`);
-  if (mins > 0) parts.push(`${mins}分`);
-  if (parts.length === 0 || secs > 0) parts.push(`${secs}秒`);
-  return parts.join(' ');
-}
-
-const ALL_CORE_TABS = ['files', 'terminal', 'processes', 'network', 'overview'];
-
-// Default 4-Quadrant IDE Layout: 左上系统全景, 左下进程与网络, 右上在线终端, 右下远程文件
-const DEFAULT_IDE_LAYOUT: LayoutNode = {
-  id: 'root-split',
-  type: 'split',
-  direction: 'horizontal',
-  sizes: [42, 58],
-  children: [
-    {
-      id: 'left-split',
-      type: 'split',
-      direction: 'vertical',
-      sizes: [45, 55],
-      children: [
-        {
-          id: 'overview-group',
-          type: 'tabGroup',
-          tabs: ['overview'],
-          activeTab: 'overview',
-        },
-        {
-          id: 'proc-group',
-          type: 'tabGroup',
-          tabs: ['processes', 'network'],
-          activeTab: 'processes',
-        },
-      ],
-    },
-    {
-      id: 'right-split',
-      type: 'split',
-      direction: 'vertical',
-      sizes: [52, 48],
-      children: [
-        {
-          id: 'term-group',
-          type: 'tabGroup',
-          tabs: ['terminal'],
-          activeTab: 'terminal',
-        },
-        {
-          id: 'files-group',
-          type: 'tabGroup',
-          tabs: ['files'],
-          activeTab: 'files',
-        },
-      ],
-    },
-  ],
-};
 
 /** Thin wrapper for workbench tab usage — renders the console inline, no Drawer. */
 export function MachineConsoleTab({
@@ -225,58 +157,28 @@ export function MachineConsoleDrawer({
   onClose,
   tabMode = false,
 }: Props): React.JSX.Element {
-  const storageKey = machineId
-    ? `mini_pipeline_dock_layout_${machineId}`
-    : 'mini_pipeline_dock_layout_default';
-
-  // Dynamically opened files in editor tabs
-  const [openFiles, setOpenFiles] = useState<string[]>([]);
-
-  // Load layout from localStorage or fallback
-  const [layout, setLayout] = useState<LayoutNode>(() => {
-    try {
-      const saved = localStorage.getItem(storageKey);
-      if (saved) {
-        return deserializeLayout(saved, ALL_CORE_TABS, DEFAULT_IDE_LAYOUT) ?? DEFAULT_IDE_LAYOUT;
-      }
-    } catch {
-      // Ignore localStorage read errors
-    }
-    return DEFAULT_IDE_LAYOUT;
-  });
-
-  const handleLayoutChange = useCallback(
-    (newLayout: LayoutNode) => {
-      setLayout(newLayout);
-      try {
-        localStorage.setItem(storageKey, serializeLayout(newLayout));
-      } catch {
-        // ignore
-      }
-    },
-    [storageKey]
-  );
-
-  // Quick action: Open tab
-  const handleOpenTab = useCallback(
-    (tabId: string) => {
-      const openTabIds = getAllOpenTabIds(layout);
-      if (!openTabIds.includes(tabId)) {
-        const rootId = layout.id;
-        const updated = splitTab(layout, rootId, rootId, tabId, 'right');
-        handleLayoutChange(updated);
-      }
-    },
-    [layout, handleLayoutChange]
-  );
+  const {
+    openFiles,
+    layout,
+    handleLayoutChange,
+    handleOpenTab,
+    handleOpenFileEditor,
+  } = useConsoleDockLayout(machineId);
+  const {
+    overview,
+    overviewLoading,
+    overviewError,
+    fetchOverview,
+    processes,
+    procLoading,
+    fetchProcesses,
+    network,
+    networkLoading,
+    fetchNetwork,
+  } = useMachineTelemetry(machineId);
 
   const { token } = antdTheme.useToken();
   const [autoRefresh, setAutoRefresh] = useState(true);
-
-  // 1. Overview state
-  const [overview, setOverview] = useState<SystemOverview | null>(null);
-  const [overviewLoading, setOverviewLoading] = useState(false);
-  const [overviewError, setOverviewError] = useState<string | null>(null);
 
   // 2. Directory state
   const [currentPath, setCurrentPath] = useState('/');
@@ -349,138 +251,6 @@ export function MachineConsoleDrawer({
     }
   }, [overview?.platform, currentPath, platform]);
 
-  // 3. Process state
-  const [processes, setProcesses] = useState<ProcessInfo[]>([]);
-  const [procLoading, setProcLoading] = useState(false);
-
-  // 4. Network state
-  const [network, setNetwork] = useState<NetworkDiagnostics | null>(null);
-  const [networkLoading, setNetworkLoading] = useState(false);
-
-  // Open file in Docking Editor Tab (in the same TabGroup as files by default)
-  const handleOpenFileEditor = useCallback((filePath: string) => {
-    const tabId = `file:${filePath}`;
-    setOpenFiles((prev) => (prev.includes(filePath) ? prev : [...prev, filePath]));
-
-    const allTabs = getAllOpenTabIds(layout);
-    if (allTabs.includes(tabId)) {
-      const targetGroup = findTabGroupWithTab(layout, tabId);
-      if (targetGroup) {
-        handleLayoutChange(selectTab(layout, targetGroup.id, tabId));
-      }
-    } else {
-      // Find group containing 'files' and add the file tab to the same TabGroup as 'files'
-      const filesGroup = findTabGroupWithTab(layout, 'files');
-      if (filesGroup) {
-        const updated = moveTab(layout, filesGroup.id, filesGroup.id, tabId);
-        handleLayoutChange(updated);
-      } else {
-        const rootId = layout.id;
-        const updated = splitTab(layout, rootId, rootId, tabId, 'center');
-        handleLayoutChange(updated);
-      }
-      antdMessage.info(`已打开文件标签: ${filePath.split('/').pop()}`);
-    }
-  }, [layout, handleLayoutChange]);
-
-  // Normalize directory path across Windows and Linux
-  const normalizePath = (p: string): string => {
-    if (!p) return '/';
-    let s = p.replace(/\\/g, '/').replace(/\/+/g, '/');
-    if (/^[a-zA-Z]:$/.test(s)) {
-      return s + '/';
-    }
-    if (/^[a-zA-Z]:\/$/.test(s)) {
-      return s;
-    }
-    if (s.length > 1 && s.endsWith('/')) {
-      s = s.slice(0, -1);
-    }
-    return s;
-  };
-
-  // Get all ancestor paths leading to targetPath
-  const getPathAncestors = (targetPath: string): string[] => {
-    const norm = normalizePath(targetPath);
-    if (norm === '/' || norm === 'C:/' || norm === 'D:/') {
-      return [norm];
-    }
-    const isWin = /^[a-zA-Z]:/.test(norm);
-    const prefix = isWin ? norm.substring(0, 3) : '/'; // 'C:/' or '/'
-    const rest = isWin ? norm.substring(3) : norm.substring(1);
-    const parts = rest.split('/').filter(Boolean);
-
-    const result: string[] = [prefix];
-    let cur = prefix.endsWith('/') ? prefix.slice(0, -1) : prefix;
-    for (const part of parts) {
-      cur = `${cur}/${part}`;
-      result.push(cur);
-    }
-    return result;
-  };
-
-  // Recursively merge tree nodes and their children while preserving sibling nodes
-  const mergeTreeNodes = (
-    nodes: TreeDataNode[],
-    targetKey: string,
-    newChildren: TreeDataNode[]
-  ): TreeDataNode[] => {
-    const normTarget = normalizePath(targetKey);
-    return nodes.map((node) => {
-      const normNodeKey = normalizePath(node.key as string);
-      if (normNodeKey === normTarget) {
-        const existingMap = new Map<string, TreeDataNode>();
-        (node.children || []).forEach((c) =>
-          existingMap.set(normalizePath(c.key as string), c)
-        );
-
-        newChildren.forEach((child) => {
-          const childKey = normalizePath(child.key as string);
-          const existing = existingMap.get(childKey);
-          if (existing) {
-            existingMap.set(childKey, {
-              ...existing,
-              ...child,
-              children:
-                child.children && child.children.length > 0
-                  ? child.children
-                  : existing.children,
-            });
-          } else {
-            existingMap.set(childKey, child);
-          }
-        });
-
-        return {
-          ...node,
-          children: Array.from(existingMap.values()),
-        };
-      }
-      if (node.children && node.children.length > 0) {
-        return {
-          ...node,
-          children: mergeTreeNodes(node.children, targetKey, newChildren),
-        };
-      }
-      return node;
-    });
-  };
-
-  // Fetch Overview
-  const fetchOverview = useCallback(async (silent = false) => {
-    if (!machineId) return;
-    if (!silent) setOverviewLoading(true);
-    setOverviewError(null);
-    try {
-      const data = await getMachineOverview(machineId);
-      setOverview(data);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '获取机器监控信息失败';
-      setOverviewError(msg);
-    } finally {
-      if (!silent) setOverviewLoading(false);
-    }
-  }, [machineId]);
 
   // Fetch Directory with caching & complete tree synchronization
   const fetchDirectory = useCallback(
@@ -574,7 +344,7 @@ export function MachineConsoleDrawer({
         setFilesLoading(false);
       }
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
     [machineId, dirCache]
   );
 
@@ -657,7 +427,7 @@ export function MachineConsoleDrawer({
             resolve();
           });
       }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
     [machineId, dirCache]
   );
 
@@ -694,35 +464,7 @@ export function MachineConsoleDrawer({
     return filterNodes(treeData);
   }, [treeData, treeSearch]);
 
-  // Fetch Processes
-  const fetchProcesses = useCallback(async (silent = false) => {
-    if (!machineId) return;
-    if (!silent) setProcLoading(true);
-    try {
-      const data = await getMachineProcesses(machineId);
-      setProcesses(data);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '未知错误';
-      if (!silent) antdMessage.error(`获取进程列表失败: ${msg}`);
-    } finally {
-      if (!silent) setProcLoading(false);
-    }
-  }, [machineId]);
 
-  // Fetch Network
-  const fetchNetwork = useCallback(async (silent = false) => {
-    if (!machineId) return;
-    if (!silent) setNetworkLoading(true);
-    try {
-      const data = await getMachineNetwork(machineId);
-      setNetwork(data);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '未知错误';
-      if (!silent) antdMessage.error(`获取网络状态失败: ${msg}`);
-    } finally {
-      if (!silent) setNetworkLoading(false);
-    }
-  }, [machineId]);
 
   // Batch delete files
   const handleBatchDelete = useCallback(async () => {
