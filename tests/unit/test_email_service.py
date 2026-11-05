@@ -1,6 +1,8 @@
 """EmailService real-path tests: SMTP transport selection, proxy parsing,
 and failure handling. The SOCKS5 classes were previously untested."""
 
+from __future__ import annotations
+
 import smtplib
 import socket
 from typing import Any
@@ -64,7 +66,7 @@ def fake_socks(monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
 class FakeSMTP:
     """Minimal SMTP double recording constructor args and calls."""
 
-    last_instance: "FakeSMTP | None" = None
+    last_instance: FakeSMTP | None = None
     login_error: Exception | None = None
 
     def __init__(self, host: str, port: int, timeout: float = None) -> None:
@@ -75,7 +77,7 @@ class FakeSMTP:
         self.sent: list[Any] = []
         FakeSMTP.last_instance = self
 
-    def __enter__(self) -> "FakeSMTP":
+    def __enter__(self) -> FakeSMTP:
         return self
 
     def __exit__(self, *args: Any) -> None:
