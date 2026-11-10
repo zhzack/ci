@@ -159,6 +159,10 @@ class UserRepository:
 
 
 class SessionRepository:
+    # ``last_seen_at`` is informational only. Writing it on every authenticated
+    # request forces a SQLite commit (and fsync) per call, so throttle it.
+    LAST_SEEN_UPDATE_INTERVAL = timedelta(seconds=60)
+
     def __init__(self, database: Database) -> None:
         self.database = database
 
@@ -178,22 +182,24 @@ class SessionRepository:
     def resolve(self, raw_token: str) -> tuple[AuthSession, User] | None:
         """Return (session, user) for a valid, unexpired token."""
         token_hash = hash_token(raw_token)
+        now = utcnow()
         with self.database.session() as session:
             auth_session = session.scalar(
                 select(AuthSession).where(AuthSession.token_hash == token_hash)
             )
             if auth_session is None:
                 return None
-            if auth_session.expires_at < utcnow():
+            if auth_session.expires_at < now:
                 return None
             user = session.get(User, auth_session.user_id)
             if user is None or user.status != "active":
                 return None
-            session.execute(
-                update(AuthSession)
-                .where(AuthSession.id == auth_session.id)
-                .values(last_seen_at=utcnow())
-            )
+            if now - auth_session.last_seen_at >= self.LAST_SEEN_UPDATE_INTERVAL:
+                session.execute(
+                    update(AuthSession)
+                    .where(AuthSession.id == auth_session.id)
+                    .values(last_seen_at=now)
+                )
             session.expunge(auth_session)
             session.expunge(user)
             return auth_session, user

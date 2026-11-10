@@ -21,7 +21,7 @@ class Database:
             connect_args=connect_args,
         )
         if config.url.startswith("sqlite"):
-            event.listen(self.engine, "connect", self._enable_sqlite_foreign_keys)
+            event.listen(self.engine, "connect", self._configure_sqlite_connection)
         self._session_factory = sessionmaker(
             bind=self.engine,
             class_=Session,
@@ -29,10 +29,23 @@ class Database:
         )
 
     @staticmethod
-    def _enable_sqlite_foreign_keys(connection, _record) -> None:
+    def _configure_sqlite_connection(connection, _record) -> None:
+        """Enable foreign keys and low-latency journaling for SQLite.
+
+        ``journal_mode=WAL`` allows readers and a writer to coexist; with
+        ``synchronous=NORMAL`` a commit no longer fsyncs on every statement,
+        which is what made a single session touch cost tens of milliseconds
+        on slow disks. ``busy_timeout`` keeps concurrent writers waiting
+        instead of failing immediately with "database is locked".
+        """
         cursor = connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
+        finally:
+            cursor.close()
 
     def create_schema(self) -> None:
         """Create any missing tables and ensure backward-compatible column migrations.

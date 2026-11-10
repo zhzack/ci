@@ -79,7 +79,13 @@ def _enforce_route_rules(principal: Principal, path: str, method: str) -> None:
         raise AuthFailedError("Machine tokens are only valid on /api/runner")
 
 
-async def require_auth(request: Request) -> Principal:
+def require_auth(request: Request) -> Principal:
+    """Resolve the caller's principal.
+
+    Deliberately a *sync* dependency: token resolution touches the database,
+    and blocking SQLite I/O must not run on the event loop. FastAPI executes
+    sync dependencies in its threadpool.
+    """
     settings: Settings = request.app.state.settings
     services = request.app.state.services
     token = _extract_token(request)
@@ -88,7 +94,7 @@ async def require_auth(request: Request) -> Principal:
     return principal
 
 
-async def require_admin(principal: Annotated[Principal, Depends(require_auth)]) -> Principal:
+def require_admin(principal: Annotated[Principal, Depends(require_auth)]) -> Principal:
     from mini_pipeline.domain.exceptions import PermissionDeniedError
 
     if not principal.is_admin:
@@ -108,7 +114,7 @@ def resolve_machine_identity(services, token: str | None):
     return identity
 
 
-async def require_machine(request: Request):
+def require_machine(request: Request):
     services = request.app.state.services
     return resolve_machine_identity(services, _extract_token(request))
 

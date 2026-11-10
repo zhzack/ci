@@ -14,6 +14,7 @@ import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -26,6 +27,11 @@ from mini_pipeline.database.models import Machine
 from mini_pipeline.domain.exceptions import ValidationError
 
 logger = logging.getLogger("mini_pipeline.machine.diagnostics")
+
+# Probing processes/sockets walks /proc and remote hosts; the console polls
+# every few seconds, so short-lived caching keeps repeated probes cheap while
+# staying visually "live".
+_PROBE_CACHE_TTL_SECONDS = 3.0
 
 
 def _safe_decode_bytes(raw_bytes: bytes) -> str:
@@ -206,6 +212,26 @@ class MachineDiagnosticsService:
         self._agent_processes: dict[str, list[ProcessInfo]] = {}
         self._agent_network: dict[str, NetworkDiagnostics] = {}
         self._sftp_pool: dict[str, tuple[Any, Any, float]] = {}
+        self._probe_cache: dict[tuple[str, str], tuple[float, Any]] = {}
+        self._probe_cache_lock = Lock()
+
+    def _cached_probe(self, kind: str, machine_id: str, factory):
+        """Return a probe result cached for a few seconds per machine/kind."""
+        key = (kind, machine_id)
+        now = time.monotonic()
+        with self._probe_cache_lock:
+            cached = self._probe_cache.get(key)
+        if cached is not None and now - cached[0] < _PROBE_CACHE_TTL_SECONDS:
+            return cached[1]
+        value = factory()
+        with self._probe_cache_lock:
+            self._probe_cache[key] = (now, value)
+        return value
+
+    def _invalidate_probe_cache(self, machine_id: str) -> None:
+        with self._probe_cache_lock:
+            for kind in ("overview", "processes", "network"):
+                self._probe_cache.pop((kind, machine_id), None)
 
     def update_agent_telemetry(self, machine_id: str, payload: dict[str, Any]) -> None:
         """Stores real-time telemetry reported by runner agent in heartbeat."""
@@ -237,6 +263,8 @@ class MachineDiagnosticsService:
 
             if "network" in payload and isinstance(payload["network"], dict):
                 self._agent_network[machine_id] = NetworkDiagnostics(**payload["network"])
+            # Freshly pushed telemetry supersedes anything we probed earlier.
+            self._invalidate_probe_cache(machine_id)
         except Exception as exc:
             logger.warning("Failed to parse agent telemetry for %s: %s", machine_id, exc)
 
@@ -262,13 +290,17 @@ class MachineDiagnosticsService:
         )
 
         if machine.connection_type == "ssh":
-            ov = self._probe_ssh_overview(machine)
+            ov = self._cached_probe(
+                "overview", machine_id, lambda: self._probe_ssh_overview(machine)
+            ).model_copy()
             ov.online = is_online
             ov.last_heartbeat = machine.last_heartbeat
             return ov
 
         if self._is_builtin(machine):
-            ov = self._probe_local_overview()
+            ov = self._cached_probe(
+                "overview", machine_id, self._probe_local_overview
+            ).model_copy()
             ov.online = True
             ov.last_heartbeat = machine.last_heartbeat
             return ov
@@ -322,10 +354,18 @@ class MachineDiagnosticsService:
     def get_processes(self, machine_id: str) -> list[ProcessInfo]:
         machine = self.machines.get(machine_id)
         if machine.connection_type == "ssh":
-            return self._probe_ssh_processes(machine)
+            return list(
+                self._cached_probe(
+                    "processes", machine_id, lambda: self._probe_ssh_processes(machine)
+                )
+            )
 
         if self._is_builtin(machine):
-            return self._probe_local_processes()
+            return list(
+                self._cached_probe(
+                    "processes", machine_id, self._probe_local_processes
+                )
+            )
 
         if machine_id in self._agent_processes and self._agent_processes[machine_id]:
             return self._agent_processes[machine_id]
@@ -346,10 +386,14 @@ class MachineDiagnosticsService:
     def get_network(self, machine_id: str) -> NetworkDiagnostics:
         machine = self.machines.get(machine_id)
         if machine.connection_type == "ssh":
-            return self._probe_ssh_network(machine)
+            return self._cached_probe(
+                "network", machine_id, lambda: self._probe_ssh_network(machine)
+            )
 
         if self._is_builtin(machine):
-            return self._probe_local_network()
+            return self._cached_probe(
+                "network", machine_id, self._probe_local_network
+            )
 
         if machine_id in self._agent_network and self._agent_network[machine_id]:
             return self._agent_network[machine_id]

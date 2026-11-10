@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Badge,
   Button,
@@ -47,6 +47,22 @@ export function NetworkDiagnosticsPane({
   const [activeTab, setActiveTab] = useState<'sockets' | 'adapters'>('sockets');
   const [sockSearch, setSockSearch] = useState('');
   const [protoFilter, setProtoFilter] = useState<'ALL' | 'TCP' | 'UDP' | 'LISTEN' | 'ESTABLISHED'>('ALL');
+
+  // Socket tables can hold hundreds of connections; virtualize the rows to
+  // keep each refresh from re-rendering the whole list.
+  const tableHostRef = useRef<HTMLDivElement>(null);
+  const [tableHeight, setTableHeight] = useState(320);
+
+  useEffect(() => {
+    const host = tableHostRef.current;
+    if (!host) return;
+    const update = () => setTableHeight(Math.max(200, host.clientHeight));
+    update();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(update);
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, []);
 
   const interfaces = data?.interfaces || [];
   const connections = data?.connections || [];
@@ -312,7 +328,7 @@ export function NetworkDiagnosticsPane({
       </div>
 
       {/* Body Table with internal scrolling */}
-      <div style={{ flex: 1, overflowY: 'auto' }}>
+      <div ref={tableHostRef} style={{ flex: 1, minHeight: 0 }}>
         {loading && !data ? (
           <div style={{ padding: 40 }}>
             <Loading rows={4} />
@@ -325,6 +341,8 @@ export function NetworkDiagnosticsPane({
             loading={loading}
             size="small"
             pagination={false}
+            virtual
+            scroll={{ x: 1400, y: Math.max(160, tableHeight - 40) }}
           />
         ) : (
           <Table<NetworkInterfaceInfo>

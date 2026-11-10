@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Button,
   Card,
@@ -38,6 +38,22 @@ export function ProcessManagerPane({
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [sortBy, setSortBy] = useState<string>('cpu_desc');
+
+  // The process list routinely has hundreds of rows; virtualize it so a
+  // background refresh does not re-layout every row on the main thread.
+  const tableHostRef = useRef<HTMLDivElement>(null);
+  const [tableHeight, setTableHeight] = useState(320);
+
+  useEffect(() => {
+    const host = tableHostRef.current;
+    if (!host) return;
+    const update = () => setTableHeight(Math.max(200, host.clientHeight));
+    update();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(update);
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, []);
 
   const safeProcesses = Array.isArray(processes) ? processes : [];
 
@@ -277,8 +293,8 @@ export function ProcessManagerPane({
         </Space>
       </div>
 
-      {/* Process Table with internal scrolling */}
-      <div style={{ flex: 1, overflowY: 'auto' }}>
+      {/* Process Table with virtualized internal scrolling */}
+      <div ref={tableHostRef} style={{ flex: 1, minHeight: 0 }}>
         <Table<ProcessInfo>
           rowKey="pid"
           columns={columns}
@@ -286,6 +302,8 @@ export function ProcessManagerPane({
           loading={loading}
           size="small"
           pagination={false}
+          virtual
+          scroll={{ x: 1000, y: Math.max(160, tableHeight - 40) }}
         />
       </div>
     </div>

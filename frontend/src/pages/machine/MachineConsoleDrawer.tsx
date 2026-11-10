@@ -244,10 +244,12 @@ export function MachineConsoleDrawer({
   useEffect(() => {
     if (!open || !machineId || !autoRefresh) return;
     const timer = setInterval(() => {
+      // Don't spend CPU/render work while the page is in a background tab.
+      if (document.visibilityState === 'hidden') return;
       void fetchOverview(true);
       void fetchProcesses(true);
       void fetchNetwork(true);
-    }, 4000);
+    }, 10000);
     return () => clearInterval(timer);
   }, [open, machineId, autoRefresh, fetchOverview, fetchProcesses, fetchNetwork]);
 
