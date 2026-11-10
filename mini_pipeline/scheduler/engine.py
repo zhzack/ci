@@ -59,7 +59,7 @@ class RemoteTaskInputs:
     __slots__ = (
         "run_id", "task_id", "step_name", "plugin", "params", "run_params",
         "dependencies", "uploads", "timeout_seconds", "machine_id",
-        "bundle_path",
+        "bundle_path", "secret_values",
     )
 
     def __init__(
@@ -75,6 +75,7 @@ class RemoteTaskInputs:
         uploads: dict[str, Path] | None,
         timeout_seconds: int,
         machine_id: str,
+        secret_values: dict[str, Any] | None = None,
     ) -> None:
         self.run_id = run_id
         self.task_id = task_id
@@ -87,6 +88,9 @@ class RemoteTaskInputs:
         self.timeout_seconds = timeout_seconds
         self.machine_id = machine_id
         self.bundle_path: Path | None = None
+        # Never persisted to remote_state: the runner fetches secret params
+        # over an authenticated endpoint and keeps them in memory only.
+        self.secret_values = dict(secret_values or {})
 
 
 class PipelineEngine:
@@ -129,6 +133,7 @@ class PipelineEngine:
         # Last resolved inputs per (run, step) so retry submissions reuse them.
         # The coordinator is single-threaded per run; a plain dict is enough.
         self._resolved_params_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        self._step_local_params_cache: dict[tuple[str, str], dict[str, Any]] = {}
         self._dependency_results_cache: dict[tuple[str, str], dict[str, Any]] = {}
         self._step_cache_keys: dict[tuple[str, str], str] = {}
         # Remote tasks awaiting runner pickup, keyed by task id.
@@ -662,6 +667,10 @@ class PipelineEngine:
                                         (run_id, step_name), {}
                                     ),
                                     uploads=uploads,
+                                    secret_values=secret_values,
+                                    run_params=self._step_local_params_cache.get(
+                                        (run_id, step_name), {}
+                                    ),
                                     run_cancel=run_cancel,
                                 )
                             futures[future] = step_name
@@ -799,7 +808,7 @@ class PipelineEngine:
 
 
     def _execute_ssh_task(self, *, run_id: str, task, plugin, params, dependencies,
-                          uploads, run_params, cancel_event=None):
+                          uploads, run_params, secret_values=None, cancel_event=None):
         if task.machine_id is None or self.ssh_executor is None:
             return TaskExecutionResult(False, "SSH executor unavailable")
         return self.ssh_executor.execute(
@@ -810,6 +819,7 @@ class PipelineEngine:
             dependencies=dependencies,
             uploads=uploads,
             run_params=run_params,
+            secret_values=secret_values,
             cancel_event=cancel_event,
         )
 
@@ -822,6 +832,8 @@ class PipelineEngine:
             params=kwargs["params"],
             dependencies=kwargs["dependencies"],
             uploads=kwargs.get("uploads"),
+            run_params=kwargs.get("run_params"),
+            secret_values=kwargs.get("secret_values"),
             cancel_event=run_cancel,
         )
 
@@ -830,17 +842,22 @@ class PipelineEngine:
     ):
         """Re-park a retried task in QUEUED so a runner can claim it again."""
         time.sleep(delay)
+        run_entity = self.runs.get(task.run_id)
         requeue = RemoteTaskInputs(
             run_id=task.run_id,
             task_id=task.id,
             step_name=task.step_name,
             plugin=plugin,
             params=params,
-            run_params=self._resolved_params_cache.get((task.run_id, task.step_name)),
+            run_params=(
+                self._step_local_params_cache.get((task.run_id, task.step_name))
+                or self._resolved_params_cache.get((task.run_id, task.step_name))
+            ),
             dependencies=dependencies,
             uploads=uploads,
             timeout_seconds=self.task_timeout_seconds,
             machine_id=task.machine_id,
+            secret_values=dict(getattr(run_entity, "secret_values", None) or {}),
         )
         self.remote_inputs[task.id] = requeue
         self._persist_remote_inputs(requeue)
@@ -971,6 +988,7 @@ class PipelineEngine:
             plugin = self.plugins.get_version(plugin_name, plugin_version)
             attempts[name] = 1
             self._resolved_params_cache[(run_id, name)] = resolved_params
+            self._step_local_params_cache[(run_id, name)] = dict(step_local_params)
             self._dependency_results_cache[(run_id, name)] = dependency_results
 
             is_ssh = (
@@ -1003,6 +1021,7 @@ class PipelineEngine:
                     dependencies=dependency_results,
                     uploads=uploads,
                     run_params=step_local_params,
+                    secret_values=secret_values,
                     cancel_event=run_cancel,
                 )
                 futures[future] = name
@@ -1030,6 +1049,7 @@ class PipelineEngine:
                     uploads=uploads,
                     timeout_seconds=self.task_timeout_seconds,
                     machine_id=tasks[name].machine_id,
+                    secret_values=secret_values,
                 )
                 self._persist_remote_inputs(self.remote_inputs[tasks[name].id])
                 self._publish(
@@ -1141,6 +1161,11 @@ class PipelineEngine:
         file a runner claiming the task afterwards would get empty params and
         a 404 bundle. Upload paths point at server-local temp files, which is
         acceptable: they live on the same host as this state directory.
+
+        Secret param values are deliberately NOT written here: they are
+        fetched by the runner from the authenticated secrets endpoint, and
+        after a restart they are rebuilt from ``pipeline_runs.secret_values``
+        in the database (the only store that already holds them).
         """
         payload = {
             "run_id": inputs.run_id,
@@ -1189,6 +1214,7 @@ class PipelineEngine:
             payload = json.loads(path.read_text(encoding="utf-8"))
             task = self.runs.get_task_by_id(task_id)
             plugin = self.plugins.get_version(task.plugin_name, task.plugin_version)
+            run_entity = self.runs.get(task.run_id)
             uploads = {
                 name: Path(value)
                 for name, value in (payload.get("uploads") or {}).items()
@@ -1206,6 +1232,7 @@ class PipelineEngine:
                 timeout_seconds=payload.get("timeout_seconds")
                 or self.task_timeout_seconds,
                 machine_id=task.machine_id or "",
+                secret_values=dict(getattr(run_entity, "secret_values", None) or {}),
             )
         except Exception:
             logger.exception(

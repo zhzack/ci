@@ -1,6 +1,7 @@
 """Reusable fixtures for integration tests."""
 
 import io
+import os
 import zipfile
 from pathlib import Path
 from typing import Callable
@@ -17,6 +18,10 @@ from mini_pipeline.core.config import (
     StorageConfig,
 )
 from mini_pipeline.server.app import create_app
+
+# Prevent ambient proxy environment variables from breaking httpx in local test environments
+for _var in ("ALL_PROXY", "all_proxy"):
+    os.environ.pop(_var, None)
 
 
 @pytest.fixture

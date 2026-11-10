@@ -176,6 +176,36 @@ def download_bundle(
     )
 
 
+@router.get("/tasks/{task_id}/secrets")
+def task_secrets(
+    task_id: str,
+    identity: Annotated[MachineIdentity, Depends(require_machine)],
+    services: Annotated[Services, Depends(get_services)],
+) -> dict[str, Any]:
+    """Secret param values for the task's run, scoped to the owning machine.
+
+    Secrets never travel inside the bundle or the persisted remote state:
+    agents fetch them right before execution and keep them in memory only.
+    Terminal tasks get an empty map — a finished task has no reason to read
+    the run's secrets again.
+    """
+    task = _own_task(services, identity, task_id)
+    if task.status in _TERMINAL:
+        return {"secrets": {}}
+    remote = services.engine.remote_inputs_for(task.id)
+    if remote is not None and remote.secret_values:
+        return {
+            "secrets": {str(k): str(v) for k, v in remote.secret_values.items()}
+        }
+    run = services.run_repository.get(task.run_id)
+    return {
+        "secrets": {
+            str(k): str(v)
+            for k, v in (getattr(run, "secret_values", None) or {}).items()
+        }
+    }
+
+
 class TaskStatusReport(BaseModel):
     status: str
     message: str = ""

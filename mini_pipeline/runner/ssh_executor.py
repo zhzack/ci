@@ -16,6 +16,7 @@ the SSH login user.
 from __future__ import annotations
 
 import io
+import shlex
 import shutil
 import tempfile
 import time
@@ -37,6 +38,19 @@ from mini_pipeline.plugin.manifest import load_manifest
 from mini_pipeline.runner.bundle import build_task_bundle
 
 _POLL = 0.1
+
+
+def build_secret_env_script(secret_values: dict[str, Any] | None) -> str:
+    """POSIX exports for ``MP_SECRET_*`` variables, shell-quoted.
+
+    Values are only ever written to a mode-600 file over the SSH channel,
+    sourced by the login shell and deleted before the plugin starts.
+    """
+    lines = [
+        f"export MP_SECRET_{str(key).upper()}={shlex.quote(str(value))}"
+        for key, value in (secret_values or {}).items()
+    ]
+    return "\n".join(lines) + ("\n" if lines else "")
 
 
 class SshExecutor:
@@ -126,6 +140,7 @@ class SshExecutor:
         dependencies: dict[str, Any],
         uploads: dict[str, Path] | None = None,
         run_params: dict[str, Any] | None = None,
+        secret_values: dict[str, Any] | None = None,
         cancel_event=None,
     ) -> Any:
         """Execute one task on the remote SSH host. Returns TaskExecutionResult."""
@@ -149,12 +164,25 @@ class SshExecutor:
         )
 
         remote_root = f"~/mini-pipeline-tasks/{task.id}"
+        secrets_file = f".mini-pipeline-secrets-{task.id}"
+        secret_prefix = ""
         client = None
         temp_dir: Path | None = None
         try:
             client, _ = self._connect(machine)
             sftp = client.open_sftp()
             sftp.put(str(bundle), f"mini-pipeline-tasks-{task.id}.zip")
+            if secret_values:
+                # Written mode-600, sourced, then deleted before the plugin
+                # starts: values never appear in the bundle, on the command
+                # line, or in ps output.
+                script = build_secret_env_script(secret_values)
+                sftp.putfo(io.BytesIO(script.encode("utf-8")), secrets_file)
+                sftp.chmod(secrets_file, 0o600)
+                secret_prefix = (
+                    f"set -a; . $HOME/{secrets_file}; set +a; "
+                    f"rm -f $HOME/{secrets_file}; "
+                )
 
             def _run(command: str, timeout: float = 30) -> int:
                 _, stdout, _ = client.exec_command(command, timeout=timeout)
@@ -198,6 +226,9 @@ class SshExecutor:
                     f"Runtime {runtime_type!r} is not supported on SSH machines",
                     log_path=log_path,
                 )
+
+            if secret_prefix:
+                remote_cmd = secret_prefix + remote_cmd
 
             result = self._stream_execute(
                 client,
@@ -265,7 +296,8 @@ class SshExecutor:
                 try:
                     _ = client.exec_command(
                         f"rm -rf $HOME/mini-pipeline-tasks/{task.id} "
-                        f"$HOME/mini-pipeline-tasks-{task.id}.zip",
+                        f"$HOME/mini-pipeline-tasks-{task.id}.zip "
+                        f"$HOME/{secrets_file}",
                         timeout=10,
                     )
                 except Exception:
@@ -328,7 +360,8 @@ class SshExecutor:
         try:
             _ = client.exec_command(
                 f"pkill -f 'mini-pipeline-tasks/{task_id}' 2>/dev/null; "
-                f"rm -rf $HOME/{remote_root} $HOME/mini-pipeline-tasks-{task_id}.zip",
+                f"rm -rf $HOME/{remote_root} $HOME/mini-pipeline-tasks-{task_id}.zip "
+                f"$HOME/.mini-pipeline-secrets-{task_id}",
                 timeout=10,
             )
         except Exception:

@@ -92,6 +92,87 @@ def _setup(client: TestClient) -> dict:
     return {"token": token, "headers": headers}
 
 
+def test_secret_param_injected_on_local_retry(tmp_path) -> None:
+    """Retried steps still receive MP_SECRET_* (regression: backoff path).
+
+    The retry path used to rebuild the executor call without secret_values,
+    so a step that failed once silently lost its secrets on the second try.
+    """
+    from mini_pipeline.core.config import ExecutionConfig
+
+    run_py = (
+        "import json, os\n"
+        "from pathlib import Path\n"
+        "inp = json.load(open('input.json', encoding='utf-8'))\n"
+        "marker = Path(inp['params']['marker_path'])\n"
+        "if not marker.exists():\n"
+        "    marker.write_text('first')\n"
+        "    print('first attempt fails', flush=True)\n"
+        "    raise SystemExit(1)\n"
+        "print('RETRY_SECRET=' + str(os.environ.get('MP_SECRET_API_KEY')), flush=True)\n"
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("plugin.yaml", SECRET_PLUGIN)
+        zf.writestr("run.py", run_py)
+
+    settings = build_settings(
+        tmp_path, auth={"enabled": True, "registration_enabled": True},
+        security={"secret_key": "unit-test-secret-key"},
+        execution=ExecutionConfig(
+            coordinator_workers=2,
+            task_workers=4,
+            task_timeout_seconds=10,
+            retry_backoff_seconds=0.01,
+        ),
+    )
+    with TestClient(create_app(settings)) as client:
+        client.post("/api/auth/register", json={"username": "root", "password": "password-123"})
+        r = client.post(
+            "/api/auth/register",
+            json={"username": "alice", "password": "password-123"},
+        )
+        headers = auth_headers(r.json()["token"])
+        plugin = client.post(
+            "/api/plugins/upload",
+            files={"file": ("secret-echo.zip", io.BytesIO(buf.getvalue()), "application/zip")},
+            headers=headers,
+        )
+        assert plugin.status_code == 201, plugin.text
+        definition = (
+            "name: retry-secret-demo\n"
+            "params:\n"
+            "  api_key:\n"
+            "    secret: true\n"
+            f"  marker_path: {tmp_path / 'retry-marker'}\n"
+            "steps:\n"
+            "  - {name: go, plugin: secret-echo@1.0.0, retries: 1}\n"
+        )
+        created = client.post("/api/pipelines", json={"definition": definition}, headers=headers)
+        assert created.status_code == 201, created.text
+
+        ok = client.post(
+            "/api/runs",
+            json={"pipeline": "retry-secret-demo", "params": {"api_key": "s3cr3t-retry"}},
+            headers=headers,
+        )
+        assert ok.status_code == 202, ok.text
+        run_id = ok.json()["id"]
+
+        deadline = time.monotonic() + 20
+        run = {}
+        while time.monotonic() < deadline:
+            run = client.get(f"/api/runs/{run_id}", headers=headers).json()
+            if run.get("status") in {"SUCCESS", "FAILED"}:
+                break
+            time.sleep(0.1)
+        assert run.get("status") == "SUCCESS", run
+
+        log = client.get(f"/api/runs/{run_id}/tasks/go/log", headers=headers).text
+        assert "first attempt fails" in log, log
+        assert "RETRY_SECRET=s3cr3t-retry" in log, log
+
+
 def test_secret_param_required_and_masked(tmp_path) -> None:
     settings = build_settings(
         tmp_path, auth={"enabled": True, "registration_enabled": True},

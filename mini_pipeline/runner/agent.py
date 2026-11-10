@@ -396,6 +396,25 @@ class RunnerClient:
                     sink.write(chunk)
         return destination
 
+    def fetch_secrets(self, task_id: str) -> dict[str, str]:
+        """Secret params for a task, kept in memory for env injection.
+
+        Older servers have no secrets endpoint (404) and the task simply runs
+        without ``MP_SECRET_*`` variables, so this never fails the task.
+        """
+        try:
+            response = self._http.get(f"/api/runner/tasks/{task_id}/secrets")
+            if response.status_code == 404:
+                return {}
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            return {}
+        secrets = payload.get("secrets") if isinstance(payload, dict) else None
+        if not isinstance(secrets, dict):
+            return {}
+        return {str(key): str(value) for key, value in secrets.items()}
+
     def push_logs(self, task_id: str, chunk: str) -> None:
         if not chunk:
             return
@@ -609,6 +628,12 @@ def execute_task(client: RunnerClient, spec: dict[str, Any], workspace_root: Pat
 
     tee = LogTee(client, task_id)
     tee.start()
+    # Secret params are fetched over the authenticated runner API and kept
+    # in memory only: never written into the bundle, workspace, or logs.
+    secret_env = {
+        f"MP_SECRET_{key.upper()}": value
+        for key, value in client.fetch_secrets(task_id).items()
+    }
     try:
         result = runtime.execute(
             RuntimeRequest(
@@ -619,6 +644,7 @@ def execute_task(client: RunnerClient, spec: dict[str, Any], workspace_root: Pat
                     "PIPELINE_WORKSPACE": str(workspace),
                     "PIPELINE_TASK_ID": task_id,
                     "MINI_PIPELINE_WORKSPACE": str(workspace),
+                    **secret_env,
                 },
                 timeout_seconds=int(spec.get("timeout_seconds", 3600)),
                 log_stream=tee,
