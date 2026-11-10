@@ -13,7 +13,7 @@ import {
   Progress,
   Row,
   Select,
-
+  Segmented,
   Space,
   Switch,
   Table,
@@ -28,6 +28,7 @@ import { InboxOutlined, PlayCircleOutlined, ShareAltOutlined } from '@ant-design
 import { useNavigate, useParams } from 'react-router-dom';
 import * as yaml from 'js-yaml';
 import { PageHeader } from '@/components/PageHeader';
+import { PipelineFlowEditor } from '@/components/pipeline/PipelineFlowEditor';
 import { Loading } from '@/components/Loading';
 import { ErrorAlert } from '@/components/ErrorAlert';
 import { useApiQuery, describeError } from '@/hooks/useApiQuery';
@@ -78,6 +79,7 @@ export default function PipelineDetailPage(): React.JSX.Element {
   const [shareDrawerOpen, setShareDrawerOpen] = useState(false);
   const [paramsForm] = Form.useForm<{ params: string }>();
   const [runMode, setRunMode] = useState<'form' | 'json'>('form');
+  const [stepsViewMode, setStepsViewMode] = useState<'table' | 'graph'>('table');
 
   const { data, isLoading, error, refetch } = useApiQuery(
     ['pipeline-yaml', identifier],
@@ -279,6 +281,17 @@ export default function PipelineDetailPage(): React.JSX.Element {
     key: step.name,
   }));
 
+  const flowSteps = useMemo(() => {
+    return steps.map((s) => ({
+      name: s.name,
+      pluginRef: s.plugin,
+      depends: s.depends ?? [],
+      cache: s.cache,
+      retries: s.retries,
+      machine: s.machine ?? undefined,
+    }));
+  }, [steps]);
+
   return (
     <>
       <PageHeader
@@ -315,16 +328,37 @@ export default function PipelineDetailPage(): React.JSX.Element {
       ) : (
         <Row gutter={16}>
           <Col span={16}>
-            <Card title="Steps">
+            <Card
+              title="Steps"
+              extra={
+                steps.length > 0 ? (
+                  <Segmented
+                    size="small"
+                    value={stepsViewMode}
+                    onChange={(val) => setStepsViewMode(val as 'table' | 'graph')}
+                    options={[
+                      { label: '📋 表格', value: 'table' },
+                      { label: '🕸️ DAG 拓扑图', value: 'graph' },
+                    ]}
+                  />
+                ) : null
+              }
+            >
               {steps.length === 0 ? (
                 <Typography.Text type="secondary">No steps defined</Typography.Text>
-              ) : (
+              ) : stepsViewMode === 'table' ? (
                 <Table
                   rowKey="name"
                   size="middle"
                   columns={columns}
                   dataSource={steps}
                   pagination={false}
+                />
+              ) : (
+                <PipelineFlowEditor
+                  steps={flowSteps}
+                  onStepsChange={() => {}}
+                  height={360}
                 />
               )}
             </Card>

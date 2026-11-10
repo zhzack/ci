@@ -33,6 +33,7 @@ import {
   LinkOutlined,
   PlusOutlined,
   ReloadOutlined,
+  RocketOutlined,
   SafetyCertificateOutlined,
 } from '@ant-design/icons';
 import { PageHeader } from '@/components/PageHeader';
@@ -78,10 +79,12 @@ type RegisterFormValues = {
 
 function TokenOnceModal({ token, onClose }: { token: string | null; onClose: () => void }) {
   const { token: themeToken } = antdTheme.useToken();
+  const [upgradeMode, setUpgradeMode] = useState(false);
   const serverUrl = window.location.origin;
-  const winCmd = `powershell -c "irm '${serverUrl}/install.ps1?token=${token ?? ''}&server=${encodeURIComponent(serverUrl)}' | iex"`;
-  const unixCmd = `curl -fsSL "${serverUrl}/install.sh?token=${token ?? ''}&server=${encodeURIComponent(serverUrl)}" | bash`;
-  const universalCmd = `powershell -c "irm '${serverUrl}/install.ps1?token=${token ?? ''}&server=${encodeURIComponent(serverUrl)}' | iex"`;
+  const upParam = upgradeMode ? '&upgrade=true' : '';
+  const winCmd = `powershell -c "irm '${serverUrl}/install.ps1?token=${token ?? ''}&server=${encodeURIComponent(serverUrl)}${upParam}' | iex"`;
+  const unixCmd = `curl -fsSL "${serverUrl}/install.sh?token=${token ?? ''}&server=${encodeURIComponent(serverUrl)}${upParam}" | bash`;
+  const universalCmd = `powershell -c "irm '${serverUrl}/install.ps1?token=${token ?? ''}&server=${encodeURIComponent(serverUrl)}${upParam}' | iex"`;
   const manualCmd = `mini-pipeline-runner --server ${serverUrl} --token ${token ?? ''}`;
 
   const copyToClipboard = (text: string, title = '命令') => {
@@ -131,7 +134,15 @@ function TokenOnceModal({ token, onClose }: { token: string | null; onClose: () 
       </div>
 
       <div style={{ marginTop: 14 }}>
-        <Typography.Text strong>一键自动安装与部署命令 (推荐):</Typography.Text>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Typography.Text strong>一键自动安装与部署命令 (推荐):</Typography.Text>
+          <Space size="small">
+            <Switch size="small" checked={upgradeMode} onChange={setUpgradeMode} />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              强制升级已有安装 (--upgrade)
+            </Typography.Text>
+          </Space>
+        </div>
         <Tabs
           defaultActiveKey="windows"
           style={{ marginTop: 6 }}
@@ -693,6 +704,7 @@ export function MachinesPage(): React.JSX.Element {
 
   // Uninstallation Modal state
   const [uninstallModalOpen, setUninstallModalOpen] = useState(false);
+  const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
   const [purgeEnvironments, setPurgeEnvironments] = useState(true);
 
   const [form] = Form.useForm<RegisterFormValues>();
@@ -995,6 +1007,12 @@ export function MachinesPage(): React.JSX.Element {
         description="管理分布式 Runner 节点、SSH 远端主机，以及多机一键下发装配 Python/Node 运行环境"
         extra={
           <Space>
+            <Button
+              icon={<RocketOutlined />}
+              onClick={() => setUpgradeModalOpen(true)}
+            >
+              🚀 一键升级指令
+            </Button>
             <Button
               danger
               icon={<DeleteOutlined />}
@@ -1421,6 +1439,114 @@ export function MachinesPage(): React.JSX.Element {
                     readOnly
                     autoSize={{ minRows: 2, maxRows: 3 }}
                     value={`curl -fsSL "${window.location.origin}/uninstall.sh?purge=${purgeEnvironments}&server=${encodeURIComponent(window.location.origin)}" | bash`}
+                    style={{
+                      fontFamily: 'JetBrains Mono, monospace',
+                      background: themeToken.colorFillTertiary,
+                    }}
+                  />
+                </div>
+              ),
+            },
+          ]}
+        />
+      </Modal>
+
+      {/* One-click Upgrade Modal */}
+      <Modal
+        title="🚀 Runner 一键升级指令 (One-Click Upgrade)"
+        open={upgradeModalOpen}
+        onCancel={() => setUpgradeModalOpen(false)}
+        width={720}
+        footer={[
+          <Button key="close" type="primary" onClick={() => setUpgradeModalOpen(false)}>
+            完成
+          </Button>,
+        ]}
+      >
+        <Alert
+          type="info"
+          showIcon
+          message="原地平滑升级已安装的 Runner"
+          description="在已部署 Runner 的机器终端执行以下命令，即可拉取当前平台最新运行包并执行强制升级与后台常驻守护重启，保留现有 Token 配置与工作区历史。"
+          style={{ marginBottom: 14 }}
+        />
+        <Tabs
+          defaultActiveKey="windows"
+          items={[
+            {
+              key: 'windows',
+              label: '🪟 Windows (PowerShell)',
+              children: (
+                <div>
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      marginBottom: 6,
+                    }}
+                  >
+                    <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+                      在 Windows 机器的 PowerShell 中执行:
+                    </Typography.Text>
+                    <Button
+                      type="primary"
+                      size="small"
+                      icon={<CopyOutlined />}
+                      onClick={() => {
+                        const cmd = `powershell -c "irm '${window.location.origin}/install.ps1?upgrade=true&server=${encodeURIComponent(window.location.origin)}' | iex"`;
+                        void navigator.clipboard.writeText(cmd);
+                        antdMessage.success('已复制 Windows 一键升级命令到剪贴板');
+                      }}
+                    >
+                      一键复制升级命令
+                    </Button>
+                  </div>
+                  <Input.TextArea
+                    readOnly
+                    autoSize={{ minRows: 2, maxRows: 3 }}
+                    value={`powershell -c "irm '${window.location.origin}/install.ps1?upgrade=true&server=${encodeURIComponent(window.location.origin)}' | iex"`}
+                    style={{
+                      fontFamily: 'JetBrains Mono, monospace',
+                      background: themeToken.colorFillTertiary,
+                    }}
+                  />
+                </div>
+              ),
+            },
+            {
+              key: 'unix',
+              label: '🐧 Linux / macOS',
+              children: (
+                <div>
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      marginBottom: 6,
+                    }}
+                  >
+                    <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+                      在 Linux / macOS 机器的 bash/zsh 终端中执行:
+                    </Typography.Text>
+                    <Button
+                      type="primary"
+                      size="small"
+                      icon={<CopyOutlined />}
+                      onClick={() => {
+                        const cmd = `curl -fsSL "${window.location.origin}/install.sh?upgrade=true&server=${encodeURIComponent(window.location.origin)}" | bash`;
+                        void navigator.clipboard.writeText(cmd);
+                        antdMessage.success('已复制 Linux/macOS 一键升级命令到剪贴板');
+                      }}
+                    >
+                      一键复制升级命令
+                    </Button>
+                  </div>
+                  <Input.TextArea
+                    readOnly
+                    autoSize={{ minRows: 2, maxRows: 3 }}
+                    value={`curl -fsSL "${window.location.origin}/install.sh?upgrade=true&server=${encodeURIComponent(window.location.origin)}" | bash`}
                     style={{
                       fontFamily: 'JetBrains Mono, monospace',
                       background: themeToken.colorFillTertiary,

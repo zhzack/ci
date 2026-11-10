@@ -26,6 +26,8 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
+from mini_pipeline import __version__ as SERVER_VERSION
+
 installer_router = APIRouter(tags=["system"], include_in_schema=True)
 
 _PACKAGE_ROOT = Path(__file__).resolve().parents[2]
@@ -40,11 +42,11 @@ INSTALL_PS1_TEMPLATE = r"""#Requires -Version 5.1
 $ErrorActionPreference = 'Stop'
 $Server = if ($env:MINI_PIPELINE_SERVER) { $env:MINI_PIPELINE_SERVER } else { '__SERVER_URL__' }
 $Token  = if ($env:MINI_PIPELINE_TOKEN) { $env:MINI_PIPELINE_TOKEN } else { '__TOKEN__' }
-$Force  = if ($env:MINI_PIPELINE_FORCE -eq '1' -or $env:MINI_PIPELINE_FORCE -eq 'true') {
-    $true
-} else {
-    $false
-}
+$isForceEnv = $env:MINI_PIPELINE_FORCE -eq '1' -or $env:MINI_PIPELINE_FORCE -eq 'true'
+$Force = if ($isForceEnv -or '__FORCE__' -eq 'true') { $true } else { $false }
+$isUpgradeEnv = $env:MINI_PIPELINE_UPGRADE -eq '1' -or $env:MINI_PIPELINE_UPGRADE -eq 'true'
+$Upgrade = if ($isUpgradeEnv -or '__UPGRADE__' -eq 'true') { $true } else { $false }
+$ServerVersion = '__SERVER_VERSION__'
 $Root   = Join-Path $env:USERPROFILE '.mini-pipeline-runner'
 $Workspace = Join-Path $Root 'workspace'
 $Runner = Join-Path $Root 'venv\Scripts\mini-pipeline-runner.exe'
@@ -56,10 +58,31 @@ New-Item -ItemType Directory -Force -Path $Root | Out-Null
 New-Item -ItemType Directory -Force -Path $Workspace | Out-Null
 
 $isInstalled = (Test-Path $Runner) -and (Test-Path $PythonExe)
+$localVersion = ""
+if ($isInstalled) {
+    try {
+        $cmd = "import mini_pipeline; print(getattr(mini_pipeline, '__version__', ''))"
+        $localVersion = (& $PythonExe -c $cmd 2>$null).Trim()
+    } catch {
+        $localVersion = ""
+    }
+}
 
-if ($isInstalled -and (-not $Force)) {
+$versionMismatch = $ServerVersion -and $localVersion -and ($localVersion -ne $ServerVersion)
+$needUpgrade = $false
+if ($Upgrade -or $Force) {
+    $needUpgrade = $true
+} elseif ($isInstalled -and $versionMismatch) {
+    $needUpgrade = $true
+    Write-Host "==> 检测到版本更新: 本地 $localVersion -> 服务端 $ServerVersion"
+}
+
+if ($isInstalled -and (-not $Force) -and (-not $needUpgrade)) {
     Write-Host "==> [✓] 检测到已存在安装 ($Root)，跳过重复环境初始化与依赖安装。"
 } else {
+    if ($isInstalled -and $needUpgrade) {
+        Write-Host "==> 正在升级 Runner (本地: $localVersion -> 服务端: $ServerVersion)..."
+    }
     $python = Get-Command python -ErrorAction SilentlyContinue
     if (-not $python) {
         Write-Error 'Python 3.9+ is required. 请先安装 Python 3.9+ 并勾选 Add to PATH。'
@@ -81,14 +104,14 @@ if ($isInstalled -and (-not $Force)) {
     }
 
     Write-Host '==> 正在安装/升级 mini-pipeline runner 依赖...'
-    & $PythonExe -m pip install --quiet --upgrade $Pkg
+    & $PythonExe -m pip install --quiet --upgrade --force-reinstall $Pkg
     Remove-Item $Pkg -ErrorAction SilentlyContinue
 
     if (-not (Test-Path $Runner)) {
         Write-Error 'Runner 可执行程序未正确安装。'
         exit 1
     }
-    Write-Host '==> [✓] Mini Pipeline Runner 核心组件安装就绪！'
+    Write-Host '==> [✓] Mini Pipeline Runner 核心组件安装/升级就绪！'
 }
 
 # 1. 写入持久化配置文件
@@ -242,7 +265,9 @@ INSTALL_SH_TEMPLATE = r"""#!/bin/sh
 set -eu
 SERVER="${MINI_PIPELINE_SERVER:-__SERVER_URL__}"
 TOKEN="${MINI_PIPELINE_TOKEN:-__TOKEN__}"
-FORCE="${MINI_PIPELINE_FORCE:-0}"
+FORCE="${MINI_PIPELINE_FORCE:-__FORCE__}"
+UPGRADE="${MINI_PIPELINE_UPGRADE:-__UPGRADE__}"
+SERVER_VERSION="__SERVER_VERSION__"
 ROOT="${HOME}/.mini-pipeline-runner"
 WORKSPACE="${ROOT}/workspace"
 RUNNER="${ROOT}/venv/bin/mini-pipeline-runner"
@@ -252,13 +277,31 @@ echo "==> Mini Pipeline Runner 部署程序 (目标服务: ${SERVER})"
 mkdir -p "$ROOT" "$WORKSPACE"
 
 IS_INSTALLED=0
+LOCAL_VERSION=""
 if [ -x "$RUNNER" ] && [ -x "$ROOT/venv/bin/python" ]; then
   IS_INSTALLED=1
+  PROBE_CMD="import mini_pipeline; print(getattr(mini_pipeline, '__version__', ''))"
+  LOCAL_VERSION="$("$ROOT/venv/bin/python" -c "$PROBE_CMD" 2>/dev/null || echo "")"
 fi
 
-if [ "$IS_INSTALLED" -eq 1 ] && [ "$FORCE" -eq 0 ]; then
+NEED_UPGRADE=0
+if [ "$FORCE" = "1" ] || [ "$FORCE" = "true" ]; then
+  NEED_UPGRADE=1
+elif [ "$UPGRADE" = "1" ] || [ "$UPGRADE" = "true" ]; then
+  NEED_UPGRADE=1
+elif [ "$IS_INSTALLED" -eq 1 ] && [ -n "$SERVER_VERSION" ] && [ -n "$LOCAL_VERSION" ]; then
+  if [ "$LOCAL_VERSION" != "$SERVER_VERSION" ]; then
+    echo "==> 检测到版本更新: 本地 ${LOCAL_VERSION} -> 服务端 ${SERVER_VERSION}"
+    NEED_UPGRADE=1
+  fi
+fi
+
+if [ "$IS_INSTALLED" -eq 1 ] && [ "$NEED_UPGRADE" -eq 0 ]; then
   echo "==> [✓] 检测到系统已存在 Mini Pipeline Runner 安装 (${ROOT})，跳过重复初始化。"
 else
+  if [ "$IS_INSTALLED" -eq 1 ] && [ "$NEED_UPGRADE" -eq 1 ]; then
+    echo "==> 正在升级 Runner (本地: ${LOCAL_VERSION} -> 服务端: ${SERVER_VERSION})..."
+  fi
   PYTHON=""
   for c in python3 python; do
     command -v "$c" >/dev/null 2>&1 || continue
@@ -320,9 +363,9 @@ else
   curl -fsSL "${SERVER}/install/package.tar.gz" -o "$PKG"
 
   echo "==> 正在安装/升级 mini-pipeline runner 依赖..."
-  $PIP_CMD install --quiet --upgrade "$PKG"
+  $PIP_CMD install --quiet --upgrade --force-reinstall "$PKG"
   rm -f "$PKG"
-  echo "==> [✓] Mini Pipeline Runner 依赖组件安装完成！"
+  echo "==> [✓] Mini Pipeline Runner 依赖组件安装/升级完成！"
 fi
 
 # 1. 保存持久化配置
@@ -638,21 +681,41 @@ def get_runtime_package(filename: str) -> Response:
 
 
 @installer_router.get("/install.sh", include_in_schema=False)
-def install_sh(request: Request, token: str = "") -> Response:
+def install_sh(
+    request: Request,
+    token: str = "",
+    upgrade: str = "false",
+    force: str = "false",
+) -> Response:
+    is_upgrade = upgrade.lower() in ("true", "1", "yes")
+    is_force = force.lower() in ("true", "1", "yes")
     script = (
         INSTALL_SH_TEMPLATE
         .replace("__SERVER_URL__", _server_base_url(request))
         .replace("__TOKEN__", token)
+        .replace("__UPGRADE__", "1" if is_upgrade else "0")
+        .replace("__FORCE__", "1" if is_force else "0")
+        .replace("__SERVER_VERSION__", SERVER_VERSION)
     )
     return Response(content=script, media_type="text/x-shellscript")
 
 
 @installer_router.get("/install.ps1", include_in_schema=False)
-def install_ps1(request: Request, token: str = "") -> Response:
+def install_ps1(
+    request: Request,
+    token: str = "",
+    upgrade: str = "false",
+    force: str = "false",
+) -> Response:
+    is_upgrade = upgrade.lower() in ("true", "1", "yes")
+    is_force = force.lower() in ("true", "1", "yes")
     script = (
         INSTALL_PS1_TEMPLATE
         .replace("__SERVER_URL__", _server_base_url(request))
         .replace("__TOKEN__", token)
+        .replace("__UPGRADE__", "true" if is_upgrade else "false")
+        .replace("__FORCE__", "true" if is_force else "false")
+        .replace("__SERVER_VERSION__", SERVER_VERSION)
     )
     return Response(
         content=script,
@@ -662,12 +725,17 @@ def install_ps1(request: Request, token: str = "") -> Response:
 
 
 @installer_router.get("/install", include_in_schema=False)
-def install_universal(request: Request, token: str = "") -> Response:
+def install_universal(
+    request: Request,
+    token: str = "",
+    upgrade: str = "false",
+    force: str = "false",
+) -> Response:
     """Auto-detect client platform/shell from User-Agent and serve the script."""
     user_agent = request.headers.get("user-agent", "").lower()
     if "powershell" in user_agent or "pwsh" in user_agent:
-        return install_ps1(request, token=token)
-    return install_sh(request, token=token)
+        return install_ps1(request, token=token, upgrade=upgrade, force=force)
+    return install_sh(request, token=token, upgrade=upgrade, force=force)
 
 
 @installer_router.get("/uninstall.sh", include_in_schema=False)

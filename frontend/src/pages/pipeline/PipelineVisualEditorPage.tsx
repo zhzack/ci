@@ -1,5 +1,6 @@
 import React from "react";
 import { YamlEditor } from '@/components/YamlEditor';
+import { PipelineFlowEditor } from '@/components/pipeline/PipelineFlowEditor';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
@@ -579,6 +580,7 @@ export default function PipelineVisualEditorPage(): React.JSX.Element {
   const { id: editingId } = useParams<{ id?: string }>();
   const [state, setState] = useState<FormState>(EMPTY_FORM);
   const [yamlText, setYamlText] = useState('');
+  const [activeTab, setActiveTab] = useState('visual');
   const [pickerOpen, setPickerOpen] = useState(false);
   const [activeStepIndex, setActiveStepIndex] = useState<number | null>(null);
   const [globalUsageKey, setGlobalUsageKey] = useState<string | null>(null);
@@ -866,6 +868,26 @@ export default function PipelineVisualEditorPage(): React.JSX.Element {
     }
   };
 
+  /** Jump from a graph node to its form card (switch tab, scroll, highlight). */
+  const editStepFromGraph = (name: string) => {
+    const index = state.steps.findIndex((step) => step.name === name);
+    setActiveTab('visual');
+    if (index < 0) return;
+    window.setTimeout(() => {
+      const card = document.getElementById(`step-card-${index}`);
+      if (!card) return;
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      card.classList.add('mp-step-card-highlight');
+      window.setTimeout(() => {
+        card.classList.remove('mp-step-card-highlight');
+      }, 2000);
+    }, 120);
+  };
+
+  const applyStepsFromGraph = (steps: typeof state.steps) => {
+    setState((current) => ({ ...current, steps }));
+  };
+
   const [allIssues, setAllIssues] = useState<SaveIssue[]>([]);
   const handleStepIssues = useCallback(
     (stepIndex: number, issues: SaveIssue[]) => {
@@ -1032,7 +1054,8 @@ export default function PipelineVisualEditorPage(): React.JSX.Element {
         />
       ) : null}
       <Tabs
-        defaultActiveKey="visual"
+        activeKey={activeTab}
+        onChange={setActiveTab}
         items={[
           {
             key: 'visual',
@@ -1203,6 +1226,20 @@ export default function PipelineVisualEditorPage(): React.JSX.Element {
                     ))}
                   </Space>
                 )}
+              </div>
+            ),
+          },
+          {
+            key: 'graph',
+            label: 'Graph',
+            children: (
+              <div className="app-content-card">
+                <PipelineFlowEditor
+                  steps={state.steps}
+                  onStepsChange={applyStepsFromGraph}
+                  onAddStep={() => setPickerOpen(true)}
+                  onEditStep={editStepFromGraph}
+                />
               </div>
             ),
           },

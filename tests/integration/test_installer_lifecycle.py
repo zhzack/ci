@@ -71,3 +71,41 @@ def test_installer_scripts_and_package(tmp_path: Path):
         names = tar.getnames()
         assert "pyproject.toml" in names
         assert any("mini_pipeline/" in name for name in names)
+
+
+def test_installer_upgrade_and_version_checks(tmp_path: Path):
+    settings = authed_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    # 1. Test .sh upgrade=true
+    resp_sh = client.get("/install.sh?upgrade=true&token=mrt_up_1")
+    assert resp_sh.status_code == 200
+    assert 'UPGRADE="${MINI_PIPELINE_UPGRADE:-1}"' in resp_sh.text
+    assert "--force-reinstall" in resp_sh.text
+    assert "SERVER_VERSION=" in resp_sh.text
+    assert "NEED_UPGRADE=1" in resp_sh.text
+
+    # 2. Test .ps1 upgrade=1
+    resp_ps1 = client.get("/install.ps1?upgrade=1&token=mrt_up_2")
+    assert resp_ps1.status_code == 200
+    assert "$Upgrade = if ($isUpgradeEnv -or 'true' -eq 'true')" in resp_ps1.text
+    assert "--force-reinstall" in resp_ps1.text
+    assert "$ServerVersion = " in resp_ps1.text
+    assert "$needUpgrade = $true" in resp_ps1.text
+
+    # 3. Test universal install auto-detection
+    resp_uni_ps = client.get(
+        "/install?token=mrt_up_3&upgrade=true",
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT; WindowsPowerShell/5.1)"},
+    )
+    assert resp_uni_ps.status_code == 200
+    assert "$needUpgrade = $true" in resp_uni_ps.text
+
+    resp_uni_sh = client.get(
+        "/install?token=mrt_up_3&upgrade=true",
+        headers={"User-Agent": "curl/7.88.1"},
+    )
+    assert resp_uni_sh.status_code == 200
+    assert 'UPGRADE="${MINI_PIPELINE_UPGRADE:-1}"' in resp_uni_sh.text
+
